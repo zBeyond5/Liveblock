@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LiveBlock — [By Sang]
 // @namespace    http://tampermonkey.net/
-// @version      4.7.3
+// @version      4.7.4
 // @description  Bloqueador de anúncios furtivo — anti-detecção + GPT patch + UI Completa + Menu de Redes
 // @author       Sang
 // @match        *://*.habblive.in/*
