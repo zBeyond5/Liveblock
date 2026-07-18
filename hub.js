@@ -2,7 +2,7 @@
 // @name         Sang Hub — ScriptLoader
 // @namespace    http://tampermonkey.net/
 // @version      2.0.2
-// @description  Central que lista e carrega scripts (LiveBlock e outros) sob demanda
+// @description  HUB organizador de Scripts
 // @author       Sang
 // @match        *://*.habblive.in/bigclient*
 // @match        *://*.habblet.city/bigclient*
@@ -39,9 +39,7 @@
 
   try {
 
-    // ─── Injeta código bruto no contexto real da página (não eval — cria
-    // uma <script> de verdade, então overrides de window.fetch/XHR etc.
-    // dos módulos funcionam normalmente).
+    // ─── Injeta código bruto 
     function injectCode(code) {
         const tag = document.createElement('script');
         tag.textContent = code;
