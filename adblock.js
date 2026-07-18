@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LiveBlock — [By Sang]
 // @namespace    http://tampermonkey.net/
-// @version      4.7.2
+// @version      4.7.3
 // @description  Bloqueador de anúncios furtivo — anti-detecção + GPT patch + UI Completa + Menu de Redes
 // @author       Sang
 // @match        *://*.habblive.in/*
@@ -21,7 +21,6 @@
 
     LOG('🚀 Script iniciado em', document.URL);
 
-    // ─── SUAS REDES (edite aqui)
     const SOCIALS = [
         { icon: "💬", label: "Discord",   url: "https://discord.gg/" },
         { icon: "📸", label: "Instagram", url: "https://www.instagram.com/chris.koff" },
@@ -270,7 +269,6 @@
     const PROTECTED_IDS = ['root', 'dz', 'nitro-events', 'nitro-coins', 'client-box', 'app'];
     const PROTECTED_CLASSES = ['client-box', 'box-header', 'nitro-events', 'nitro-coins'];
 
-    // NOTE: "protected" é palavra reservada em modo estrito ('use strict') e
     // quebrava a sintaxe do script inteiro. Renomeado para "isElementProtected".
     const isElementProtected = (el) => {
         let current = el;
