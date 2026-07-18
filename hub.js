@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Sang Hub — ScriptLoader
 // @namespace    http://tampermonkey.net/
-// @version      2.1.0
+// @version      2.1.1
 // @description  HUB organizador de Scripts
 // @author       Sang
 // @match        *://*.habblive.in/bigclient*
@@ -15,7 +15,13 @@
 (function() {
     'use strict';
 
-    const HUB_VERSION = "2.1.0";
+    const HUB_VERSION = "2.1.1";
+
+    // Se false (padrão), o hub IGNORA o campo "autoload" do manifesto —
+    // nenhum módulo carrega sozinho, só quando o usuário clica nele.
+    // Isso evita que um módulo (ex: bloqueador de overlay de clique) suba
+    // antes do hub existir e acabe interferindo em cliques do próprio hub.
+    const AUTOLOAD_ENABLED = false;
 
     // Troque pelo link "Raw" do seu manifest.json no GitHub
     const MANIFEST_URL = "https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/manifest.json";
@@ -430,9 +436,14 @@
             lastSyncAt = new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
             HLOG(`📋 Manifesto v${manifest.version || "?"} — ${manifest.modules.length} módulo(s) listado(s)`);
 
-            manifest.modules
-                .filter(m => m.enabled !== false && m.autoload === true && moduleStates[m.id] !== 'loaded')
-                .forEach(mod => activate(mod));
+            if (AUTOLOAD_ENABLED) {
+                manifest.modules
+                    .filter(m => m.enabled !== false && m.autoload === true && moduleStates[m.id] !== 'loaded')
+                    .forEach(mod => activate(mod));
+            } else {
+                const autoloadCount = manifest.modules.filter(m => m.autoload === true).length;
+                if (autoloadCount > 0) HLOG(`⏸ ${autoloadCount} módulo(s) marcado(s) como autoload no manifesto, mas AUTOLOAD_ENABLED=false — aguardando clique do usuário`);
+            }
         } catch (e) {
             HERR("❌ Falha ao buscar manifesto:", e);
             syncState = 'error';
