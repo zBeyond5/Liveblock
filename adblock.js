@@ -1,11 +1,11 @@
 // ==UserScript==
 // @name         LiveBlock v4.7 — [By Sang]
 // @namespace    http://tampermonkey.net/
-// @version      4.7.5
+// @version      4.7.6
 // @description  Bloqueador de anúncios furtivo — anti-detecção + GPT patch + UI Completa + Menu de Redes
 // @author       Sang
-// @match        *://*.habblive.in/*
-// @match        *://*.habblet.city/*
+// @match        *://*.habblive.in/bigclient*
+// @match        *://*.habblet.city/bigclient*
 // @grant        none
 // @run-at       document-start
 // @updateURL    https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/adblock.js
@@ -19,17 +19,18 @@
     const WARN = (...args) => console.warn('🟡 [LiveBlock]', ...args);
     const ERR = (...args) => console.error('🔴 [LiveBlock]', ...args);
 
-    // ─── VERSÃO (mantenha igual ao @version do cabeçalho)
-    const VERSION = "4.7.3";
-    // Link do repositório (não o raw) — usado pelo botão "Verificar atualização"
-    const REPO_URL = "https://github.com/SEU_USUARIO/SEU_REPO";
+    // ─── VERSÃO
+    const VERSION = "4.7.6";
+    // Raw do script no GitHub — usado pra COMPARAR a versão instalada com a mais recente
+    const RAW_URL = "https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/adblock.js";
+    // Página de visualização do arquivo (não a de edição) — só como fallback pro usuário abrir manualmente
+    const REPO_VIEW_URL = "https://github.com/zBeyond5/Liveblock/blob/main/adblock.js";
 
     LOG('🚀 Script iniciado em', document.URL, `| v${VERSION}`);
 
-  try { // ─── TRY/CATCH GLOBAL: qualquer erro de execução não previsto cai aqui
-    // em vez de travar o script inteiro silenciosamente.
+  try { // ─── TRY/CATCH GLOBAL.
 
-    // ─── SUAS REDES (edite aqui)
+    // ─── REDES
     const SOCIALS = [
         { icon: "💬", label: "Discord",   url: "https://discord.gg/" },
         { icon: "📸", label: "Instagram", url: "https://www.instagram.com/chris.koff" },
@@ -548,10 +549,37 @@
             // Ações
             root.querySelector(`#${UID}aClean`).addEventListener("click", () => { push("ACTION","Limpeza manual",true); _toast("Limpando..."); removeAds(); });
             root.querySelector(`#${UID}aLogs`).addEventListener("click", () => { S.logItems = []; _renderLogs(); _toast("Logs limpos"); });
-            root.querySelector(`#${UID}aUpdate`).addEventListener("click", () => {
-                window.open(REPO_URL, "_blank");
-                push("ACTION", "Abrindo repositório para checar atualização", true);
-                _toast("Abrindo GitHub...");
+            root.querySelector(`#${UID}aUpdate`).addEventListener("click", async () => {
+                _toast("Checando versão...");
+                push("ACTION", "Checagem de atualização iniciada", true);
+                try {
+                    const res = await fetch(RAW_URL + "?t=" + Date.now(), { cache: "no-store" });
+                    const text = await res.text();
+                    const match = text.match(/@version\s+([\d.]+)/);
+                    if (!match) {
+                        _toast("Não consegui ler a versão remota");
+                        return;
+                    }
+                    const remote = match[1];
+                    const rParts = remote.split(".").map(Number);
+                    const lParts = VERSION.split(".").map(Number);
+                    let isNewer = false;
+                    for (let i = 0; i < Math.max(rParts.length, lParts.length); i++) {
+                        const r = rParts[i] || 0, l = lParts[i] || 0;
+                        if (r > l) { isNewer = true; break; }
+                        if (r < l) { break; }
+                    }
+                    if (isNewer) {
+                        _toast(`Nova versão disponível: v${remote}`);
+                        push("UPDATE", `Nova versão v${remote} encontrada (atual: v${VERSION})`, true);
+                    } else {
+                        _toast(`Você já está atualizado (v${VERSION})`);
+                    }
+                } catch (e) {
+                    ERR('❌ Erro ao checar versão remota:', e);
+                    _toast("Falha ao checar. Abrindo GitHub...");
+                    window.open(REPO_VIEW_URL, "_blank");
+                }
             });
 
             // Minimizar
