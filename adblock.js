@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LiveBlock v4.7 — [By Sang]
 // @namespace    http://tampermonkey.net/
-// @version      4.7.6
+// @version      4.7.7
 // @description  Bloqueador de anúncios furtivo — anti-detecção + GPT patch + UI Completa + Menu de Redes
 // @author       Sang
 // @match        *://*.habblive.in/bigclient*
@@ -20,7 +20,7 @@
     const ERR = (...args) => console.error('🔴 [LiveBlock]', ...args);
 
     // ─── VERSÃO
-    const VERSION = "4.7.6";
+    const VERSION = "4.7.7";
     // Raw do script no GitHub — usado pra COMPARAR a versão instalada com a mais recente
     const RAW_URL = "https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/adblock.js";
     // Página de visualização do arquivo (não a de edição) — só como fallback pro usuário abrir manualmente
@@ -281,10 +281,21 @@
 
     // NOTE: "protected" é palavra reservada em modo estrito ('use strict') e
     // quebrava a sintaxe do script inteiro. Renomeado para "isElementProtected".
+    //
+    // FIX v4.7.7: o Sang Hub mostra a descrição dos módulos (vinda do
+    // manifest.json) dentro do próprio painel — e a descrição do LiveBlock
+    // é literalmente "Bloqueador de anúncios...". Como o painel do Hub é
+    // position:fixed e maior que 50x50px, ele batia na varredura de texto
+    // ali embaixo (que procura avisos tipo "desative seu bloqueador de
+    // anúncios") e era removido pelo próprio LiveBlock. Agora qualquer
+    // elemento do Hub (id começando com "_hub" ou marcado com
+    // data-hub="1") é protegido antes de chegar nessa checagem de texto.
     const isElementProtected = (el) => {
         let current = el;
         while (current && current !== document.body) {
             if (current.id && PROTECTED_IDS.includes(current.id)) return true;
+            if (current.id && current.id.startsWith('_hub')) return true;
+            if (current.dataset && current.dataset.hub) return true;
             if (current.className && typeof current.className === 'string' &&
                 PROTECTED_CLASSES.some(c => current.className.includes(c))) return true;
             current = current.parentElement;
