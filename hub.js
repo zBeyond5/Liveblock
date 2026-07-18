@@ -1,5 +1,5 @@
 // ==UserScript==
-// @name         Habbo Hub — Central de Scripts
+// @name         Sang Hub — ScriptLoader
 // @namespace    http://tampermonkey.net/
 // @version      2.0.1
 // @description  Central que lista e carrega scripts (LiveBlock e outros) sob demanda
@@ -31,7 +31,7 @@
     const HWARN = (...a) => console.warn('🟠 [Hub]', ...a);
     const HERR = (...a) => console.error('🟠 [Hub]', ...a);
 
-    HLOG(`Iniciando Habbo Hub v${HUB_VERSION} em`, document.URL);
+    HLOG(`Iniciando Sang Hub v${HUB_VERSION} em`, document.URL);
 
     // ─── DESTRÓI INSTÂNCIA ANTERIOR (recarregamento do próprio hub)
     if (window._hubUI) { try { window._hubUI.kill(); } catch(e) {} }
@@ -136,8 +136,7 @@
         activate(mod);
     }
 
-    // ─── UI (tema Habbo — recepção do hotel, propositalmente diferente do
-    // azul padrão dos módulos: tons quentes de madeira/âmbar, cantos retos)
+    // ─── UI
     function buildUI(manifest) {
         const UID = "_hub";
 
@@ -186,7 +185,7 @@
         root.setAttribute("data-hub", "1");
         root.innerHTML = `
         <div class="hub-hdr" id="${UID}hdr">
-            <div class="hub-title">🏨 Habbo Hub</div>
+            <div class="hub-title">🏨 Sang Hub</div>
             <div class="hub-hbtn" id="${UID}cls">✕</div>
         </div>
         <div class="hub-body" id="${UID}list"></div>
