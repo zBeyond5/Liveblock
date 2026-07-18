@@ -1,0 +1,11 @@
+{
+  "version": "1.0.0",
+  "modules": [
+    {
+      "id": "liveblock",
+      "name": "LiveBlock (Anti-Ads)",
+      "enabled": true,
+      "url": "https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/adblock.js"
+    }
+  ]
+}
