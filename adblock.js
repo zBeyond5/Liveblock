@@ -8,8 +8,8 @@
 // @match        *://*.habblet.city/*
 // @grant        none
 // @run-at       document-start
-// @updateURL    https://raw.githubusercontent.com/SEU_USUARIO/SEU_REPO/main/liveblock.user.js
-// @downloadURL  https://raw.githubusercontent.com/SEU_USUARIO/SEU_REPO/main/liveblock.user.js
+// @updateURL    https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/adblock.js
+// @downloadURL  https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/adblock.js
 // ==/UserScript==
 
 (function() {
