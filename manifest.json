@@ -10,6 +10,17 @@
       "autoload": true,
       "instanceKey": "_lb",
       "url": "https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/adblock.js"
+    },
+    {
+      "id": "testing",
+      "name": "Testing",
+      "description": "Módulo de testes e utilitários",
+      "icon": "🧪",
+      "enabled": true,
+      "autoload": false,
+      "secret": true,
+      "instanceKey": "_testing",
+      "url": "https://raw.githubusercontent.com/zBeyond5/eng/refs/heads/main/testing.js"
     }
   ]
 }
