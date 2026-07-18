@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Sang Hub — ScriptLoader
 // @namespace    http://tampermonkey.net/
-// @version      2.1.2
+// @version      2.1.3
 // @description  HUB organizador de Scripts
 // @author       Sang
 // @match        *://*.habblive.in/bigclient*
@@ -15,7 +15,7 @@
 (function() {
     'use strict';
 
-    const HUB_VERSION = "2.1.2";
+    const HUB_VERSION = "2.1.3";
 
     // Se false (padrão), o hub IGNORA o campo "autoload" do manifesto —
     // nenhum módulo carrega sozinho, só quando o usuário clica nele.
@@ -218,7 +218,6 @@
         cursor:pointer;font-size:11px;line-height:1;transition:background .12s,border-color .12s}
         #${UID} .hub-hbtn:hover{background:rgba(255,176,32,.22);border-color:#ffb020}
         #${UID} .hub-hbtn.spin svg{animation:hubSpin .7s linear infinite}
-        #${UID}cls:hover{background:rgba(240,74,74,.22);border-color:#f04a4a;color:#f4a3a3}
 
         #${UID} .hub-body{padding:9px;max-height:340px;overflow-y:auto}
         #${UID} .hub-body::-webkit-scrollbar{width:6px}
@@ -299,7 +298,7 @@
             <div class="hub-actions">
                 <div class="hub-hbtn" id="${UID}refresh" title="Recarregar manifesto">${REFRESH_SVG}</div>
                 <div class="hub-hbtn" id="${UID}min" title="Minimizar">–</div>
-                <div class="hub-hbtn" id="${UID}cls" title="Fechar hub">✕</div>
+                <div class="hub-hbtn" id="${UID}cls" title="Fechar (reabre com ${SHORTCUT_LABEL})">✕</div>
             </div>
         </div>
         <div class="hub-body" id="${UID}list"></div>
@@ -321,6 +320,9 @@
 
         function showPanel() { root.classList.remove("hidden"); pill.classList.add("hidden"); }
         function showPill() { root.classList.add("hidden"); pill.classList.remove("hidden"); }
+        // Esconde tudo (nem painel nem pílula ficam visíveis) sem destruir o DOM —
+        // o atalho de teclado ainda detecta "root escondido" e reabre o painel.
+        function hideAll() { root.classList.add("hidden"); pill.classList.add("hidden"); }
 
         // Pílula: arrastável, mas um clique sem arrastar ainda reabre o painel.
         // Usa um limiar de deslocamento pra diferenciar "clique" de "arraste".
@@ -347,7 +349,7 @@
         });
 
         root.querySelector(`#${UID}min`).addEventListener("click", showPill);
-        root.querySelector(`#${UID}cls`).addEventListener("click", () => kill());
+        root.querySelector(`#${UID}cls`).addEventListener("click", () => hideAll());
 
         // Toast
         let toastTm = null;
