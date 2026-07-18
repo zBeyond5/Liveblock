@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Sang Hub — ScriptLoader
 // @namespace    http://tampermonkey.net/
-// @version      2.0.1
+// @version      2.0.2
 // @description  Central que lista e carrega scripts (LiveBlock e outros) sob demanda
 // @author       Sang
 // @match        *://*.habblive.in/bigclient*
@@ -15,7 +15,7 @@
 (function() {
     'use strict';
 
-    const HUB_VERSION = "2.0.1";
+    const HUB_VERSION = "2.0.2";
 
     // Troque pelo link "Raw" do seu manifest.json no GitHub
     const MANIFEST_URL = "https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/manifest.json";
