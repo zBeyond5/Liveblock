@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         LiveBlock — [By Sang]
+// @name         LiveBlock v4.7 — [By Sang]
 // @namespace    http://tampermonkey.net/
-// @version      4.7.4
+// @version      4.7.5
 // @description  Bloqueador de anúncios furtivo — anti-detecção + GPT patch + UI Completa + Menu de Redes
 // @author       Sang
 // @match        *://*.habblive.in/*
@@ -19,8 +19,17 @@
     const WARN = (...args) => console.warn('🟡 [LiveBlock]', ...args);
     const ERR = (...args) => console.error('🔴 [LiveBlock]', ...args);
 
-    LOG('🚀 Script iniciado em', document.URL);
+    // ─── VERSÃO (mantenha igual ao @version do cabeçalho)
+    const VERSION = "4.7.3";
+    // Link do repositório (não o raw) — usado pelo botão "Verificar atualização"
+    const REPO_URL = "https://github.com/SEU_USUARIO/SEU_REPO";
 
+    LOG('🚀 Script iniciado em', document.URL, `| v${VERSION}`);
+
+  try { // ─── TRY/CATCH GLOBAL: qualquer erro de execução não previsto cai aqui
+    // em vez de travar o script inteiro silenciosamente.
+
+    // ─── SUAS REDES (edite aqui)
     const SOCIALS = [
         { icon: "💬", label: "Discord",   url: "https://discord.gg/" },
         { icon: "📸", label: "Instagram", url: "https://www.instagram.com/chris.koff" },
@@ -269,6 +278,7 @@
     const PROTECTED_IDS = ['root', 'dz', 'nitro-events', 'nitro-coins', 'client-box', 'app'];
     const PROTECTED_CLASSES = ['client-box', 'box-header', 'nitro-events', 'nitro-coins'];
 
+    // NOTE: "protected" é palavra reservada em modo estrito ('use strict') e
     // quebrava a sintaxe do script inteiro. Renomeado para "isElementProtected".
     const isElementProtected = (el) => {
         let current = el;
@@ -323,11 +333,12 @@
     let _renderLogs = () => {}, _renderStats = () => {}, _toast = () => {};
 
     const push = (type, text, force = false) => {
-        if (!S.logs && !force) return;
-        S.logItems.unshift({ t: new Date().toLocaleTimeString(), type, text });
-        if (S.logItems.length > 100) S.logItems.length = 100;
-        _renderLogs();
-        _renderStats();
+        if (S.logs || force) {
+            S.logItems.unshift({ t: new Date().toLocaleTimeString(), type, text });
+            if (S.logItems.length > 100) S.logItems.length = 100;
+            _renderLogs();
+        }
+        _renderStats(); // sempre atualiza Fetch/XHR na tela, independente do toggle de Logs
     };
 
     // ─── TIMERS
@@ -350,7 +361,6 @@
     // ─── UI COMPLETA
     function injectUI() {
         if (S.injected) return;
-        S.injected = true;
 
         try {
             const UID = "_lb" + Math.random().toString(36).slice(2, 8);
@@ -416,7 +426,7 @@
             <div class="lb-hdr" id="${UID}hdr">
                 <div class="lb-brand">
                     <div class="lb-av"><img src="https://habbo.city/habbo-imaging/walkgif?figure=hd-180-1.lg-3116-1198-92.ch-989999893-2023-1035.fa-990003751-2070.hr-802-39.sh-295-62.ea-990002655-64.cc-990002809-100&direction=2&head_direction=3&gesture=sml&action=wav&size=l" alt=""></div>
-                    <div><div class="lb-bname">LiveBlock</div><div class="lb-timer" id="${UID}tmr">00:00:00</div></div>
+                    <div><div class="lb-bname">LiveBlock <span style="color:#4a6ea0;font-weight:600;font-size:9px;">v${VERSION}</span></div><div class="lb-timer" id="${UID}tmr">00:00:00</div></div>
                 </div>
                 <div style="display:flex;gap:4px;">
                     <div class="lb-hbtn" id="${UID}min">_</div>
@@ -445,6 +455,7 @@
                     <div class="lb-act" id="${UID}aClean">⚡ Limpar</div>
                     <div class="lb-act" id="${UID}aLogs">🗑 Logs</div>
                     <div class="lb-act" id="${UID}aSocial">🔗 Redes</div>
+                    <div class="lb-act" id="${UID}aUpdate">🔄</div>
                 </div>
                 <div class="lb-pop" id="${UID}pop"></div>
                 <div style="margin-top:6px;display:none;" id="${UID}pLogs">
@@ -537,6 +548,11 @@
             // Ações
             root.querySelector(`#${UID}aClean`).addEventListener("click", () => { push("ACTION","Limpeza manual",true); _toast("Limpando..."); removeAds(); });
             root.querySelector(`#${UID}aLogs`).addEventListener("click", () => { S.logItems = []; _renderLogs(); _toast("Logs limpos"); });
+            root.querySelector(`#${UID}aUpdate`).addEventListener("click", () => {
+                window.open(REPO_URL, "_blank");
+                push("ACTION", "Abrindo repositório para checar atualização", true);
+                _toast("Abrindo GitHub...");
+            });
 
             // Minimizar
             root.querySelector(`#${UID}min`).addEventListener("click", () => {
@@ -598,10 +614,11 @@
             push("INIT", "LiveBlock v4.7 ativo", true);
             _toast("LiveBlock ativo");
 
+            S.injected = true; // só marca como injetado depois que tudo deu certo
             LOG('✅ UI injetada com sucesso!');
 
         } catch(e) {
-            ERR('❌ Erro ao injetar UI:', e);
+            ERR('❌ Erro ao injetar UI (nova tentativa será feita):', e);
         }
     }
 
@@ -669,5 +686,11 @@
     });
 
     LOG('✅ LiveBlock v4.7 inicializado com sucesso');
+
+  } catch (fatalErr) {
+    // Se algo não previsto quebrar em qualquer ponto acima, loga em vez de
+    // travar o script inteiro em silêncio.
+    console.error('🔴 [LiveBlock] Erro fatal não tratado:', fatalErr);
+  }
 
 })();
