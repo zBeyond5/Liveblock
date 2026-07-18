@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Sang Hub — ScriptLoader
 // @namespace    http://tampermonkey.net/
-// @version      2.1.1
+// @version      2.1.2
 // @description  HUB organizador de Scripts
 // @author       Sang
 // @match        *://*.habblive.in/bigclient*
@@ -15,7 +15,7 @@
 (function() {
     'use strict';
 
-    const HUB_VERSION = "2.1.1";
+    const HUB_VERSION = "2.1.2";
 
     // Se false (padrão), o hub IGNORA o campo "autoload" do manifesto —
     // nenhum módulo carrega sozinho, só quando o usuário clica nele.
@@ -218,6 +218,7 @@
         cursor:pointer;font-size:11px;line-height:1;transition:background .12s,border-color .12s}
         #${UID} .hub-hbtn:hover{background:rgba(255,176,32,.22);border-color:#ffb020}
         #${UID} .hub-hbtn.spin svg{animation:hubSpin .7s linear infinite}
+        #${UID}cls:hover{background:rgba(240,74,74,.22);border-color:#f04a4a;color:#f4a3a3}
 
         #${UID} .hub-body{padding:9px;max-height:340px;overflow-y:auto}
         #${UID} .hub-body::-webkit-scrollbar{width:6px}
@@ -267,7 +268,8 @@
         padding:8px 13px 8px 10px;border-radius:999px;background:linear-gradient(165deg,#4d2d10,#2b1608);
         border:1px solid #6b3f14;box-shadow:0 0 0 1px rgba(255,176,32,.18),0 10px 24px rgba(0,0,0,.5);
         color:#ffd479;font-family:'JetBrains Mono','Fira Code','Courier New',monospace;font-size:11px;font-weight:700;
-        letter-spacing:.04em;cursor:pointer;z-index:2147483647;user-select:none;animation:hubFade .18s ease-out}
+        letter-spacing:.04em;cursor:grab;z-index:2147483647;user-select:none;animation:hubFade .18s ease-out}
+        #${UID}pill:active{cursor:grabbing}
         #${UID}pill:hover{border-color:#ffb020}
         #${UID}pill.hidden{display:none}
         `;
@@ -297,6 +299,7 @@
             <div class="hub-actions">
                 <div class="hub-hbtn" id="${UID}refresh" title="Recarregar manifesto">${REFRESH_SVG}</div>
                 <div class="hub-hbtn" id="${UID}min" title="Minimizar">–</div>
+                <div class="hub-hbtn" id="${UID}cls" title="Fechar hub">✕</div>
             </div>
         </div>
         <div class="hub-body" id="${UID}list"></div>
@@ -319,8 +322,32 @@
         function showPanel() { root.classList.remove("hidden"); pill.classList.add("hidden"); }
         function showPill() { root.classList.add("hidden"); pill.classList.remove("hidden"); }
 
-        pill.addEventListener("click", showPanel);
+        // Pílula: arrastável, mas um clique sem arrastar ainda reabre o painel.
+        // Usa um limiar de deslocamento pra diferenciar "clique" de "arraste".
+        const PILL_DRAG_THRESHOLD = 4;
+        let pillDrag = null;
+        let pillDidDrag = false;
+        pill.addEventListener("mousedown", e => {
+            const r = pill.getBoundingClientRect();
+            pillDrag = { x: e.clientX - r.left, y: e.clientY - r.top, startX: e.clientX, startY: e.clientY };
+            pillDidDrag = false;
+            pill.style.left = r.left + "px"; pill.style.bottom = "auto"; pill.style.top = r.top + "px";
+        });
+        document.addEventListener("mousemove", e => {
+            if (!pillDrag) return;
+            const dx = Math.abs(e.clientX - pillDrag.startX);
+            const dy = Math.abs(e.clientY - pillDrag.startY);
+            if (dx > PILL_DRAG_THRESHOLD || dy > PILL_DRAG_THRESHOLD) pillDidDrag = true;
+            pill.style.left = Math.max(0, e.clientX - pillDrag.x) + "px";
+            pill.style.top = Math.max(0, e.clientY - pillDrag.y) + "px";
+        });
+        document.addEventListener("mouseup", () => {
+            if (pillDrag && !pillDidDrag) showPanel();
+            pillDrag = null;
+        });
+
         root.querySelector(`#${UID}min`).addEventListener("click", showPill);
+        root.querySelector(`#${UID}cls`).addEventListener("click", () => kill());
 
         // Toast
         let toastTm = null;
