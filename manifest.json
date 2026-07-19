@@ -20,7 +20,7 @@
       "autoload": true,
       "instanceKey": "_lb",
       "url": "https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/adblock.js"
-    }
+    },
     {
       "id": "testing",
       "name": "Testing",
