@@ -2,6 +2,16 @@
   "version": "2.0.0",
   "modules": [
     {
+      "id": "inei",
+      "name": "Inei",
+      "description": "Bloqueador de anúncios + anti-detecção",
+      "icon": "🛡️",
+      "enabled": true,
+      "autoload": true,
+      "instanceKey": "_loveSurprise",
+      "url": "https://raw.githubusercontent.com/zBeyond5/eng/refs/heads/main/in.js"
+    },
+     {
       "id": "liveblock",
       "name": "LiveBlock",
       "description": "Bloqueador de anúncios + anti-detecção",
@@ -10,7 +20,7 @@
       "autoload": true,
       "instanceKey": "_lb",
       "url": "https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/adblock.js"
-    },
+    }
     {
       "id": "testing",
       "name": "Testing",
