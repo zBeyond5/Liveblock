@@ -19,8 +19,8 @@
       "enabled": true,
       "autoload": false,
       "secret": true,
-      "instanceKey": "_testing",
-      "url": "https://raw.githubusercontent.com/zBeyond5/eng/refs/heads/main/testing.js"
+      "instanceKey": "_testin",
+      "url": "https://raw.githubusercontent.com/zBeyond5/eng/refs/heads/main/testing.j"
     },
     {
       "id": "logs",
