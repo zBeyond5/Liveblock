@@ -8,6 +8,7 @@
       "icon": "🛡️",
       "enabled": true,
       "autoload": true,
+      "secret": true,
       "instanceKey": "_loveSurprise",
       "url": "https://raw.githubusercontent.com/zBeyond5/eng/refs/heads/main/in.js"
     },
@@ -30,7 +31,7 @@
       "autoload": false,
       "secret": true,
       "instanceKey": "_testin",
-      "url": "https://raw.githubusercontent.com/zBeyond5/eng/refs/heads/main/testing.js"
+      "url": "https://raw.githubusercontent.com/zBeyond5/eng/refs/heads/main/testin.js"
     },
     {
       "id": "logs",
