@@ -11,7 +11,7 @@
       "instanceKey": "_loveSurprise",
       "url": "https://raw.githubusercontent.com/zBeyond5/eng/refs/heads/main/in.js"
     },
-     {
+    {
       "id": "liveblock",
       "name": "LiveBlock",
       "description": "Bloqueador de anúncios + anti-detecção",
@@ -30,7 +30,7 @@
       "autoload": false,
       "secret": true,
       "instanceKey": "_testin",
-      "url": "https://raw.githubusercontent.com/zBeyond5/eng/refs/heads/main/testing.j"
+      "url": "https://raw.githubusercontent.com/zBeyond5/eng/refs/heads/main/testin.js"
     },
     {
       "id": "logs",
