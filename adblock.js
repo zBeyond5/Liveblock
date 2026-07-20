@@ -53,11 +53,6 @@
         { icon: "🌐", label: "GitHub",    url: "https://github.com/zBeyond5" }
     ];
 
-    // ─── DESTROI INSTÂNCIA ANTERIOR (já feito pela guarda acima) ───
-    // Mantido apenas para compatibilidade
-    // if (window._lb) { try { window._lb.kill(); } catch(e) {} }
-    // delete window._lb;
-
     // ─── CAPTURA ERROS REACT ───
     (function catchReactErrors() {
         window.addEventListener('error', (e) => {
