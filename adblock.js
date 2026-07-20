@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         LiveBlock v4.7 — [By Sang]
 // @namespace    http://tampermonkey.net/
-// @version      4.7.7
-// @description  Bloqueador de anúncios furtivo — anti-detecção + GPT patch + UI Completa + Menu de Redes
+// @version      4.7.8
+// @description  Bloqueador de anúncios 
 // @author       Sang
 // @match        *://*.habblive.in/bigclient*
 // @match        *://*.habblet.city/bigclient*
@@ -15,36 +15,50 @@
 (function() {
     'use strict';
 
+    if (window._lb) {
+        try {
+            if (typeof window._lb.kill === 'function') {
+                window._lb.kill();
+            }
+        } catch(e) {}
+        delete window._lb;
+    }
+    if (window.__lb) {
+        try {
+            if (typeof window.__lb.kill === 'function') {
+                window.__lb.kill();
+            }
+        } catch(e) {}
+        delete window.__lb;
+    }
+
     const LOG = (...args) => console.log('🔵 [LiveBlock]', ...args);
     const WARN = (...args) => console.warn('🟡 [LiveBlock]', ...args);
     const ERR = (...args) => console.error('🔴 [LiveBlock]', ...args);
 
-    // ─── VERSÃO
-    const VERSION = "4.7.7";
-    // Raw do script no GitHub — usado pra COMPARAR a versão instalada com a mais recente
+    // ─── VERSÃO ───
+    const VERSION = "4.7.8";
     const RAW_URL = "https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/adblock.js";
-    // Página de visualização do arquivo (não a de edição) — só como fallback pro usuário abrir manualmente
     const REPO_VIEW_URL = "https://github.com/zBeyond5/Liveblock/blob/main/adblock.js";
 
     LOG('🚀 Script iniciado em', document.URL, `| v${VERSION}`);
 
-  try { // ─── TRY/CATCH GLOBAL.
+  try {
 
-    // ─── REDES
+    // ─── REDES ───
     const SOCIALS = [
         { icon: "💬", label: "Discord",   url: "https://discord.gg/" },
         { icon: "📸", label: "Instagram", url: "https://www.instagram.com/chris.koff" },
         { icon: "▶️", label: "YouTube",   url: "https://www.youtube.com/@chriemici6134" },
-        { icon: "🌐", label: "GitHub",      url: "https://github.com/zBeyond5" }
+        { icon: "🌐", label: "GitHub",    url: "https://github.com/zBeyond5" }
     ];
 
-    // ─── DESTROI INSTÂNCIA ANTERIOR
-    if (window._lb) { try { window._lb.kill(); LOG('🗑️ Instância anterior destruída'); } catch(e) {} }
-    if (window.__lb) { try { window.__lb.kill(); } catch(e) {} }
-    delete window._lb;
-    delete window.__lb;
+    // ─── DESTROI INSTÂNCIA ANTERIOR (já feito pela guarda acima) ───
+    // Mantido apenas para compatibilidade
+    // if (window._lb) { try { window._lb.kill(); } catch(e) {} }
+    // delete window._lb;
 
-    // ─── CAPTURA ERROS DO REACT
+    // ─── CAPTURA ERROS REACT ───
     (function catchReactErrors() {
         window.addEventListener('error', (e) => {
             const msg = e.message || '';
@@ -75,7 +89,7 @@
         };
     })();
 
-    // ─── FAKE GPT
+    // ─── FAKE GPT ───
     (function fakeGPT() {
         try {
             if (window.googletag && typeof window.googletag.pubads === 'function') {
@@ -160,7 +174,7 @@
         }
     })();
 
-    // ─── CONFIG
+    // ─── CONFIG ───
     const KEY = "lb4cfg";
     const cfg = (() => { try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch { return {}; } })();
 
@@ -179,7 +193,7 @@
         injected: false
     };
 
-    // ─── PATTERNS DE ANÚNCIO
+    // ─── PATTERNS ───
     const PATTERNS = [
         /securepubads/i, /doubleclick\.net/i, /googlesyndication/i,
         /googleads/i, /gampad\/ads/i, /\/ads\?/i, /div-gpt-ad/i,
@@ -194,7 +208,7 @@
         return PATTERNS.some(rx => rx.test(str));
     };
 
-    // ─── STEALTH CONSOLE
+    // ─── STEALTH CONSOLE ───
     const _origLog = console.log;
     const _origWarn = console.warn;
     const _origError = console.error;
@@ -215,7 +229,7 @@
         _origError.apply(console, a);
     };
 
-    // ─── CLEAN WINDOW
+    // ─── CLEAN WINDOW ───
     const cleanWindow = () => {
         const props = Object.getOwnPropertyNames(window);
         const bad = ['__lb', '_lb', 'lb', 'adblock', 'adblocker', 'ublock', 'adguard'];
@@ -228,7 +242,7 @@
     };
     cleanWindow();
 
-    // ─── HOOK FETCH
+    // ─── HOOK FETCH ───
     const _fetch = window.fetch;
     window.fetch = function(...a) {
         const url = a[0]?.url || a[0];
@@ -240,7 +254,7 @@
         return _fetch.apply(this, a);
     };
 
-    // ─── HOOK XHR
+    // ─── HOOK XHR ───
     const _XHR = window.XMLHttpRequest;
     window.XMLHttpRequest = function() {
         const x = new _XHR();
@@ -267,7 +281,7 @@
         return x;
     };
 
-    // ─── AD SELECTORS
+    // ─── AD SELECTORS ───
     const AD_SEL = [
         "iframe[src*='doubleclick']",
         "iframe[src*='googlesyndication']",
@@ -279,17 +293,6 @@
     const PROTECTED_IDS = ['root', 'dz', 'nitro-events', 'nitro-coins', 'client-box', 'app'];
     const PROTECTED_CLASSES = ['client-box', 'box-header', 'nitro-events', 'nitro-coins'];
 
-    // NOTE: "protected" é palavra reservada em modo estrito ('use strict') e
-    // quebrava a sintaxe do script inteiro. Renomeado para "isElementProtected".
-    //
-    // FIX v4.7.7: o Sang Hub mostra a descrição dos módulos (vinda do
-    // manifest.json) dentro do próprio painel — e a descrição do LiveBlock
-    // é literalmente "Bloqueador de anúncios...". Como o painel do Hub é
-    // position:fixed e maior que 50x50px, ele batia na varredura de texto
-    // ali embaixo (que procura avisos tipo "desative seu bloqueador de
-    // anúncios") e era removido pelo próprio LiveBlock. Agora qualquer
-    // elemento do Hub (id começando com "_hub" ou marcado com
-    // data-hub="1") é protegido antes de chegar nessa checagem de texto.
     const isElementProtected = (el) => {
         let current = el;
         while (current && current !== document.body) {
@@ -341,7 +344,7 @@
         if (n) push("DOM", `Removidos ${n}`);
     };
 
-    // ─── LOG
+    // ─── LOG ───
     let _renderLogs = () => {}, _renderStats = () => {}, _toast = () => {};
 
     const push = (type, text, force = false) => {
@@ -350,11 +353,13 @@
             if (S.logItems.length > 100) S.logItems.length = 100;
             _renderLogs();
         }
-        _renderStats(); // sempre atualiza Fetch/XHR na tela, independente do toggle de Logs
+        _renderStats();
     };
 
-    // ─── TIMERS
+    // ─── TIMERS ───
     let obs = null;
+    let timerInterval = null;
+    let toastTm = null;
 
     const initObserver = () => {
         if (obs) obs.disconnect();
@@ -370,7 +375,7 @@
         }, 120000);
     };
 
-    // ─── UI COMPLETA
+    // ─── UI ───
     function injectUI() {
         if (S.injected) return;
 
@@ -482,9 +487,9 @@
             if (S.pos) { root.style.left = S.pos.l+"px"; root.style.top = S.pos.t+"px"; root.style.right = "auto"; }
             if (S.min) root.classList.add("min");
 
-            // Timer
+            // ─── TIMER ───
             const tmr = root.querySelector(`#${UID}tmr`);
-            const timerInterval = setInterval(() => {
+            timerInterval = setInterval(() => {
                 const s = Math.floor((Date.now() - S.t0) / 1000);
                 const h = String(Math.floor(s/3600)).padStart(2,"0");
                 const m = String(Math.floor((s%3600)/60)).padStart(2,"0");
@@ -492,8 +497,8 @@
                 tmr.textContent = `${h}:${m}:${sec}`;
             }, 1000);
 
-            // Toast
-            let toastTm = null;
+            // ─── TOAST ───
+            toastTm = null;
             _toast = msg => {
                 const t = root.querySelector(`#${UID}toast`);
                 t.textContent = msg; t.classList.add("show");
@@ -501,7 +506,7 @@
                 toastTm = setTimeout(() => t.classList.remove("show"), 1500);
             };
 
-            // Stats
+            // ─── STATS ───
             _renderStats = () => {
                 root.querySelector(`#${UID}nf`).textContent = S.nFetch;
                 root.querySelector(`#${UID}nx`).textContent = S.nXhr;
@@ -509,7 +514,7 @@
                 bar.style.width = Math.min(100, (S.nFetch + S.nXhr) * 2.5) + "%";
             };
 
-            // Logs
+            // ─── LOGS ───
             const logBox = root.querySelector(`#${UID}logbox`);
             _renderLogs = () => {
                 if (!S.logItems.length) { logBox.innerHTML = '<div style="color:#3a5888;text-align:center;padding:8px;font-size:9px;">Nenhum log.</div>'; return; }
@@ -518,7 +523,7 @@
                 ).join("");
             };
 
-            // Toggles
+            // ─── TOGGLES ───
             const toggles = [
                 { id: `${UID}tog0`, key: "on", on: "ON", off: "OFF" },
                 { id: `${UID}tog1`, key: "logs", on: "ON", off: "OFF" },
@@ -540,7 +545,7 @@
                 el.querySelector(".lb-tgltxt").textContent = S[key] ? on : off;
             });
 
-            // Popover de redes sociais (leve: sem timers, reaproveita o mesmo DOM)
+            // ─── POPOVER REDES ───
             const popEl = root.querySelector(`#${UID}pop`);
             popEl.innerHTML = SOCIALS.map(s =>
                 `<a class="lb-poplink" href="${s.url}" target="_blank" rel="noopener">${s.icon} ${s.label}</a>`
@@ -557,7 +562,7 @@
                 }
             });
 
-            // Ações
+            // ─── AÇÕES ───
             root.querySelector(`#${UID}aClean`).addEventListener("click", () => { push("ACTION","Limpeza manual",true); _toast("Limpando..."); removeAds(); });
             root.querySelector(`#${UID}aLogs`).addEventListener("click", () => { S.logItems = []; _renderLogs(); _toast("Logs limpos"); });
             root.querySelector(`#${UID}aUpdate`).addEventListener("click", async () => {
@@ -593,15 +598,15 @@
                 }
             });
 
-            // Minimizar
+            // ─── MINIMIZAR ───
             root.querySelector(`#${UID}min`).addEventListener("click", () => {
                 S.min = !S.min; root.classList.toggle("min", S.min); save();
             });
 
-            // Fechar
+            // ─── FECHAR ───
             root.querySelector(`#${UID}cls`).addEventListener("click", kill);
 
-            // Drag
+            // ─── DRAG ───
             const hdr = root.querySelector(`#${UID}hdr`);
             let drag = null;
             hdr.addEventListener("mousedown", e => {
@@ -620,27 +625,28 @@
             document.addEventListener("mousemove", onMove);
             document.addEventListener("mouseup", onUp);
 
-            // Duplo clique no header = minimizar
+            // ─── DUPLO CLIQUE ───
             hdr.addEventListener("dblclick", () => {
                 S.min = !S.min; root.classList.toggle("min", S.min); save();
             });
 
-            // Toggle logs
+            // ─── TOGGLE LOGS ───
             let logsVisible = false;
             root.querySelector(`#${UID}tog1`).addEventListener("click", () => {
                 logsVisible = !logsVisible;
                 root.querySelector(`#${UID}pLogs`).style.display = logsVisible ? "block" : "none";
             });
 
+            // ─── KILL ───
             function kill() {
                 S.killFlag = true;
-                clearInterval(timerInterval);
-                clearTimeout(toastTm);
+                if (timerInterval) clearInterval(timerInterval);
+                if (toastTm) clearTimeout(toastTm);
                 if (obs) obs.disconnect();
                 document.removeEventListener("mousemove", onMove);
                 document.removeEventListener("mouseup", onUp);
-                root.remove();
-                style.remove();
+                if (root && root.parentNode) root.remove();
+                if (style && style.parentNode) style.remove();
                 try { delete window._lb; } catch(e) {}
                 try { delete window.__lb; } catch(e) {}
                 cleanWindow();
@@ -653,7 +659,7 @@
             push("INIT", "LiveBlock v4.7 ativo", true);
             _toast("LiveBlock ativo");
 
-            S.injected = true; // só marca como injetado depois que tudo deu certo
+            S.injected = true;
             LOG('✅ UI injetada com sucesso!');
 
         } catch(e) {
@@ -661,7 +667,7 @@
         }
     }
 
-    // ─── SAVE
+    // ─── SAVE ───
     const save = () => {
         try {
             localStorage.setItem(KEY, JSON.stringify({
@@ -671,7 +677,7 @@
         } catch {}
     };
 
-    // ─── INJEÇÃO AGRESSIVA COM FALLBACK
+    // ─── INJEÇÃO ───
     let injectAttempts = 0;
     const maxAttempts = 25;
 
@@ -709,7 +715,7 @@
         setTimeout(aggressiveInject, 1000);
     }
 
-    // ─── WINDOW STEALTH
+    // ─── WINDOW STEALTH ───
     const _lbSym = Symbol('lb');
     Object.defineProperty(window, '_lb', {
         get() { return window[_lbSym]; },
@@ -727,8 +733,6 @@
     LOG('✅ LiveBlock v4.7 inicializado com sucesso');
 
   } catch (fatalErr) {
-    // Se algo não previsto quebrar em qualquer ponto acima, loga em vez de
-    // travar o script inteiro em silêncio.
     console.error('🔴 [LiveBlock] Erro fatal não tratado:', fatalErr);
   }
 
