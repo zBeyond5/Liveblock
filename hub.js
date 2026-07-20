@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Sang Hub — ScriptLoader
 // @namespace    http://tampermonkey.net/
-// @version      2.2.1
-// @description  Gerenciador de módulos com auto-update
+// @version      2.2.3
+// @description  Gerenciador de módulos
 // @author       Sang
 // @match        *://*.habblive.in/bigclient*
 // @match        *://*.habblet.city/bigclient*
@@ -15,8 +15,7 @@
 (function() {
     'use strict';
 
-    // ─── CONFIGURAÇÕES ───
-    const HUB_VERSION = "2.2.1";
+    const HUB_VERSION = "2.2.3";
     const HUB_UPDATE_URL = "https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/hub.js";
     const MANIFEST_URL = "https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/manifest.json";
 
@@ -29,23 +28,22 @@
     const SHORTCUT_LABEL = 'Alt+Shift+H';
     const AUTOLOAD_ENABLED = false;
 
-    const LOG_PREFIX = '🟠 [Hub]';
+    const LOG_PREFIX = '🔶 [Hub]';
     const HLOG = (...a) => console.log(LOG_PREFIX, ...a);
     const HWARN = (...a) => console.warn(LOG_PREFIX, ...a);
     const HERR = (...a) => console.error(LOG_PREFIX, ...a);
 
-    // ─── ESTADO GLOBAL ───
     const state = {
         manifest: { modules: [] },
         moduleStates: {},
         syncState: 'loading',
         lastSyncAt: null,
-        injected: false,
         killFlag: false,
         currentHubVersion: HUB_VERSION,
         updateTimer: null,
         heartbeatTimer: null,
-        isUpdating: false
+        isUpdating: false,
+        loadedInstances: {}
     };
 
     let renderListFn = null;
@@ -53,9 +51,7 @@
     let toastFn = null;
     let uiRoot = null;
     let uiPill = null;
-    let obs = null;
 
-    // ─── INJEÇÃO DE CÓDIGO ───
     function injectCode(code, id) {
         const tag = document.createElement('script');
         tag.textContent = code;
@@ -64,23 +60,54 @@
         tag.remove();
     }
 
+    function killInstance(instanceKey) {
+        if (!instanceKey) return false;
+        try {
+            if (window[instanceKey] && typeof window[instanceKey].kill === 'function') {
+                HLOG('💀 Matando instância antiga: ' + instanceKey);
+                window[instanceKey].kill();
+                delete window[instanceKey];
+                HLOG('✅ Instância ' + instanceKey + ' removida');
+                return true;
+            }
+            if (window[instanceKey]) {
+                delete window[instanceKey];
+                HLOG('⚠️ Instância ' + instanceKey + ' removida (sem kill)');
+                return true;
+            }
+        } catch(e) {
+            HWARN('Erro ao matar instância ' + instanceKey + ':', e);
+            try { delete window[instanceKey]; } catch(e) {}
+        }
+        return false;
+    }
+
     async function loadModule(mod) {
+        if (mod.instanceKey) {
+            killInstance(mod.instanceKey);
+        }
+
         const url = mod.url + (mod.url.includes('?') ? '&' : '?') + 't=' + Date.now();
         const res = await fetch(url, { cache: 'no-store' });
         if (!res.ok) throw new Error('HTTP ' + res.status);
         const code = await res.text();
         injectCode(code, mod.id);
+
+        if (mod.instanceKey) {
+            state.loadedInstances[mod.id] = mod.instanceKey;
+        }
+
+        HLOG('✅ Módulo "' + mod.name + '" carregado');
     }
 
     function tryUnload(mod) {
         const key = mod.instanceKey;
-        if (key && window[key] && typeof window[key].kill === 'function') {
-            try { window[key].kill(); return true; } catch(e) { return false; }
+        if (key) {
+            return killInstance(key);
         }
         return false;
     }
 
-    // ─── CACHE ───
     function getCache(key, ttl) {
         try {
             const raw = localStorage.getItem(key);
@@ -111,7 +138,6 @@
         setCache('sanghub_version_cache', version);
     }
 
-    // ─── FETCH COM RETRY ───
     async function fetchWithRetry(url, opts, timeout, retries) {
         let lastErr = null;
         for (let i = 0; i <= retries; i++) {
@@ -130,13 +156,11 @@
         throw lastErr;
     }
 
-    // ─── BUSCA MANIFESTO ───
     async function fetchManifest(bypassCache) {
         if (!bypassCache) {
             const cached = getCachedManifest();
             if (cached) return cached;
         }
-
         const res = await fetchWithRetry(
             MANIFEST_URL + '?t=' + Date.now(),
             { cache: 'no-store' },
@@ -148,17 +172,14 @@
         return data;
     }
 
-    // ─── AUTO-UPDATE DO HUB ───
     async function checkHubUpdate() {
         if (state.isUpdating) return;
         state.isUpdating = true;
-
         try {
             const res = await fetchWithRetry(HUB_UPDATE_URL + '?t=' + Date.now(), { cache: 'no-store' }, 5000, 1);
             const code = await res.text();
             const versionMatch = code.match(/HUB_VERSION\s*=\s*["']([^"']+)["']/);
             if (!versionMatch) return;
-
             const remoteVersion = versionMatch[1];
             if (remoteVersion !== state.currentHubVersion) {
                 HLOG('🔄 Nova versão do Hub: v' + remoteVersion + ' (atual: v' + state.currentHubVersion + ')');
@@ -191,24 +212,16 @@
         }
     }
 
-    // ─── CARREGA MÓDULOS SECRETOS ───
     async function loadSecretModules(manifest) {
         const secretModules = manifest.modules.filter(m => m.secret === true && m.enabled !== false);
         if (!secretModules.length) return;
 
-        HLOG('🕵️ Carregando ' + secretModules.length + ' módulo(s) secreto(s)...');
-
         for (const mod of secretModules) {
             try {
                 state.moduleStates[mod.id] = 'loading';
-                const res = await fetch(mod.url + '?t=' + Date.now(), { cache: 'no-store' });
-                if (!res.ok) throw new Error('HTTP ' + res.status);
-                const code = await res.text();
-                injectCode(code, mod.id);
+                await loadModule(mod);
                 state.moduleStates[mod.id] = 'loaded';
-                HLOG('✅ Módulo secreto "' + mod.name + '" carregado');
             } catch(e) {
-                HERR('❌ Falha no módulo "' + mod.name + '":', e);
                 state.moduleStates[mod.id] = 'error';
             }
         }
@@ -216,7 +229,6 @@
         if (renderChromeFn) renderChromeFn();
     }
 
-    // ─── RECARREGA MANIFESTO ───
     async function refreshManifest(bypassCache) {
         state.syncState = 'loading';
         if (renderChromeFn) renderChromeFn();
@@ -261,10 +273,8 @@
         if (renderListFn) renderListFn();
     }
 
-    // ─── LOOP DE AUTO-UPDATE ───
     async function autoUpdateLoop() {
         if (state.killFlag) return;
-
         HLOG('🔄 Verificando atualizações...');
         await checkHubUpdate();
 
@@ -287,7 +297,6 @@
         }
     }
 
-    // ─── GERENCIA MÓDULOS ───
     async function activateModule(mod) {
         if (state.moduleStates[mod.id] === 'loading') return;
         state.moduleStates[mod.id] = 'loading';
@@ -320,7 +329,6 @@
         activateModule(mod);
     }
 
-    // ─── UI ───
     function buildUI() {
         const UID = '_hub';
 
@@ -451,7 +459,6 @@
         function showPill() { root.classList.add('hidden'); pill.classList.remove('hidden'); }
         function hideAll() { root.classList.add('hidden'); pill.classList.add('hidden'); }
 
-        // ─── DRAG ───
         let drag = null;
         const hdr = root.querySelector('#' + UID + 'hdr');
         hdr.addEventListener('mousedown', e => {
@@ -470,7 +477,6 @@
         });
         document.addEventListener('mouseup', () => { drag = null; });
 
-        // ─── PILL DRAG ───
         let pillDrag = null;
         let pillDidDrag = false;
         pill.addEventListener('mousedown', e => {
@@ -491,7 +497,6 @@
             pillDrag = null;
         });
 
-        // ─── TOAST ───
         let toastTm = null;
         toastFn = (msg, kind) => {
             const el = root.querySelector('#' + UID + 'toast');
@@ -501,7 +506,6 @@
             toastTm = setTimeout(() => el.classList.remove('show'), 2000);
         };
 
-        // ─── BOTÕES ───
         root.querySelector('#' + UID + 'min').addEventListener('click', showPill);
         root.querySelector('#' + UID + 'cls').addEventListener('click', hideAll);
         root.querySelector('#' + UID + 'refresh').addEventListener('click', () => refreshManifest(true));
@@ -510,7 +514,6 @@
             autoUpdateLoop();
         });
 
-        // ─── TECLADO ───
         document.addEventListener('keydown', e => {
             if (e.altKey && e.shiftKey && e.key.toLowerCase() === SHORTCUT_KEY) {
                 e.preventDefault();
@@ -518,7 +521,6 @@
             }
         });
 
-        // ─── RENDERIZAÇÃO ───
         const listEl = root.querySelector('#' + UID + 'list');
         const syncDot = root.querySelector('#' + UID + 'syncdot');
         const syncSubtitle = root.querySelector('#' + UID + 'syncsubtitle');
@@ -565,18 +567,15 @@
         renderListFn();
         renderChromeFn();
 
-        // ─── KILL ───
         function kill() {
             state.killFlag = true;
             if (state.updateTimer) clearTimeout(state.updateTimer);
             if (state.heartbeatTimer) clearInterval(state.heartbeatTimer);
-            if (obs) obs.disconnect();
             document.querySelectorAll('#' + UID + ', #' + UID + 'pill, style[data-hub]').forEach(el => el.remove());
         }
         window._hubUI = { kill };
     }
 
-    // ─── INICIALIZAÇÃO ───
     async function boot() {
         await new Promise(resolve => {
             if (document.body) return resolve();
@@ -601,5 +600,4 @@
     }
 
     boot().catch(e => HERR('❌ Erro fatal:', e));
-
 })();
