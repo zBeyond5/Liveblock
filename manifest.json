@@ -16,7 +16,7 @@
       "id": "liveblock",
       "name": "LiveBlock",
       "description": "Bloqueador de anúncios + anti-detecção",
-      "icon": "🛡️",
+      "icon": "https://github.com/zBeyond5/Liveblock/blob/main/assets/sang.png?raw=true",
       "enabled": true,
       "autoload": true,
       "instanceKey": "_lb",
