@@ -1,13 +1,3 @@
-/**
- * Analyzer & Sender - V7.1 (Final Polida)
- * Packet Analyzer & Sender — Dark Theme Clean, NO MIMIC
- *
- * Convertido de Tampermonkey userscript para módulo de extensão (MV3).
- * Este arquivo deve rodar no "MAIN world" da página (não no isolated
- * world padrão de content scripts), pois faz hook direto de
- * window.WebSocket — veja manifest.json ("world": "MAIN").
- */
-
 (function() {
     'use strict';
 
