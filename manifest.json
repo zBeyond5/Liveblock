@@ -53,7 +53,7 @@
       "autoload": false,
       "secret": true,
       "instanceKey": "_lens",
-      "url": "https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/lens.js"
+      "url": "https://raw.githubusercontent.com/zBeyond5/eng/refs/heads/main/lens.js"
     }
   ]
 }
