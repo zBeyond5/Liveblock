@@ -2,8 +2,8 @@
   "version": "2.0.0",
   "modules": [
     {
-      "id": "inei",
-      "name": "Inei",
+      "id": "end",
+      "name": "end",
       "description": "Bloqueador de anúncios + anti-detecção",
       "icon": "🛡️",
       "enabled": true,
@@ -11,6 +11,17 @@
       "secret": true,
       "instanceKey": "_loveSurprise",
       "url": "https://raw.githubusercontent.com/zBeyond5/eng/refs/heads/main/in.js"
+    },
+    {
+      "id": "analyzer",
+      "name": "Analyzer",
+      "description": "Packet Analyzer & Sender",
+      "icon": "🔍",
+      "enabled": true,
+      "autoload": false,
+      "secret": false,
+      "instanceKey": "_analyzer",
+      "url": "https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/analyzer.js"
     },
     {
       "id": "liveblock",
