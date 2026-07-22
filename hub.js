@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Sang Hub — ScriptLoader
 // @namespace    http://tampermonkey.net/
-// @version      2.2.3
+// @version      2.2.4
 // @description  Gerenciador de módulos
 // @author       Sang
 // @match        *://*.habblive.in/bigclient*
@@ -15,7 +15,7 @@
 (function() {
     'use strict';
 
-    const HUB_VERSION = "2.2.3";
+    const HUB_VERSION = "2.2.4";
     const HUB_UPDATE_URL = "https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/hub.js";
     const MANIFEST_URL = "https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/manifest.json";
 
@@ -51,6 +51,51 @@
     let toastFn = null;
     let uiRoot = null;
     let uiPill = null;
+
+    // ==========================================
+    // WEBSOCKET HOOK GLOBAL
+    // ==========================================
+    (function setupSocketHook() {
+        if (window._hubSocket) return;
+
+        const connectCbs = [];
+        const messageCbs = [];
+        let active = null;
+
+        const OriginalWebSocket = window.WebSocket;
+
+        function HookedWebSocket(...args) {
+            const ws = new OriginalWebSocket(...args);
+            active = ws;
+            connectCbs.forEach(cb => { try { cb(ws); } catch(e) { console.error('[Hub Socket] onConnect cb error:', e); } });
+
+            ws.addEventListener('message', (event) => {
+                messageCbs.forEach(cb => { try { cb(event, ws); } catch(e) { console.error('[Hub Socket] onMessage cb error:', e); } });
+            });
+
+            ws.addEventListener('close', () => {
+                if (active === ws) active = null;
+            });
+
+            return ws;
+        }
+
+        HookedWebSocket.prototype = OriginalWebSocket.prototype;
+        Object.keys(OriginalWebSocket).forEach(key => {
+            HookedWebSocket[key] = OriginalWebSocket[key];
+        });
+
+        window.WebSocket = HookedWebSocket;
+
+        window._hubSocket = {
+            getActive: () => active,
+            onConnect: (cb) => { connectCbs.push(cb); if (active) cb(active); },
+            onMessage: (cb) => { messageCbs.push(cb); },
+            _original: OriginalWebSocket
+        };
+
+        HLOG('🔌 Hook de WebSocket instalado');
+    })();
 
     function injectCode(code, id) {
         const tag = document.createElement('script');
