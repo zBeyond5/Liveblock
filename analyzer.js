@@ -928,19 +928,15 @@
     fragment.appendChild(Toolbar.element);
     fragment.appendChild(AnalyzerUI.element);
     fragment.appendChild(SenderUI.element);
+    document.body.appendChild(fragment);
 
-    // Em MAIN world o document.body já deve existir na maioria dos casos
-    // (run_at: document_end/idle). Fallback defensivo caso ainda não exista.
-    if (document.body) {
-        document.body.appendChild(fragment);
-    } else {
-        document.addEventListener('DOMContentLoaded', () => document.body.appendChild(fragment));
+        // ==========================================
+    // MÓDULO 10: TRÁFEGO WEBSOCKET (via Hub)
+    // ==========================================
+    if (!window._hubSocket) {
+        console.error('[Analyzer] window._hubSocket não encontrado. Carregue via Sang Hub.');
+        return;
     }
-
-    // ==========================================
-    // MÓDULO 10: INTERCEPTAÇÃO WEBSOCKET
-    // ==========================================
-    window.gameWS = null;
 
     const _recentPackets = new Map();
 
@@ -979,147 +975,48 @@
         }
     };
 
-    // Função unificada para processar dados inbound
-    const processInboundData = async (rawData) => {
-        // Converte Blob para ArrayBuffer se necessário
-        let data = rawData;
+    // Envio: intercepta via wrapper em ws.send (chamado pelo SenderUI)
+    function wrapSend(ws) {
+        if (ws._analyzerSendWrapped) return;
+        ws._analyzerSendWrapped = true;
+        const originalSend = ws.send.bind(ws);
+        ws.send = function(data) {
+            if (AppState.killSwitchActive) return;
+            const packet = Utils.parseData(data);
+            if (packet && PacketFilter.isNetworkDropped(packet)) {
+                handleTraffic(data, 'SEND', true);
+                return;
+            }
+            handleTraffic(data, 'SEND', false);
+            return originalSend(data);
+        };
+    }
+
+    // Recebimento: processa cada frame vindo do socket ativo
+    async function handleInbound(event) {
+        let data = event.data;
         if (data instanceof Blob) {
             data = await data.arrayBuffer();
         }
-
-        // Aplica transformação
         const modifiedData = InboundTransformer.transform(data);
-
-        // Log no analyzer
         handleTraffic(modifiedData, 'RECV');
-
-        // Retorna os dados processados e um novo evento
-        return {
-            data: modifiedData,
-            createEvent: (originalEvent) => {
-                return new MessageEvent('message', {
-                    data: modifiedData,
-                    origin: originalEvent?.origin,
-                    lastEventId: originalEvent?.lastEventId,
-                    source: originalEvent?.source,
-                    ports: originalEvent?.ports
-                });
-            }
-        };
-    };
-
-    // Hook no construtor para capturar gameWS na criação
-    const OriginalWebSocket = window.WebSocket;
-    window.WebSocket = function(...args) {
-        const ws = new OriginalWebSocket(...args);
-
-        // Captura a instância assim que é criada
-        if (!window.gameWS) {
-            window.gameWS = ws;
-            console.log('[HL PRO] WebSocket capturado na criação');
-        }
-
-        return ws;
-    };
-    window.WebSocket.prototype = OriginalWebSocket.prototype;
-
-    // Copia TODAS as propriedades estáticas do WebSocket original
-    Object.keys(OriginalWebSocket).forEach(key => {
-        window.WebSocket[key] = OriginalWebSocket[key];
-    });
-
-    // Hook send
-    const originalSend = WebSocket.prototype.send;
-    WebSocket.prototype.send = function(data) {
-        if (!window.gameWS) window.gameWS = this;
-
-        if (AppState.killSwitchActive) return;
-
-        const packet = Utils.parseData(data);
-        if (packet && PacketFilter.isNetworkDropped(packet)) {
-            handleTraffic(data, 'SEND', true);
-            return;
-        }
-        handleTraffic(data, 'SEND', false);
-        return originalSend.call(this, data);
-    };
-
-    // Hook addEventListener
-    const originalAddEventListener = WebSocket.prototype.addEventListener;
-    WebSocket.prototype.addEventListener = function(type, listener, options) {
-        if (type === 'message' && !listener._isHooked) {
-            const self = this;
-
-            if (!window.gameWS) window.gameWS = self;
-
-            const wrapped = async function(event) {
-                const processed = await processInboundData(event.data);
-                const newEvent = processed.createEvent(event);
-                return listener.call(self, newEvent);
-            };
-            wrapped._isHooked = true;
-
-            return originalAddEventListener.call(this, type, wrapped, options);
-        }
-        return originalAddEventListener.call(this, type, listener, options);
-    };
-
-    // Hook onmessage
-    const onMessageDescriptor = Object.getOwnPropertyDescriptor(WebSocket.prototype, 'onmessage');
-    if (onMessageDescriptor) {
-        Object.defineProperty(WebSocket.prototype, 'onmessage', {
-            get() {
-                return this._onmessage_original;
-            },
-            set(listener) {
-                const self = this;
-
-                if (!window.gameWS) window.gameWS = self;
-
-                this._onmessage_original = listener;
-
-                const wrapped = async function(event) {
-                    const processed = await processInboundData(event.data);
-                    const newEvent = processed.createEvent(event);
-                    if (listener) {
-                        return listener.call(self, newEvent);
-                    }
-                };
-
-                if (onMessageDescriptor.set) {
-                    onMessageDescriptor.set.call(this, wrapped);
-                }
-            },
-            configurable: true
-        });
     }
 
-    // Tentar capturar WebSocket existente e seus listeners
-    const tryCaptureExistingWebSocket = () => {
-        const checkInterval = setInterval(() => {
-            if (window.gameWS) {
-                clearInterval(checkInterval);
-                return;
-            }
+    // Bootstrap: se já existe conexão ativa (caso comum — Analyzer aberto manualmente
+    // após o jogo já ter conectado), usa ela direto
+    window.gameWS = window._hubSocket.getActive();
+    if (window.gameWS) wrapSend(window.gameWS);
 
-            const possibleRefs = ['ws', 'socket', 'gameSocket', 'connection', 'wsConnection'];
-            for (const ref of possibleRefs) {
-                if (window[ref] instanceof WebSocket && window[ref].readyState === WebSocket.OPEN) {
-                    window.gameWS = window[ref];
-                    console.log(`[HL PRO] WebSocket capturado via window.${ref}`);
-                    clearInterval(checkInterval);
-                    return;
-                }
-            }
+    // Cobre reconexões futuras
+    window._hubSocket.onConnect((ws) => {
+        window.gameWS = ws;
+        wrapSend(ws);
+        console.log('[Analyzer] Conectado ao WebSocket via Hub');
+    });
 
-            if (checkInterval._attempts === undefined) checkInterval._attempts = 0;
-            if (++checkInterval._attempts > 100) {
-                clearInterval(checkInterval);
-                console.warn('[HL PRO] Não foi possível capturar WebSocket automaticamente. Conecte-se ao jogo primeiro.');
-            }
-        }, 100);
-    };
-
-    tryCaptureExistingWebSocket();
+    window._hubSocket.onMessage((event, ws) => {
+        if (ws !== window.gameWS) return;
+        handleInbound(event);
+    });
 
 })();
