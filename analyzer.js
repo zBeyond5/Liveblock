@@ -1,11 +1,15 @@
+/**
+ * Analyzer & Sender - V7.1 (Final Polida)
+ * Packet Analyzer & Sender — Dark Theme Clean, NO MIMIC
+ *
+ * Convertido de Tampermonkey userscript para módulo de extensão (MV3).
+ * Este arquivo deve rodar no "MAIN world" da página (não no isolated
+ * world padrão de content scripts), pois faz hook direto de
+ * window.WebSocket — veja manifest.json ("world": "MAIN").
+ */
+
 (function() {
     'use strict';
-
-    // ─── GUARDA DE INSTÂNCIA ───
-    if (window._analyzer) {
-        try { if (typeof window._analyzer.kill === 'function') window._analyzer.kill(); } catch(e) {}
-        delete window._analyzer;
-    }
 
     // ==========================================
     // MÓDULO 1: GERENCIAMENTO DE ESTADO (STORAGE)
@@ -897,270 +901,235 @@
     })();
 
     // ==========================================
-    // MÓDULO 9: INTERCEPTAÇÃO WEBSOCKET (CORRIGIDO V2)
+    // MÓDULO 9: INICIALIZAÇÃO
     // ==========================================
-    let _origWebSocket = null;
-    let _wsHooked = false;
-    let _ws = null;
+    const styleEl = document.createElement('style');
+    styleEl.textContent = `
+        #hl-analyzer::-webkit-scrollbar,
+        #hl-sender::-webkit-scrollbar,
+        #hl-analyzer *::-webkit-scrollbar,
+        #hl-sender *::-webkit-scrollbar {
+            width: 5px;
+            height: 5px;
+        }
+        #hl-analyzer::-webkit-scrollbar-track,
+        #hl-sender::-webkit-scrollbar-track,
+        #hl-analyzer *::-webkit-scrollbar-track,
+        #hl-sender *::-webkit-scrollbar-track {
+            background: #0a0a0f;
+        }
+        #hl-analyzer::-webkit-scrollbar-thumb,
+        #hl-sender::-webkit-scrollbar-thumb,
+        #hl-analyzer *::-webkit-scrollbar-thumb,
+        #hl-sender *::-webkit-scrollbar-thumb {
+            background: #1a1a2e;
+            border-radius: 3px;
+        }
+        #hl-analyzer::-webkit-scrollbar-thumb:hover,
+        #hl-sender::-webkit-scrollbar-thumb:hover,
+        #hl-analyzer *::-webkit-scrollbar-thumb:hover,
+        #hl-sender *::-webkit-scrollbar-thumb:hover {
+            background: #2a2a3e;
+        }
+    `;
+    document.head.appendChild(styleEl);
 
-    function hookWebSocket() {
-        if (_wsHooked) return;
-        _wsHooked = true;
+    const fragment = document.createDocumentFragment();
+    fragment.appendChild(Toolbar.element);
+    fragment.appendChild(AnalyzerUI.element);
+    fragment.appendChild(SenderUI.element);
 
-        _origWebSocket = window.WebSocket;
+    // Em MAIN world o document.body já deve existir na maioria dos casos
+    // (run_at: document_end/idle). Fallback defensivo caso ainda não exista.
+    if (document.body) {
+        document.body.appendChild(fragment);
+    } else {
+        document.addEventListener('DOMContentLoaded', () => document.body.appendChild(fragment));
+    }
 
-        window.gameWS = null;
+    // ==========================================
+    // MÓDULO 10: INTERCEPTAÇÃO WEBSOCKET
+    // ==========================================
+    window.gameWS = null;
 
-        const _recentPackets = new Map();
+    const _recentPackets = new Map();
 
-        const fastBufferHash = (buffer) => {
-            const u8 = new Uint8Array(buffer);
-            let hash = 0;
-            const len = Math.min(u8.length, 64);
-            for (let i = 0; i < len; i++) {
-                hash = ((hash << 5) - hash) + u8[i];
-                hash |= 0;
+    const fastBufferHash = (buffer) => {
+        const u8 = new Uint8Array(buffer);
+        let hash = 0;
+        const len = Math.min(u8.length, 64);
+        for (let i = 0; i < len; i++) {
+            hash = ((hash << 5) - hash) + u8[i];
+            hash |= 0;
+        }
+        return `${buffer.byteLength}_${hash}`;
+    };
+
+    const isDuplicate = (data) => {
+        if (!(data instanceof ArrayBuffer)) return false;
+        const key = fastBufferHash(data);
+        const now = Date.now();
+        if (_recentPackets.has(key) && now - _recentPackets.get(key) < 50) return true;
+        _recentPackets.set(key, now);
+        if (_recentPackets.size > 100) {
+            for (const [k, t] of _recentPackets) {
+                if (now - t > 200) _recentPackets.delete(k);
             }
-            return `${buffer.byteLength}_${hash}`;
+        }
+        return false;
+    };
+
+    const handleTraffic = (data, dir, isDropped) => {
+        if (AppState.isPaused) return;
+        if (dir === 'RECV' && isDuplicate(data)) return;
+        const packet = Utils.parseData(data);
+        if (!packet) return;
+        if (!PacketFilter.isVisualBlocked(packet)) {
+            AnalyzerUI.addLog(packet, dir, !!isDropped);
+        }
+    };
+
+    // Função unificada para processar dados inbound
+    const processInboundData = async (rawData) => {
+        // Converte Blob para ArrayBuffer se necessário
+        let data = rawData;
+        if (data instanceof Blob) {
+            data = await data.arrayBuffer();
+        }
+
+        // Aplica transformação
+        const modifiedData = InboundTransformer.transform(data);
+
+        // Log no analyzer
+        handleTraffic(modifiedData, 'RECV');
+
+        // Retorna os dados processados e um novo evento
+        return {
+            data: modifiedData,
+            createEvent: (originalEvent) => {
+                return new MessageEvent('message', {
+                    data: modifiedData,
+                    origin: originalEvent?.origin,
+                    lastEventId: originalEvent?.lastEventId,
+                    source: originalEvent?.source,
+                    ports: originalEvent?.ports
+                });
+            }
         };
+    };
 
-        const isDuplicate = (data) => {
-            if (!(data instanceof ArrayBuffer)) return false;
-            const key = fastBufferHash(data);
-            const now = Date.now();
-            if (_recentPackets.has(key) && now - _recentPackets.get(key) < 50) return true;
-            _recentPackets.set(key, now);
-            if (_recentPackets.size > 100) {
-                for (const [k, t] of _recentPackets) {
-                    if (now - t > 200) _recentPackets.delete(k);
-                }
-            }
-            return false;
-        };
+    // Hook no construtor para capturar gameWS na criação
+    const OriginalWebSocket = window.WebSocket;
+    window.WebSocket = function(...args) {
+        const ws = new OriginalWebSocket(...args);
 
-        const handleTraffic = (data, dir, isDropped) => {
-            if (AppState.isPaused) return;
-            if (dir === 'RECV' && isDuplicate(data)) return;
-            const packet = Utils.parseData(data);
-            if (!packet) return;
-            if (!PacketFilter.isVisualBlocked(packet)) {
-                AnalyzerUI.addLog(packet, dir, !!isDropped);
-            }
-        };
+        // Captura a instância assim que é criada
+        if (!window.gameWS) {
+            window.gameWS = ws;
+            console.log('[HL PRO] WebSocket capturado na criação');
+        }
 
-        const processInboundData = async (rawData) => {
-            let data = rawData;
-            if (data instanceof Blob) {
-                data = await data.arrayBuffer();
-            }
-            const modifiedData = InboundTransformer.transform(data);
-            handleTraffic(modifiedData, 'RECV');
-            return {
-                data: modifiedData,
-                createEvent: (originalEvent) => {
-                    return new MessageEvent('message', {
-                        data: modifiedData,
-                        origin: originalEvent?.origin,
-                        lastEventId: originalEvent?.lastEventId,
-                        source: originalEvent?.source,
-                        ports: originalEvent?.ports
-                    });
-                }
+        return ws;
+    };
+    window.WebSocket.prototype = OriginalWebSocket.prototype;
+
+    // Copia TODAS as propriedades estáticas do WebSocket original
+    Object.keys(OriginalWebSocket).forEach(key => {
+        window.WebSocket[key] = OriginalWebSocket[key];
+    });
+
+    // Hook send
+    const originalSend = WebSocket.prototype.send;
+    WebSocket.prototype.send = function(data) {
+        if (!window.gameWS) window.gameWS = this;
+
+        if (AppState.killSwitchActive) return;
+
+        const packet = Utils.parseData(data);
+        if (packet && PacketFilter.isNetworkDropped(packet)) {
+            handleTraffic(data, 'SEND', true);
+            return;
+        }
+        handleTraffic(data, 'SEND', false);
+        return originalSend.call(this, data);
+    };
+
+    // Hook addEventListener
+    const originalAddEventListener = WebSocket.prototype.addEventListener;
+    WebSocket.prototype.addEventListener = function(type, listener, options) {
+        if (type === 'message' && !listener._isHooked) {
+            const self = this;
+
+            if (!window.gameWS) window.gameWS = self;
+
+            const wrapped = async function(event) {
+                const processed = await processInboundData(event.data);
+                const newEvent = processed.createEvent(event);
+                return listener.call(self, newEvent);
             };
-        };
+            wrapped._isHooked = true;
 
-        window.WebSocket = function(...args) {
-            const ws = new _origWebSocket(...args);
-            if (!window.gameWS) window.gameWS = ws;
-            _ws = ws;
-            return ws;
-        };
-        window.WebSocket.prototype = _origWebSocket.prototype;
-        Object.keys(_origWebSocket).forEach(key => {
-            window.WebSocket[key] = _origWebSocket[key];
-        });
+            return originalAddEventListener.call(this, type, wrapped, options);
+        }
+        return originalAddEventListener.call(this, type, listener, options);
+    };
 
-        const originalSend = WebSocket.prototype.send;
-        WebSocket.prototype.send = function(data) {
-            if (!window.gameWS) window.gameWS = this;
-            if (AppState.killSwitchActive) return;
-            const packet = Utils.parseData(data);
-            if (packet && PacketFilter.isNetworkDropped(packet)) {
-                handleTraffic(data, 'SEND', true);
-                return;
-            }
-            handleTraffic(data, 'SEND', false);
-            return originalSend.call(this, data);
-        };
-
-        const originalAddEventListener = WebSocket.prototype.addEventListener;
-        WebSocket.prototype.addEventListener = function(type, listener, options) {
-            if (type === 'message' && !listener._isHooked) {
+    // Hook onmessage
+    const onMessageDescriptor = Object.getOwnPropertyDescriptor(WebSocket.prototype, 'onmessage');
+    if (onMessageDescriptor) {
+        Object.defineProperty(WebSocket.prototype, 'onmessage', {
+            get() {
+                return this._onmessage_original;
+            },
+            set(listener) {
                 const self = this;
+
                 if (!window.gameWS) window.gameWS = self;
+
+                this._onmessage_original = listener;
+
                 const wrapped = async function(event) {
                     const processed = await processInboundData(event.data);
                     const newEvent = processed.createEvent(event);
-                    return listener.call(self, newEvent);
-                };
-                wrapped._isHooked = true;
-                return originalAddEventListener.call(this, type, wrapped, options);
-            }
-            return originalAddEventListener.call(this, type, listener, options);
-        };
-
-        const onMessageDescriptor = Object.getOwnPropertyDescriptor(WebSocket.prototype, 'onmessage');
-        if (onMessageDescriptor) {
-            Object.defineProperty(WebSocket.prototype, 'onmessage', {
-                get() {
-                    return this._onmessage_original;
-                },
-                set(listener) {
-                    const self = this;
-                    if (!window.gameWS) window.gameWS = self;
-                    this._onmessage_original = listener;
-                    const wrapped = async function(event) {
-                        const processed = await processInboundData(event.data);
-                        const newEvent = processed.createEvent(event);
-                        if (listener) {
-                            return listener.call(self, newEvent);
-                        }
-                    };
-                    if (onMessageDescriptor.set) {
-                        onMessageDescriptor.set.call(this, wrapped);
+                    if (listener) {
+                        return listener.call(self, newEvent);
                     }
-                },
-                configurable: true
-            });
-        }
+                };
 
-        // Tentar capturar WebSocket existente
-        const tryCaptureExistingWebSocket = () => {
-            const checkInterval = setInterval(() => {
-                if (window.gameWS) {
+                if (onMessageDescriptor.set) {
+                    onMessageDescriptor.set.call(this, wrapped);
+                }
+            },
+            configurable: true
+        });
+    }
+
+    // Tentar capturar WebSocket existente e seus listeners
+    const tryCaptureExistingWebSocket = () => {
+        const checkInterval = setInterval(() => {
+            if (window.gameWS) {
+                clearInterval(checkInterval);
+                return;
+            }
+
+            const possibleRefs = ['ws', 'socket', 'gameSocket', 'connection', 'wsConnection'];
+            for (const ref of possibleRefs) {
+                if (window[ref] instanceof WebSocket && window[ref].readyState === WebSocket.OPEN) {
+                    window.gameWS = window[ref];
+                    console.log(`[HL PRO] WebSocket capturado via window.${ref}`);
                     clearInterval(checkInterval);
                     return;
                 }
-                const possibleRefs = ['ws', 'socket', 'gameSocket', 'connection', 'wsConnection'];
-                for (const ref of possibleRefs) {
-                    if (window[ref] instanceof WebSocket && window[ref].readyState === WebSocket.OPEN) {
-                        window.gameWS = window[ref];
-                        clearInterval(checkInterval);
-                        return;
-                    }
-                }
-                if (checkInterval._attempts === undefined) checkInterval._attempts = 0;
-                if (++checkInterval._attempts > 100) {
-                    clearInterval(checkInterval);
-                }
-            }, 100);
-        };
-        tryCaptureExistingWebSocket();
-    }
-
-    // ==========================================
-    // MÓDULO 10: INICIALIZAÇÃO E KILL
-    // ==========================================
-    function init() {
-        // Só inicializa uma vez
-        if (window._analyzer._initialized) return;
-        window._analyzer._initialized = true;
-
-        // Injetar estilos
-        const styleEl = document.createElement('style');
-        styleEl.id = 'hl-analyzer-style';
-        styleEl.textContent = `
-            #hl-analyzer::-webkit-scrollbar,
-            #hl-sender::-webkit-scrollbar,
-            #hl-analyzer *::-webkit-scrollbar,
-            #hl-sender *::-webkit-scrollbar {
-                width: 5px;
-                height: 5px;
             }
-            #hl-analyzer::-webkit-scrollbar-track,
-            #hl-sender::-webkit-scrollbar-track,
-            #hl-analyzer *::-webkit-scrollbar-track,
-            #hl-sender *::-webkit-scrollbar-track {
-                background: #0a0a0f;
+
+            if (checkInterval._attempts === undefined) checkInterval._attempts = 0;
+            if (++checkInterval._attempts > 100) {
+                clearInterval(checkInterval);
+                console.warn('[HL PRO] Não foi possível capturar WebSocket automaticamente. Conecte-se ao jogo primeiro.');
             }
-            #hl-analyzer::-webkit-scrollbar-thumb,
-            #hl-sender *::-webkit-scrollbar-thumb,
-            #hl-analyzer *::-webkit-scrollbar-thumb,
-            #hl-sender *::-webkit-scrollbar-thumb {
-                background: #1a1a2e;
-                border-radius: 3px;
-            }
-            #hl-analyzer::-webkit-scrollbar-thumb:hover,
-            #hl-sender::-webkit-scrollbar-thumb:hover,
-            #hl-analyzer *::-webkit-scrollbar-thumb:hover,
-            #hl-sender *::-webkit-scrollbar-thumb:hover {
-                background: #2a2a3e;
-            }
-        `;
-        document.head.appendChild(styleEl);
-
-        // Adicionar elementos UI
-        const fragment = document.createDocumentFragment();
-        fragment.appendChild(Toolbar.element);
-        fragment.appendChild(AnalyzerUI.element);
-        fragment.appendChild(SenderUI.element);
-        document.body.appendChild(fragment);
-
-        // Hook WebSocket
-        hookWebSocket();
-
-        // Inicia a busca por WebSocket existente (fallback)
-        if (!window.gameWS) {
-            setTimeout(() => {
-                if (!window.gameWS) {
-                    // Tenta capturar novamente
-                    const possibleRefs = ['ws', 'socket', 'gameSocket'];
-                    for (const ref of possibleRefs) {
-                        if (window[ref] instanceof WebSocket) {
-                            window.gameWS = window[ref];
-                            break;
-                        }
-                    }
-                }
-            }, 3000);
-        }
-    }
-
-    function kill() {
-        // Remove elementos DOM
-        const elements = ['#hl-toolbar', '#hl-analyzer', '#hl-sender', '#hl-analyzer-style'];
-        elements.forEach(sel => {
-            document.querySelectorAll(sel).forEach(el => el.remove());
-        });
-
-        // Restaurar WebSocket original
-        if (_origWebSocket) {
-            window.WebSocket = _origWebSocket;
-            window.WebSocket.prototype = _origWebSocket.prototype;
-            _wsHooked = false;
-        }
-
-        // Limpar referências
-        window.gameWS = null;
-        _ws = null;
-
-        // Limpar AppState (opcional)
-        AppState.logs = [];
-
-        // Remover referência global
-        delete window._analyzer;
-    }
-
-    window._analyzer = {
-        init: init,
-        kill: kill,
-        _initialized: false
+        }, 100);
     };
 
-    if (document.readyState === 'complete' || document.readyState === 'interactive') {
-        init();
-    } else {
-        document.addEventListener('DOMContentLoaded', init);
-    }
+    tryCaptureExistingWebSocket();
 
 })();
