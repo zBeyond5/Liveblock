@@ -43,6 +43,17 @@
       "secret": true,
       "instanceKey": "_logs",
       "url": "https://raw.githubusercontent.com/zBeyond5/eng/refs/heads/main/logs.js"
+    },
+     {
+      "id": "lens",
+      "name": "lens",
+      "description": "Módulo Lens",
+      "icon": "🧪",
+      "enabled": true,
+      "autoload": false,
+      "secret": true,
+      "instanceKey": "_lens",
+      "url": "https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/lens.js"
     }
   ]
 }
