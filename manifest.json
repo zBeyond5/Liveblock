@@ -65,6 +65,17 @@
       "secret": true,
       "instanceKey": "_lens",
       "url": "https://raw.githubusercontent.com/zBeyond5/eng/refs/heads/main/lens.js"
+    },
+    {
+      "id": "optimizer",
+      "name": "Otimizador",
+      "description": "Anti-lag, limpeza de cache e coleta de lixo",
+      "icon": "⚡",
+      "enabled": true,
+      "autoload": true,
+      "secret": true,
+      "instanceKey": "_optimizer",
+      "url": "https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/optimizer.js"
     }
   ]
 }
