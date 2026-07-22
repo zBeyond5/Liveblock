@@ -150,28 +150,150 @@
     };
 
     // ==========================================
-    // MÓDULO 5: FUNÇÃO DRAG (com correção de shadow)
+    // MÓDULO 5: FUNÇÕES DE JANELA (drag + resize + persistência)
     // ==========================================
-    function makeDraggable(handleEl, targetEl) {
+
+    // Mantém o painel dentro da viewport, com uma margem mínima visível
+    function clampToViewport(targetEl, x, y) {
+        const rect = targetEl.getBoundingClientRect();
+        const margin = 40; // mantém pelo menos 40px do painel visível/agarrável
+        const maxX = window.innerWidth - margin;
+        const maxY = window.innerHeight - margin;
+        const minX = margin - rect.width;
+        const minY = 0;
+        return {
+            x: Math.min(Math.max(x, minX), maxX),
+            y: Math.min(Math.max(y, minY), maxY)
+        };
+    }
+
+    function makeDraggable(handleEl, targetEl, storageKey) {
         let isDragging = false, offX, offY;
+
+        // Restaura posição salva
+        if (storageKey) {
+            const saved = Storage.get(storageKey + '_pos', null);
+            if (saved && typeof saved.left === 'number' && typeof saved.top === 'number') {
+                targetEl.style.left = saved.left + 'px';
+                targetEl.style.top = saved.top + 'px';
+                targetEl.style.right = 'auto';
+                targetEl.style.bottom = 'auto';
+                targetEl.style.transform = 'none';
+            }
+        }
+
         handleEl.addEventListener('mousedown', function(e) {
             if (['BUTTON', 'INPUT', 'SELECT', 'TEXTAREA'].includes(e.target.tagName)) return;
             isDragging = true;
             const rect = targetEl.getBoundingClientRect();
             offX = e.clientX - rect.left;
             offY = e.clientY - rect.top;
+            targetEl.style.transition = 'none';
         });
         document.addEventListener('mousemove', function(e) {
             if (!isDragging) return;
-            targetEl.style.left = (e.clientX - offX) + 'px';
-            targetEl.style.top = (e.clientY - offY) + 'px';
+            const clamped = clampToViewport(targetEl, e.clientX - offX, e.clientY - offY);
+            targetEl.style.left = clamped.x + 'px';
+            targetEl.style.top = clamped.y + 'px';
             targetEl.style.right = 'auto';
             targetEl.style.bottom = 'auto';
             targetEl.style.transform = 'none';
         });
-        document.addEventListener('mouseup', function() { isDragging = false; });
+        document.addEventListener('mouseup', function() {
+            if (!isDragging) return;
+            isDragging = false;
+            if (storageKey) {
+                Storage.set(storageKey + '_pos', {
+                    left: parseInt(targetEl.style.left, 10) || 0,
+                    top: parseInt(targetEl.style.top, 10) || 0
+                });
+            }
+        });
         handleEl.style.cursor = 'move';
         targetEl.style.willChange = 'transform';
+    }
+
+    // Adiciona um "grip" no canto inferior direito para redimensionar o painel.
+    // minW/minH em px; storageKey persiste o tamanho entre sessões.
+    function makeResizable(targetEl, { minW = 320, minH = 200, maxW = 1200, maxH = 1000, storageKey } = {}) {
+        if (storageKey) {
+            const saved = Storage.get(storageKey + '_size', null);
+            if (saved && saved.w && saved.h) {
+                targetEl.style.width = Math.min(Math.max(saved.w, minW), maxW) + 'px';
+                targetEl.style.height = Math.min(Math.max(saved.h, minH), maxH) + 'px';
+            }
+        }
+
+        const grip = document.createElement('div');
+        grip.className = 'resize-grip';
+        Object.assign(grip.style, {
+            position: 'absolute',
+            right: '0',
+            bottom: '0',
+            width: '16px',
+            height: '16px',
+            cursor: 'nwse-resize',
+            zIndex: '5',
+            background: 'linear-gradient(135deg, transparent 50%, #6c63ff 50%, #6c63ff 60%, transparent 60%, transparent 70%, #6c63ff 70%, #6c63ff 80%, transparent 80%)',
+            borderRadius: '0 0 8px 0',
+            opacity: '0.6',
+            transition: 'opacity 0.15s'
+        });
+        grip.addEventListener('mouseenter', () => { grip.style.opacity = '1'; });
+        grip.addEventListener('mouseleave', () => { grip.style.opacity = '0.6'; });
+        targetEl.style.position = 'fixed';
+        targetEl.appendChild(grip);
+
+        let resizing = false, startX, startY, startW, startH;
+        grip.addEventListener('mousedown', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            resizing = true;
+            startX = e.clientX;
+            startY = e.clientY;
+            const rect = targetEl.getBoundingClientRect();
+            startW = rect.width;
+            startH = rect.height;
+            targetEl.style.transition = 'none';
+        });
+        document.addEventListener('mousemove', (e) => {
+            if (!resizing) return;
+            const newW = Math.min(Math.max(startW + (e.clientX - startX), minW), maxW);
+            const newH = Math.min(Math.max(startH + (e.clientY - startY), minH), maxH);
+            targetEl.style.width = newW + 'px';
+            targetEl.style.height = newH + 'px';
+            targetEl.style.maxHeight = 'none';
+        });
+        document.addEventListener('mouseup', () => {
+            if (!resizing) return;
+            resizing = false;
+            if (storageKey) {
+                const rect = targetEl.getBoundingClientRect();
+                Storage.set(storageKey + '_size', { w: Math.round(rect.width), h: Math.round(rect.height) });
+            }
+        });
+    }
+
+    // Botão de fechar padronizado pro header de qualquer painel
+    function createCloseButton(onClose) {
+        const btn = document.createElement('button');
+        btn.textContent = '\u2715';
+        btn.title = 'Fechar (reabra pelo atalho ou pela toolbar)';
+        Object.assign(btn.style, {
+            background: 'transparent',
+            color: '#8a8a9a',
+            border: 'none',
+            cursor: 'pointer',
+            fontSize: '14px',
+            padding: '2px 6px',
+            borderRadius: '4px',
+            transition: 'all 0.15s',
+            marginLeft: '4px'
+        });
+        btn.addEventListener('mouseenter', () => { btn.style.background = '#ff4757'; btn.style.color = '#fff'; });
+        btn.addEventListener('mouseleave', () => { btn.style.background = 'transparent'; btn.style.color = '#8a8a9a'; });
+        btn.addEventListener('click', (e) => { e.stopPropagation(); onClose(); });
+        return btn;
     }
 
     // ==========================================
@@ -215,17 +337,19 @@
         };
 
         const btnAnalyzer = document.createElement('button');
-        btnAnalyzer.textContent = '\uD83D\uDD0D Analyzer';
+        btnAnalyzer.textContent = '\uD83D\uDD0D Sang Analyzer';
+        btnAnalyzer.title = 'Atalho: Ctrl+Alt+A';
         Object.assign(btnAnalyzer.style, btnBase);
 
         const btnSender = document.createElement('button');
         btnSender.textContent = '\u26A1 Sender';
+        btnSender.title = 'Atalho: Ctrl+Alt+S';
         Object.assign(btnSender.style, btnBase);
 
         const btnEye = document.createElement('button');
         btnEye.textContent = '\uD83D\uDC41\uFE0F';
         Object.assign(btnEye.style, btnBase, { padding: '5px 10px', fontSize: '13px' });
-        btnEye.title = 'Mostrar/Ocultar tudo';
+        btnEye.title = 'Mostrar/Ocultar tudo (Ctrl+Alt+Q)';
 
         let analyzerVisible = false;
         let senderVisible = false;
@@ -255,6 +379,28 @@
             }
         }
 
+        function setAnalyzerVisible(show) {
+            analyzerVisible = show;
+            AnalyzerUI.setVisible(analyzerVisible);
+            updateButtons();
+        }
+        function setSenderVisible(show) {
+            senderVisible = show;
+            SenderUI.setVisible(senderVisible);
+            updateButtons();
+        }
+        function toggleAnalyzer() { setAnalyzerVisible(!analyzerVisible); }
+        function toggleSender() { setSenderVisible(!senderVisible); }
+        function toggleBoth() {
+            if (analyzerVisible || senderVisible) {
+                setAnalyzerVisible(false);
+                setSenderVisible(false);
+            } else {
+                setAnalyzerVisible(true);
+                setSenderVisible(true);
+            }
+        }
+
         btnAnalyzer.addEventListener('mouseenter', () => { if (!analyzerVisible) btnAnalyzer.style.background = '#1a1a2e'; });
         btnAnalyzer.addEventListener('mouseleave', () => { if (!analyzerVisible) btnAnalyzer.style.background = '#13131a'; });
         btnSender.addEventListener('mouseenter', () => { if (!senderVisible) btnSender.style.background = '#1a1a2e'; });
@@ -262,38 +408,32 @@
         btnEye.addEventListener('mouseenter', () => { btnEye.style.background = '#1a1a2e'; });
         btnEye.addEventListener('mouseleave', () => { btnEye.style.background = '#13131a'; });
 
-        btnAnalyzer.addEventListener('click', () => {
-            analyzerVisible = !analyzerVisible;
-            AnalyzerUI.setVisible(analyzerVisible);
-            updateButtons();
-        });
-
-        btnSender.addEventListener('click', () => {
-            senderVisible = !senderVisible;
-            SenderUI.setVisible(senderVisible);
-            updateButtons();
-        });
-
-        btnEye.addEventListener('click', () => {
-            if (analyzerVisible || senderVisible) {
-                analyzerVisible = false;
-                senderVisible = false;
-            } else {
-                analyzerVisible = true;
-                senderVisible = true;
-            }
-            AnalyzerUI.setVisible(analyzerVisible);
-            SenderUI.setVisible(senderVisible);
-            updateButtons();
-        });
+        btnAnalyzer.addEventListener('click', toggleAnalyzer);
+        btnSender.addEventListener('click', toggleSender);
+        btnEye.addEventListener('click', toggleBoth);
 
         el.appendChild(btnAnalyzer);
         el.appendChild(btnSender);
         el.appendChild(btnEye);
 
-        makeDraggable(el, el);
+        makeDraggable(el, el, 'toolbar');
 
-        return { element: el };
+        // Atalhos de teclado — funcionam mesmo com os painéis fechados,
+        // então dá pra reabrir sem precisar clicar na toolbar.
+        document.addEventListener('keydown', (e) => {
+            if (!e.altKey || !e.ctrlKey) return;
+            const tag = (e.target && e.target.tagName) || '';
+            if (['INPUT', 'TEXTAREA', 'SELECT'].includes(tag)) return;
+            if (e.code === 'KeyA') { e.preventDefault(); toggleAnalyzer(); }
+            else if (e.code === 'KeyS') { e.preventDefault(); toggleSender(); }
+            else if (e.code === 'KeyQ') { e.preventDefault(); toggleBoth(); }
+        });
+
+        return {
+            element: el,
+            setAnalyzerVisible, setSenderVisible,
+            toggleAnalyzer, toggleSender, toggleBoth
+        };
     })();
 
     // Referência para comunicação Analyzer → Sender
@@ -310,6 +450,7 @@
             top: '50px',
             left: '10px',
             width: '620px',
+            height: '600px',
             maxHeight: 'calc(100vh - 70px)',
             background: '#13131a',
             color: '#e1e1e6',
@@ -330,13 +471,13 @@
                 font-weight:bold;display:flex;justify-content:space-between;align-items:center;
                 font-size:12px;color:#e1e1e6;user-select:none;
             ">
-                <span>\uD83D\uDD0D WS ANALYZER</span>
-                <div style="display:flex;gap:5px;">
+                <span>\uD83D\uDD0D SANG ANALYZER</span>
+                <div id="analyzerHeaderBtns" style="display:flex;gap:5px;align-items:center;">
                     <button id="btnFontMinus" style="background:#1a1a2e;color:#e1e1e6;border:1px solid #1a1a2e;cursor:pointer;padding:2px 7px;border-radius:4px;font-size:11px;">A-</button>
                     <button id="btnFontPlus" style="background:#1a1a2e;color:#e1e1e6;border:1px solid #1a1a2e;cursor:pointer;padding:2px 7px;border-radius:4px;font-size:11px;">A+</button>
                 </div>
             </div>
-            <div id="analyzerBody" style="display:flex;flex-direction:column;flex:1;overflow:hidden;">
+            <div id="analyzerBody" style="display:flex;flex-direction:column;flex:1;overflow:hidden;min-height:0;">
                 <div style="padding:6px 10px;display:flex;gap:10px;align-items:center;background:#0a0a0f;border-bottom:1px solid #1a1a2e;">
                     <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:11px;color:#e1e1e6;">
                         <input type="checkbox" id="chkSend" checked style="accent-color:#00d4aa;"> \uD83D\uDCE4 Enviados
@@ -375,8 +516,8 @@
                         width:100%;font-size:12px;font-family:monospace;transition:all 0.2s;
                     ">\u26A0\uFE0F HABILITAR KILL SWITCH</button>
                 </div>
-                <div id="logArea" style="flex:1;overflow-y:auto;padding:8px;min-height:200px;"></div>
-                <div style="display:flex;background:#0a0a0f;border-top:1px solid #1a1a2e;min-height:120px;">
+                <div id="logArea" style="flex:1;overflow-y:auto;padding:8px;min-height:80px;"></div>
+                <div style="display:flex;background:#0a0a0f;border-top:1px solid #1a1a2e;min-height:120px;flex-shrink:0;">
                     <div style="flex:1;padding:8px;border-right:1px solid #1a1a2e;display:flex;flex-direction:column;">
                         <div style="text-align:center;color:#6c63ff;font-weight:bold;margin-bottom:6px;font-size:11px;">\uD83D\uDC41\uFE0F OCULTAR DO LOG</div>
                         <div style="display:flex;gap:3px;margin-bottom:3px;">
@@ -407,7 +548,12 @@
             </div>
         `;
 
-        makeDraggable(el.querySelector('.drag-header'), el);
+        makeDraggable(el.querySelector('.drag-header'), el, 'analyzer');
+        makeResizable(el, { minW: 420, minH: 320, maxW: 1100, maxH: 1000, storageKey: 'analyzer' });
+
+        // Botão de fechar no header (some antes dos botões A-/A+)
+        const closeBtn = createCloseButton(() => Toolbar.setAnalyzerVisible(false));
+        el.querySelector('#analyzerHeaderBtns').appendChild(closeBtn);
 
         const logArea = el.querySelector('#logArea');
         logArea.style.fontSize = AppState.fontSize + 'px';
@@ -517,7 +663,17 @@
         el.querySelector('#btnClrD').onclick = () => { PacketFilter.manageList('DROP', 'CLEAR'); renderFilters(); };
 
         // Visibility
-        const setVisible = (show) => { el.style.display = show ? 'flex' : 'none'; };
+        const setVisible = (show) => {
+            el.style.display = show ? 'flex' : 'none';
+            if (show) {
+                // Garante que o painel reaberto ainda está dentro da tela
+                // (útil se a janela do navegador foi redimensionada enquanto fechado)
+                const rect = el.getBoundingClientRect();
+                const clamped = clampToViewport(el, rect.left, rect.top);
+                el.style.left = clamped.x + 'px';
+                el.style.top = clamped.y + 'px';
+            }
+        };
 
         // [+] Send button
         const createSendButton = (packet) => {
@@ -684,8 +840,9 @@
                 background:#0a0a0f;padding:8px 12px;cursor:move;
                 border-bottom:1px solid #1a1a2e;border-radius:8px 8px 0 0;
                 font-weight:bold;font-size:12px;color:#e1e1e6;user-select:none;
-            ">\u26A1 PACKET SENDER PRO</div>
-            <div id="sndBody" style="display:flex;flex-direction:column;">
+                display:flex;justify-content:space-between;align-items:center;
+            "><span>\u26A1 SANG SENDER</span><div id="senderHeaderBtns"></div></div>
+            <div id="sndBody" style="display:flex;flex-direction:column;flex:1;overflow-y:auto;min-height:0;">
                 <div style="padding:8px;display:flex;gap:6px;border-bottom:1px solid #1a1a2e;">
                     <select id="selProfile" style="flex:1;background:#0a0a0f;color:#e1e1e6;border:1px solid #1a1a2e;padding:5px;border-radius:4px;font-size:11px;"></select>
                     <button id="btnNewProf" style="background:#1a1a2e;color:#e1e1e6;border:1px solid #1a1a2e;cursor:pointer;padding:5px 10px;border-radius:6px;font-size:11px;font-family:monospace;">+ Novo</button>
@@ -723,7 +880,11 @@
             </div>
         `;
 
-        makeDraggable(el.querySelector('.drag-header'), el);
+        makeDraggable(el.querySelector('.drag-header'), el, 'sender');
+        makeResizable(el, { minW: 320, minH: 300, maxW: 700, maxH: 1000, storageKey: 'sender' });
+
+        const closeBtn = createCloseButton(() => Toolbar.setSenderVisible(false));
+        el.querySelector('#senderHeaderBtns').appendChild(closeBtn);
 
         let isSpamming = false;
         const sleep = ms => new Promise(res => setTimeout(res, ms));
@@ -871,7 +1032,15 @@
             btn.style.background = '#00d4aa'; btn.style.color = '#0a0a0f';
         };
 
-        const setVisible = (show) => { el.style.display = show ? 'flex' : 'none'; };
+        const setVisible = (show) => {
+            el.style.display = show ? 'flex' : 'none';
+            if (show) {
+                const rect = el.getBoundingClientRect();
+                const clamped = clampToViewport(el, rect.left, rect.top);
+                el.style.left = clamped.x + 'px';
+                el.style.top = clamped.y + 'px';
+            }
+        };
 
         const fillFields = (headerId, hexPayload) => {
             el.querySelector('#sndId').value = headerId;
@@ -921,6 +1090,7 @@
         #hl-sender *::-webkit-scrollbar-thumb:hover {
             background: #2a2a3e;
         }
+        #hl-analyzer, #hl-sender { transition: opacity 0.12s ease; }
     `;
     document.head.appendChild(styleEl);
 
@@ -930,7 +1100,19 @@
     fragment.appendChild(SenderUI.element);
     document.body.appendChild(fragment);
 
-        // ==========================================
+    // Reposiciona os painéis se a janela do navegador for redimensionada
+    // enquanto eles estão abertos, pra nunca ficarem presos fora da tela.
+    window.addEventListener('resize', () => {
+        [AnalyzerUI.element, SenderUI.element].forEach((panel) => {
+            if (panel.style.display === 'none') return;
+            const rect = panel.getBoundingClientRect();
+            const clamped = clampToViewport(panel, rect.left, rect.top);
+            panel.style.left = clamped.x + 'px';
+            panel.style.top = clamped.y + 'px';
+        });
+    });
+
+    // ==========================================
     // MÓDULO 10: TRÁFEGO WEBSOCKET (via Hub)
     // ==========================================
     if (!window._hubSocket) {
