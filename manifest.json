@@ -1,5 +1,5 @@
 {
-  "version": "2.0.0",
+  "version": "2.1.0",
   "modules": [
     {
       "id": "end",
@@ -89,6 +89,18 @@
       "advanced": true,
       "instanceKey": "_campoMinado"
     },
+    {
+  "id": "rpg-overlay",
+  "name": "RPG Overlay",
+  "description": "Mini RPG multiplayer em grid, jogado dentro do quarto usando o chat como canal de comunicação",
+  "icon": "⚔️",
+  "url": "https://raw.githubusercontent.com/zBeyond5/eng/main/test/rpg.js",
+  "enabled": true,
+  "secret": false,
+  "autoload": false,
+  "advanced": true,
+  "instanceKey": "_rpg"
+   },
     {
       "id": "tema-dark",
       "name": "Tema Escuro",
