@@ -1,5 +1,5 @@
 // ==UserScript==
-// @name         Sang Hub — ScriptLoader (sem módulos secretos)
+// @name         Sang Hub — ScriptLoader (sem módulos)
 // @namespace    http://tampermonkey.net/
 // @version      2.2.4
 // @description  Gerenciador de módulos (versão sem carregamento de secretos)
