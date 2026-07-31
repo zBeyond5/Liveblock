@@ -102,6 +102,18 @@
   "instanceKey": "_rpg"
    },
     {
+  "id": "snake",
+  "name": "Snake Game",
+  "description": "Controle uma cobrinha crescente, coma comida e evite colisões",
+  "icon": "🐍",
+  "url": "https://raw.githubusercontent.com/SEU_USUARIO/SEU_REPO/main/games/snake.js",
+  "enabled": true,
+  "secret": false,
+  "autoload": false,
+  "advanced": true,
+  "instanceKey": "_snake"
+   },
+    {
       "id": "tema-dark",
       "name": "Tema Escuro",
       "description": "Aplica um tema escuro ao jogo",
