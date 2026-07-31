@@ -106,7 +106,7 @@
   "name": "Snake Game",
   "description": "Controle uma cobrinha crescente, coma comida e evite colisões",
   "icon": "🐍",
-  "url": "https://raw.githubusercontent.com/SEU_USUARIO/SEU_REPO/main/games/snake.js",
+  "url": "https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/snake.js",
   "enabled": true,
   "secret": false,
   "autoload": false,
