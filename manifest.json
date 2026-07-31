@@ -75,7 +75,7 @@
       "autoload": true,
       "secret": true,
       "instanceKey": "_optimizer",
-      "url": "https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/optimizer.js"
+      "url": "https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/optimize.js"
       },
       {
       "id": "campominado",
