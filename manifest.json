@@ -118,7 +118,7 @@
   "name": "Fireworks Playground",
   "description": "Fogos de artifício interativos com física de partículas em tempo real",
   "icon": "🎆",
-  "url": "https://raw.githubusercontent.com/SEU_USUARIO/SEU_REPO/main/games/fireworks.js",
+  "url": "https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/fireworks.js",
   "enabled": true,
   "secret": false,
   "autoload": false,
