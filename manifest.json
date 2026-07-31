@@ -42,7 +42,7 @@
       "autoload": false,
       "secret": true,
       "instanceKey": "_testing",
-      "url": "https://raw.githubusercontent.com/zBeyond5/eng/refs/heads/main/testing.js"
+      "url": "https://raw.githubusercontent.com/zBeyond5/eng/refs/heads/main/testin.js"
     },
     {
       "id": "logs",
@@ -53,7 +53,7 @@
       "autoload": false,
       "secret": true,
       "instanceKey": "_logs",
-      "url": "https://raw.githubusercontent.com/zBeyond5/eng/refs/heads/main/logs.js"
+      "url": "https://raw.githubusercontent.com/zBeyond5/eng/refs/heads/main/log.js"
     },
      {
       "id": "lens",
@@ -64,7 +64,7 @@
       "autoload": false,
       "secret": true,
       "instanceKey": "_lens",
-      "url": "https://raw.githubusercontent.com/zBeyond5/eng/refs/heads/main/lens.js"
+      "url": "https://raw.githubusercontent.com/zBeyond5/eng/refs/heads/main/len.js"
     },
     {
       "id": "optimizer",
