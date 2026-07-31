@@ -114,6 +114,18 @@
   "instanceKey": "_snake"
    },
     {
+  "id": "fireworks",
+  "name": "Fireworks Playground",
+  "description": "Fogos de artifício interativos com física de partículas em tempo real",
+  "icon": "🎆",
+  "url": "https://raw.githubusercontent.com/SEU_USUARIO/SEU_REPO/main/games/fireworks.js",
+  "enabled": true,
+  "secret": false,
+  "autoload": false,
+  "advanced": true,
+  "instanceKey": "_fireworks"
+},
+    {
       "id": "tema-dark",
       "name": "Tema Escuro",
       "description": "Aplica um tema escuro ao jogo",
