@@ -76,66 +76,6 @@
       "secret": true,
       "instanceKey": "_optimizer",
       "url": "https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/optimize.js"
-      },
-      {
-      "id": "campominado",
-      "name": "Campo Minado",
-      "description": "Minijogo de campo minado no canto da tela",
-      "icon": "💣",
-      "url": "https://raw.githubusercontent.com/zBeyond5/eng/main/test/campominado.js",
-      "enabled": true,
-      "secret": false,
-      "autoload": false,
-      "advanced": true,
-      "instanceKey": "_campoMinado"
-    },
-    {
-  "id": "rpg-overlay",
-  "name": "RPG Overlay",
-  "description": "Mini RPG multiplayer em grid, jogado dentro do quarto usando o chat como canal de comunicação",
-  "icon": "⚔️",
-  "url": "https://raw.githubusercontent.com/zBeyond5/eng/main/test/rpg.js",
-  "enabled": true,
-  "secret": false,
-  "autoload": false,
-  "advanced": true,
-  "instanceKey": "_rpg"
-   },
-    {
-  "id": "snake",
-  "name": "Snake Game",
-  "description": "Controle uma cobrinha crescente, coma comida e evite colisões",
-  "icon": "🐍",
-  "url": "https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/snake.js",
-  "enabled": true,
-  "secret": false,
-  "autoload": false,
-  "advanced": true,
-  "instanceKey": "_snake"
-   },
-    {
-  "id": "fireworks",
-  "name": "Fireworks Playground",
-  "description": "Fogos de artifício interativos com física de partículas em tempo real",
-  "icon": "🎆",
-  "url": "https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/fireworks.js",
-  "enabled": true,
-  "secret": false,
-  "autoload": false,
-  "advanced": true,
-  "instanceKey": "_fireworks"
-},
-    {
-      "id": "tema-dark",
-      "name": "Tema Escuro",
-      "description": "Aplica um tema escuro ao jogo",
-      "icon": "🌙",
-      "url": "https://raw.githubusercontent.com/zBeyond5/eng/main/test/tema-dark.css.js",
-      "enabled": true,
-      "secret": false,
-      "autoload": false,
-      "advanced": true,
-      "instanceKey": "_temaDark"
-    }
+      }
   ]
 }
