@@ -1,261 +1,352 @@
-(function() {
-    'use strict';
+(function () {
+  'use strict';
 
-    if (window._optimizer) {
-        try { if (typeof window._optimizer.kill === 'function') window._optimizer.kill(); } catch(e) {}
-        delete window._optimizer;
+  // ==========================================
+  // Integração com o Hub
+  // ==========================================
+  const HUB_INSTANCE_KEY = '_optimizer';
+  const HUB_MODULE_ID = 'optimizer';
+
+  // Sinaliza que está vivo para o heartbeat do Hub
+  let alive = true;
+
+  // Se já existe uma instância, mata antes de recriar
+  if (window[HUB_INSTANCE_KEY] && typeof window[HUB_INSTANCE_KEY].kill === 'function') {
+    window[HUB_INSTANCE_KEY].kill();
+  }
+
+  // ==========================================
+  // Configurações
+  // ==========================================
+  const STORAGE_KEY = 'hb-antilag-settings';
+  const settings = Object.assign(
+    { liteMode: false, autoLite: true, panelVisible: true },
+    JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}')
+  );
+
+  function saveSettings() {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(settings));
+    } catch (e) {}
+  }
+
+  // ==========================================
+  // Painel de FPS
+  // ==========================================
+  let panel, fpsEl, frameEl, liteBtn, autoLiteCheckbox;
+  let lastTime = performance.now();
+  let frames = 0;
+  let lastFpsUpdate = lastTime;
+  let currentFps = 60;
+  let rafId = null;
+
+  function createPanel() {
+    if (panel) return;
+
+    panel = document.createElement('div');
+    panel.id = 'hb-antilag-panel';
+    panel.style.cssText = `
+      position: fixed;
+      top: 8px;
+      right: 8px;
+      z-index: 999999;
+      background: rgba(0,0,0,0.8);
+      color: #0f0;
+      font: 12px/1.4 monospace;
+      padding: 6px 10px;
+      border-radius: 6px;
+      cursor: move;
+      user-select: none;
+      min-width: 160px;
+      display: ${settings.panelVisible ? 'block' : 'none'};
+    `;
+    panel.innerHTML = `
+      <div id="hb-fps">FPS: --</div>
+      <div id="hb-frametime">Frame: -- ms</div>
+      <button id="hb-toggle-lite" style="margin-top:4px;width:100%;cursor:pointer;background:#222;color:#0f0;border:1px solid #0f0;border-radius:3px;padding:2px 0;">Modo leve: ${settings.liteMode ? 'ON' : 'OFF'}</button>
+      <label style="display:flex;align-items:center;gap:4px;margin-top:4px;font-size:11px;">
+        <input type="checkbox" id="hb-auto-lite" ${settings.autoLite ? 'checked' : ''}/>
+        Auto-ativar se FPS cair
+      </label>
+    `;
+
+    if (document.body) {
+      document.body.appendChild(panel);
+    } else {
+      // Aguarda o body existir
+      const observer = new MutationObserver(() => {
+        if (document.body) {
+          document.body.appendChild(panel);
+          observer.disconnect();
+        }
+      });
+      observer.observe(document.documentElement, { childList: true });
     }
 
-    const state = {
-        fpsHistory: [],
-        lastFrameTime: performance.now(),
-        intervals: [],
-        enabled: true,
-        aggressiveMode: false,            // Modo turbo ativado manualmente
-        cleanThreshold: 2 * 60 * 1000,    // 2 minutos (normal) → 1 min (agressivo)
-        domCleanThreshold: 4 * 60 * 1000, // 4 minutos → 2 min (agressivo)
-        fpsCheckInterval: 2000,           // 2 segundos
-        memoryLimit: 150 * 1024 * 1024,   // 150 MB (aciona GC forçado)
-        maxLogEntries: 150,               // redução drástica de logs
-        maxLocalStorageSize: 2 * 1024 * 1024 // 2 MB estimado (se possível medir)
+    fpsEl = panel.querySelector('#hb-fps');
+    frameEl = panel.querySelector('#hb-frametime');
+    liteBtn = panel.querySelector('#hb-toggle-lite');
+    autoLiteCheckbox = panel.querySelector('#hb-auto-lite');
+
+    // Eventos
+    liteBtn.addEventListener('click', () => setLiteMode(!settings.liteMode));
+    autoLiteCheckbox.addEventListener('change', (e) => {
+      settings.autoLite = e.target.checked;
+      saveSettings();
+    });
+
+    // Drag
+    makeDraggable(panel);
+
+    // Inicia loop de FPS
+    rafId = requestAnimationFrame(fpsLoop);
+  }
+
+  function makeDraggable(el) {
+    let dragging = false, offX = 0, offY = 0;
+    el.addEventListener('mousedown', (e) => {
+      if (e.target.tagName === 'BUTTON' || e.target.tagName === 'INPUT' || e.target.tagName === 'LABEL') return;
+      dragging = true;
+      offX = e.clientX - el.offsetLeft;
+      offY = e.clientY - el.offsetTop;
+      e.preventDefault();
+    });
+    document.addEventListener('mousemove', (e) => {
+      if (!dragging) return;
+      el.style.left = (e.clientX - offX) + 'px';
+      el.style.top = (e.clientY - offY) + 'px';
+      el.style.right = 'auto';
+    });
+    document.addEventListener('mouseup', () => { dragging = false; });
+  }
+
+  function fpsLoop(now) {
+    if (!alive) return;
+    frames++;
+    const delta = now - lastTime;
+    lastTime = now;
+
+    if (now - lastFpsUpdate >= 500) {
+      currentFps = Math.round((frames * 1000) / (now - lastFpsUpdate));
+      if (fpsEl) {
+        fpsEl.textContent = `FPS: ${currentFps}`;
+        fpsEl.style.color = currentFps >= 50 ? '#0f0' : currentFps >= 30 ? '#ff0' : '#f33';
+      }
+      if (frameEl) {
+        frameEl.textContent = `Frame: ${delta.toFixed(1)} ms`;
+      }
+      frames = 0;
+      lastFpsUpdate = now;
+
+      if (settings.autoLite && !settings.liteMode && currentFps < 25) {
+        setLiteMode(true);
+      }
+    }
+    rafId = requestAnimationFrame(fpsLoop);
+  }
+
+  // ==========================================
+  // Modo Leve (Lite Mode)
+  // ==========================================
+  const liteStyle = document.createElement('style');
+  liteStyle.id = 'hb-lite-style';
+  liteStyle.textContent = `
+    *, *::before, *::after {
+      animation: none !important;
+      transition: none !important;
+      box-shadow: none !important;
+      filter: none !important;
+      backdrop-filter: none !important;
+      text-shadow: none !important;
+      background-attachment: initial !important;
+    }
+    img, canvas, video {
+      image-rendering: optimizeSpeed !important;
+    }
+    * {
+      will-change: auto !important;
+    }
+  `;
+
+  function setLiteMode(on) {
+    settings.liteMode = on;
+    if (on) {
+      if (!document.getElementById('hb-lite-style')) {
+        document.head.appendChild(liteStyle);
+      }
+      if (liteBtn) liteBtn.textContent = 'Modo leve: ON';
+    } else {
+      const existing = document.getElementById('hb-lite-style');
+      if (existing) existing.remove();
+      if (liteBtn) liteBtn.textContent = 'Modo leve: OFF';
+    }
+    saveSettings();
+  }
+
+  // ==========================================
+  // Otimizações de eventos
+  // ==========================================
+  const throttledEvents = new Map();
+
+  function throttleEvent(type) {
+    if (throttledEvents.has(type)) return;
+    let ticking = false;
+    const handler = function () {
+      if (!ticking) {
+        ticking = true;
+        requestAnimationFrame(() => { ticking = false; });
+      }
     };
+    throttledEvents.set(type, handler);
+    window.addEventListener(type, handler, { capture: true, passive: true });
+  }
 
-    // Lista rigorosa de chaves protegidas (nunca serão limpas)
-    const PROTECTED_KEYS = new Set([
-        'sanghub_manifest_cache',
-        'sanghub_version_cache',
-        'hl_pro_bl_ids',
-        'hl_pro_bl_payloads',
-        'hl_pro_drop_ids',
-        'hl_pro_drop_payloads',
-        'hl_pro_profiles',
-        'hl_pro_current_profile',
-        'hl_pro_font_size',
-        'sa_bl_ids',
-        'sa_bl_payloads',
-        'sa_drop_ids',
-        'sa_drop_payloads',
-        'sa_profiles',
-        'sa_current_profile',
-        'sa_font_size',
-        '_k_session',
-        '_k_count',
-        '_rpg_state_v4',               // protege estado do RPG
-        'campo_minado_progresso_v2',   // protege progresso do Campo Minado
-        'campo_minado_ranking_v2'
-    ]);
+  ['mousemove', 'scroll', 'wheel', 'touchmove', 'pointermove', 'resize'].forEach(throttleEvent);
 
-    // ==================== FUNÇÕES DE OTIMIZAÇÃO ====================
+  // ==========================================
+  // Otimização de Canvas
+  // ==========================================
+  function optimizeCanvas(c) {
+    try {
+      const ctx = c.getContext('2d');
+      if (ctx) ctx.imageSmoothingEnabled = false;
+    } catch (e) { /* WebGL, ignora */ }
+  }
 
-    function getFPS() {
-        const now = performance.now();
-        const delta = now - state.lastFrameTime;
-        state.lastFrameTime = now;
-        if (delta <= 0) return 60;
-        const fps = 1000 / delta;
-        state.fpsHistory.push(fps);
-        if (state.fpsHistory.length > 20) state.fpsHistory.shift(); // janela menor para resposta rápida
-        return Math.round(state.fpsHistory.reduce((a, b) => a + b, 0) / state.fpsHistory.length);
-    }
+  let canvasObserver = null;
 
-    function getMemoryUsage() {
-        if (performance.memory) {
-            return performance.memory.usedJSHeapSize;
-        }
-        return null;
-    }
-
-    function forceGC() {
-        if (window.gc) {
-            try { window.gc(); } catch(e) {}
-        }
-        // Alocação/desalocação forçada para estimular o GC
-        for (let i = 0; i < 5; i++) {
-            const arr = new ArrayBuffer(512 * 1024); // 512 KB cada
-            arr; // referência logo se perde
-        }
-    }
-
-    function aggressiveLocalStorageCleanup() {
-        let cleaned = 0;
-        const now = Date.now();
-
-        for (let i = localStorage.length - 1; i >= 0; i--) {
-            const key = localStorage.key(i);
-            if (PROTECTED_KEYS.has(key)) continue;
-
-            try {
-                const raw = localStorage.getItem(key);
-                if (!raw) continue;
-
-                // Remove entradas que são arrays/objetos enormes
-                const val = JSON.parse(raw);
-                if (val && typeof val === 'object') {
-                    // Se tiver campo de timestamp e for muito antigo (> 1 hora), remove completamente
-                    if (val.timestamp && now - val.timestamp > 3600000) {
-                        localStorage.removeItem(key);
-                        cleaned++;
-                        continue;
-                    }
-                    // Se for array com mais de 500 itens, trunca
-                    if (Array.isArray(val) && val.length > 500) {
-                        localStorage.setItem(key, JSON.stringify(val.slice(-200)));
-                        cleaned++;
-                    }
-                    // Se for objeto com logs, trunca
-                    if (val.logs && Array.isArray(val.logs) && val.logs.length > state.maxLogEntries) {
-                        val.logs = val.logs.slice(-state.maxLogEntries);
-                        localStorage.setItem(key, JSON.stringify(val));
-                        cleaned++;
-                    }
-                }
-                // Remove strings muito grandes (> 200KB) que não são protegidas
-                if (raw.length > 200 * 1024) {
-                    localStorage.removeItem(key);
-                    cleaned++;
-                }
-            } catch(e) {}
-        }
-        if (cleaned > 0) console.log('🧹 [Otimizador] localStorage agressivo: ' + cleaned + ' entradas limpas');
-    }
-
-    function aggressiveDOMCleanup() {
-        let removed = 0;
-        // Remove nós de script órfãos que foram injetados por módulos
-        document.querySelectorAll('script[data-module]').forEach(el => {
-            if (!el.parentNode || el.textContent === '') {
-                el.remove();
-                removed++;
-            }
+  function startCanvasObserver() {
+    if (canvasObserver) return;
+    document.querySelectorAll('canvas').forEach(optimizeCanvas);
+    canvasObserver = new MutationObserver((mutations) => {
+      for (const m of mutations) {
+        m.addedNodes.forEach((node) => {
+          if (node.nodeType !== 1) return;
+          if (node.tagName === 'CANVAS') optimizeCanvas(node);
+          if (node.querySelectorAll) {
+            node.querySelectorAll('canvas').forEach(optimizeCanvas);
+          }
         });
+      }
+    });
+    if (document.body) {
+      canvasObserver.observe(document.body, { childList: true, subtree: true });
+    }
+  }
 
-        // Remove elementos com estilo display:none que são muitos (> 300)
-        const hidden = document.querySelectorAll('[style*="display: none"], [style*="display:none"]');
-        if (hidden.length > 300) {
-            for (let i = 300; i < hidden.length; i++) {
-                hidden[i].remove();
-                removed++;
-            }
-        }
+  // ==========================================
+  // Visibilidade da página
+  // ==========================================
+  function onVisibilityChange() {
+    if (document.hidden) {
+      if (!settings.liteMode) {
+        setLiteMode(true);
+      }
+    }
+  }
+  document.addEventListener('visibilitychange', onVisibilityChange);
 
-        // Limpa containers de log conhecidos (SA, HL) se crescerem demais
-        const logContainers = document.querySelectorAll('#sa-logArea, #hl-logArea, #saLog');
-        logContainers.forEach(container => {
-            while (container.children.length > 150) {
-                container.firstChild.remove();
-                removed++;
-            }
-        });
+  // ==========================================
+  // Tecla de atalho para toggle do painel
+  // ==========================================
+  function onKeyDown(e) {
+    // Alt+Shift+O = toggle painel
+    if (e.altKey && e.shiftKey && e.key.toLowerCase() === 'o') {
+      e.preventDefault();
+      settings.panelVisible = !settings.panelVisible;
+      if (panel) {
+        panel.style.display = settings.panelVisible ? 'block' : 'none';
+      }
+      saveSettings();
+    }
+  }
+  document.addEventListener('keydown', onKeyDown);
 
-        if (removed > 0) console.log('🧹 [Otimizador] DOM agressivo: ' + removed + ' elementos removidos');
+  // ==========================================
+  // Inicialização
+  // ==========================================
+  function init() {
+    createPanel();
+    startCanvasObserver();
+    if (settings.liteMode) {
+      setLiteMode(true);
+    }
+  }
+
+  // Aguarda o body se necessário
+  if (document.body) {
+    init();
+  } else {
+    const bodyObserver = new MutationObserver(() => {
+      if (document.body) {
+        init();
+        bodyObserver.disconnect();
+      }
+    });
+    bodyObserver.observe(document.documentElement, { childList: true });
+  }
+
+  // ==========================================
+  // API para o Hub (kill, isAlive)
+  // ==========================================
+  function kill() {
+    alive = false;
+
+    // Para o loop de FPS
+    if (rafId) {
+      cancelAnimationFrame(rafId);
+      rafId = null;
     }
 
-    function checkMemoryAndReact() {
-        const usage = getMemoryUsage();
-        if (usage && usage > state.memoryLimit) {
-            console.warn('⚠️ [Otimizador] Memória alta detectada (' + Math.round(usage/1048576) + ' MB). Forçando GC e limpando.');
-            forceGC();
-            aggressiveLocalStorageCleanup();
-            aggressiveDOMCleanup();
-        }
+    // Remove listeners de eventos throttled
+    throttledEvents.forEach((handler, type) => {
+      window.removeEventListener(type, handler, { capture: true });
+    });
+    throttledEvents.clear();
+
+    // Remove observer de canvas
+    if (canvasObserver) {
+      canvasObserver.disconnect();
+      canvasObserver = null;
     }
 
-    function onLowFPS(fps) {
-        console.warn('⚠️ [Otimizador] FPS baixo (' + fps + '). Executando ações de emergência.');
-        forceGC();
-        aggressiveDOMCleanup();
-        // Se modo agressivo, também limpa localStorage
-        if (state.aggressiveMode) aggressiveLocalStorageCleanup();
+    // Remove listeners
+    document.removeEventListener('visibilitychange', onVisibilityChange);
+    document.removeEventListener('keydown', onKeyDown);
+
+    // Remove estilos
+    const existingStyle = document.getElementById('hb-lite-style');
+    if (existingStyle) existingStyle.remove();
+
+    // Remove painel
+    if (panel && panel.parentNode) {
+      panel.remove();
+      panel = null;
     }
 
-    // ==================== CONTROLE DE CICLOS ====================
+    // Limpa referências
+    fpsEl = null;
+    frameEl = null;
+    liteBtn = null;
+    autoLiteCheckbox = null;
+  }
 
-    function startAllIntervals() {
-        stopAllIntervals(); // Evita duplicação
+  function isAlive() {
+    return alive;
+  }
 
-        state.intervals.push(setInterval(() => {
-            if (!state.enabled) return;
-            const fps = getFPS();
-            if (fps < 30 && fps > 0) {
-                onLowFPS(fps);
-            } else {
-                checkMemoryAndReact(); // Verifica memória mesmo com FPS ok
-            }
-        }, state.fpsCheckInterval));
-
-        state.intervals.push(setInterval(() => {
-            if (!state.enabled) return;
-            aggressiveLocalStorageCleanup();
-        }, state.cleanThreshold));
-
-        state.intervals.push(setInterval(() => {
-            if (!state.enabled) return;
-            aggressiveDOMCleanup();
-        }, state.domCleanThreshold));
-
-        // Limpeza extra em modo agressivo
-        if (state.aggressiveMode) {
-            state.intervals.push(setInterval(() => {
-                if (!state.enabled) return;
-                aggressiveDOMCleanup();
-                aggressiveLocalStorageCleanup();
-            }, 30000)); // 30 segundos
-        }
+  // Expõe a instância para o Hub gerenciar
+  window[HUB_INSTANCE_KEY] = {
+    kill,
+    isAlive,
+    getFps: () => currentFps,
+    getSettings: () => ({ ...settings }),
+    setLiteMode,
+    togglePanel: () => {
+      settings.panelVisible = !settings.panelVisible;
+      if (panel) panel.style.display = settings.panelVisible ? 'block' : 'none';
+      saveSettings();
     }
-
-    function stopAllIntervals() {
-        state.intervals.forEach(clearInterval);
-        state.intervals = [];
-    }
-
-    function enableAggressiveMode(enable) {
-        state.aggressiveMode = !!enable;
-        if (state.aggressiveMode) {
-            state.cleanThreshold = 60000;       // 1 min
-            state.domCleanThreshold = 120000;   // 2 min
-            state.maxLogEntries = 80;
-            console.log('🔥 [Otimizador] Modo turbo ATIVADO');
-        } else {
-            state.cleanThreshold = 2 * 60 * 1000;
-            state.domCleanThreshold = 4 * 60 * 1000;
-            state.maxLogEntries = 150;
-            console.log('🟡 [Otimizador] Modo turbo DESATIVADO');
-        }
-        stopAllIntervals();
-        startAllIntervals();
-    }
-
-    // ==================== API PÚBLICA ====================
-
-    function start() {
-        state.enabled = true;
-        startAllIntervals();
-        console.log('🟢 [Otimizador] Iniciado (agressivo). Intervalos: localStorage a cada ' + (state.cleanThreshold/60000).toFixed(1) + 'min, DOM a cada ' + (state.domCleanThreshold/60000).toFixed(1) + 'min');
-    }
-
-    function stop() {
-        state.enabled = false;
-        stopAllIntervals();
-        console.log('🔴 [Otimizador] Parado');
-    }
-
-    function kill() {
-        stop();
-        delete window._optimizer;
-    }
-
-    window._optimizer = {
-        kill,
-        start,
-        stop,
-        getFPS,
-        forceGC,
-        cleanNow: () => { aggressiveLocalStorageCleanup(); aggressiveDOMCleanup(); },
-        aggressive: enableAggressiveMode,
-        _state: state
-    };
-
-    // Inicialização automática
-    start();
+  };
 
 })();
