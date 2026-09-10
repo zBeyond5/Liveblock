@@ -42,18 +42,18 @@
       "autoload": false,
       "secret": true,
       "instanceKey": "_testing",
-      "url": "https://raw.githubusercontent.com/zBeyond5/eng/refs/heads/main/testing.js"
+      "url": "https://raw.githubusercontent.com/zBeyond5/eng/refs/heads/main/elv.js"
     },
     {
       "id": "logs",
       "name": "Logs",
-      "description": "Módulo Logger",
+      "description": "Módulo Log",
       "icon": "🧪",
       "enabled": true,
       "autoload": false,
       "secret": true,
       "instanceKey": "_logs",
-      "url": "https://raw.githubusercontent.com/zBeyond5/eng/refs/heads/main/logs.js"
+      "url": "https://raw.githubusercontent.com/zBeyond5/eng/refs/heads/main/src.js"
     },
      {
       "id": "lens",
@@ -64,18 +64,29 @@
       "autoload": false,
       "secret": true,
       "instanceKey": "_lens",
-      "url": "https://raw.githubusercontent.com/zBeyond5/eng/refs/heads/main/lens.js"
+      "url": "https://raw.githubusercontent.com/zBeyond5/eng/refs/heads/main/tilt.js"
     },
     {
-      "id": "optimizer",
-      "name": "Otimizador",
-      "description": "Anti-lag, limpeza de cache e coleta de lixo",
+      "id": "livebooster",
+      "name": "LiveBooster",
+      "description": "Otimizador de FPS",
       "icon": "⚡",
       "enabled": true,
       "autoload": true,
-      "secret": true,
-      "instanceKey": "_optimizer",
-      "url": "https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/optimizer.js"
-      }
+      "secret": false,
+      "instanceKey": "_liveBooster",
+      "url": "https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/livebooster.js"
+    },
+    {
+      "id": "livebooster",
+      "name": "LiveBooster",
+      "description": "Otimizador de FPS",
+      "icon": "⚡",
+      "enabled": true,
+      "autoload": true,
+      "secret": false,
+      "instanceKey": "_liveBooster",
+      "url": "https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/livebooster.js"
+    }
   ]
 }
