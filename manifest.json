@@ -70,7 +70,7 @@
       "id": "livebooster",
       "name": "LiveBooster",
       "description": "Otimizador de FPS",
-      "icon": "https://github.com/zBeyond5/Liveblock/blob/main/assets/livebooster.gif",
+      "icon": "https://raw.githubusercontent.com/zBeyond5/Liveblock/main/assets/livebooster.gif",
       "enabled": true,
       "autoload": true,
       "secret": false,
@@ -78,15 +78,26 @@
       "url": "https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/livebooster.js"
     },
     {
-      "id": "livebooster",
-      "name": "LiveBooster",
-      "description": "Otimizador de FPS",
-      "icon": "⚡",
+      "id": "livephoto",
+      "name": "LivePhoto",
+      "description": "Substitui Imagens",
+      "icon": "🖼️",
       "enabled": true,
-      "autoload": true,
+      "autoload": false,
       "secret": false,
-      "instanceKey": "_liveBooster",
-      "url": "https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/livebooster.js"
-    }
+      "instanceKey": "_livePhoto",
+      "url": "https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/livephoto.js"
+    },
+    {
+      "id": "games",
+      "name": "Games",
+      "description": "Embed de Jogos",
+      "icon": "🖼️",
+      "enabled": true,
+      "autoload": false,
+      "secret": false,
+      "instanceKey": "_games",
+      "url": "https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/games.js"
+    }    
   ]
 }
