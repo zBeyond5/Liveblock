@@ -16,7 +16,7 @@
       "id": "analyzer",
       "name": "Analyzer",
       "description": "Packet Analyzer & Sender",
-      "icon": "https://raw.githubusercontent.com/zBeyond5/Liveblock/main/assets/GIF/analyzer.gif",
+      "icon": "https://raw.githubusercontent.com/zBeyond5/Liveblock/main/assets/PNG/analyzer.png",
       "enabled": true,
       "autoload": false,
       "secret": false,
