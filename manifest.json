@@ -70,7 +70,7 @@
       "id": "livebooster",
       "name": "LiveBooster",
       "description": "Otimizador de FPS",
-      "icon": "⚡",
+      "icon": "https://github.com/zBeyond5/Liveblock/blob/main/assets/livebooster.gif",
       "enabled": true,
       "autoload": true,
       "secret": false,
