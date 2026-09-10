@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Sang Hub
 // @namespace    http://tampermonkey.net/
-// @version      1.0.0
-// @description  Gerenciador de módulos 
+// @version      1.0.1
+// @description  Gerenciador de módulos
 // @author       Sang
 // @match        *://*.habblive.in/bigclient*
 // @match        *://*.habblet.city/bigclient*
@@ -15,7 +15,7 @@
 (function() {
     'use strict';
 
-    const HUB_VERSION = "1.0.0";
+    const HUB_VERSION = "1.0.1";
     const HUB_UPDATE_URL = "https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/hub2.js";
     const MANIFEST_URL = "https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/manifest.json";
 
@@ -26,8 +26,9 @@
 
     const SHORTCUT_KEY = 'h';
     const SHORTCUT_LABEL = 'Alt+Shift+H';
+    const GIF_PLAY_MS = 2000; // duração fixa da animação do GIF por hover
 
-    // Manutenibilidade
+    // Manutenibilidade: status centralizados (evita strings soltas/typos)
     const STATUS = { UNLOADED: 'unloaded', LOADING: 'loading', LOADED: 'loaded', ERROR: 'error' };
 
     const LOG_PREFIX = '🔶 [Hub]';
@@ -53,7 +54,7 @@
     let uiRoot = null;
     let uiPill = null;
 
-    // Segurança
+    // Segurança: escapa strings vindas do manifest antes de ir pro innerHTML
     function escapeHtml(str) {
         return String(str ?? '').replace(/[&<>"']/g, c => ({
             '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
@@ -234,7 +235,7 @@
     }
 
     function applyHubUpdate(code) {
-        // Segurança/estabilidade
+        // Segurança/estabilidade: valida sintaxe ANTES de destruir a UI atual
         try {
             new Function(code);
         } catch(e) {
@@ -325,6 +326,16 @@
         }
     }
 
+    // UX: pulso curto
+    function flashItem(modId, kind) {
+        if (!uiRoot) return;
+        const el = uiRoot.querySelector('.hub-item[data-mod-id="' + CSS.escape(String(modId)) + '"]');
+        if (!el) return;
+        const cls = 'hub-flash-' + kind;
+        el.classList.add(cls);
+        setTimeout(() => el.classList.remove(cls), 700);
+    }
+
     async function activateModule(mod) {
         if (state.moduleStates[mod.id] === STATUS.LOADING) return;
         state.moduleStates[mod.id] = STATUS.LOADING;
@@ -334,12 +345,15 @@
             await loadModule(mod);
             state.moduleStates[mod.id] = STATUS.LOADED;
             if (toastFn) toastFn(mod.name + ' carregado', 'ok');
+            if (renderListFn) renderListFn();
+            flashItem(mod.id, 'ok');
         } catch(e) {
             HERR('Falha em "' + mod.name + '":', e);
             state.moduleStates[mod.id] = STATUS.ERROR;
             if (toastFn) toastFn('Falha em ' + mod.name, 'error');
+            if (renderListFn) renderListFn();
+            flashItem(mod.id, 'error');
         }
-        if (renderListFn) renderListFn();
     }
 
     function deactivateModule(mod) {
@@ -368,20 +382,32 @@
         };
         probe.onerror = () => HWARN('Não foi possível pré-visualizar o GIF: ' + originalUrl);
 
-        item.addEventListener('mouseenter', () => {
-            if (!liveImg.src) liveImg.src = originalUrl;
+        let playTimer = null;
+
+        function play() {
+            liveImg.src = '';
+            liveImg.src = originalUrl;
             liveImg.hidden = false;
             canvas.hidden = true;
-        });
-        item.addEventListener('mouseleave', () => {
+
+            clearTimeout(playTimer);
+            playTimer = setTimeout(stop, GIF_PLAY_MS);
+        }
+
+        function stop() {
+            clearTimeout(playTimer);
+            playTimer = null;
             liveImg.hidden = true;
             canvas.hidden = false;
-        });
+        }
+
+        item.addEventListener('mouseenter', play);
+        item.addEventListener('mouseleave', stop);
     }
 
     // Processa o ícone aplicando suporte a Hover nos GIFs
     function parseIcon(icon) {
-        if (!icon) return '<span style="font-size:18px;">📦</span>';
+        if (!icon) return '<span style="font-size:26px;">📦</span>';
         icon = icon.trim();
         if (/^<svg/i.test(icon)) return icon;
         if (/^https?:\/\//i.test(icon) || /^data:image/i.test(icon) || /\.(png|svg|jpg|jpeg|webp)(\?.*)?$/i.test(icon)) {
@@ -395,19 +421,24 @@
 
     function buildUI() {
         const UID = '_hub';
-        // Estabilidade: AbortController centraliza a remoção dos listeners globais no kill()
+        // Estabilidade
         const ac = new AbortController();
 
         const style = document.createElement('style');
         style.setAttribute('data-hub', '1');
 
-        // --- TEMA: "Aurora Glass" 
+        // --- TEMA
         style.textContent = `
         @keyframes hubFade{from{opacity:0;transform:translateY(-8px) scale(0.98)}to{opacity:1;transform:none}}
         @keyframes hubItemIn{from{opacity:0;transform:translateX(-6px)}to{opacity:1;transform:none}}
         @keyframes hubPulse{0%,100%{opacity:1}50%{opacity:.35}}
         @keyframes hubSpin{to{transform:rotate(360deg)}}
         @keyframes hubShimmer{0%{background-position:0% 50%}100%{background-position:200% 50%}}
+        @keyframes hubTitleShine{to{background-position:-200% center}}
+        @keyframes hubIconRing{to{--hub-angle:360deg}}
+        @keyframes hubFlashOk{0%{box-shadow:0 0 0 0 rgba(52,211,153,.45)}100%{box-shadow:0 0 0 16px rgba(52,211,153,0)}}
+        @keyframes hubFlashErr{0%{box-shadow:0 0 0 0 rgba(251,113,133,.45)}100%{box-shadow:0 0 0 16px rgba(251,113,133,0)}}
+        @property --hub-angle{syntax:'<angle>';inherits:false;initial-value:0deg}
 
         #${UID}{
             --hub-cyan:#22d3ee; --hub-violet:#a78bfa; --hub-grad:linear-gradient(120deg,var(--hub-cyan),var(--hub-violet));
@@ -430,7 +461,9 @@
         #${UID} .hub-key{flex-shrink:0;display:flex;align-items:center;justify-content:center;width:32px;height:32px;border-radius:10px;
             background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.08);box-shadow:0 0 16px rgba(34,211,238,0.15);padding:5px;box-sizing:border-box}
         #${UID} .hub-title{font-weight:800;font-size:13.5px;letter-spacing:.06em;white-space:nowrap;
-            background:var(--hub-grad);-webkit-background-clip:text;background-clip:text;color:transparent}
+            background:linear-gradient(100deg,var(--hub-cyan) 0%,var(--hub-violet) 35%,#fff 50%,var(--hub-violet) 65%,var(--hub-cyan) 100%);
+            background-size:220% auto;-webkit-background-clip:text;background-clip:text;color:transparent;
+            animation:hubTitleShine 3.2s linear infinite}
         #${UID} .hub-subtitle{font-size:9.5px;color:var(--hub-muted);display:flex;align-items:center;gap:5px;margin-top:3px}
         #${UID} .hub-sync-dot{width:6px;height:6px;border-radius:50%;flex-shrink:0}
         #${UID} .hub-sync-dot.loading{background:var(--hub-cyan);animation:hubPulse 1s infinite}
@@ -455,7 +488,7 @@
             background:rgba(251,113,133,0.12);border:1px solid rgba(251,113,133,0.35);color:#fca5b1;cursor:pointer;font-size:10px;font-weight:700;transition:all .18s}
         #${UID} .hub-retry:hover{background:rgba(251,113,133,0.22)}
 
-        #${UID} .hub-item{display:flex;align-items:center;gap:12px;padding:10px 12px;
+        #${UID} .hub-item{display:flex;align-items:center;gap:14px;padding:11px 13px;
             border-radius:13px;background:rgba(255,255,255,0.025);border:1px solid rgba(255,255,255,0.05);cursor:pointer;
             transition:all .2s cubic-bezier(0.16,1,0.3,1);position:relative;overflow:hidden;
             animation:hubItemIn .3s cubic-bezier(0.16,1,0.3,1) backwards}
@@ -466,12 +499,24 @@
         #${UID} .hub-item:hover{background:rgba(255,255,255,0.05);border-color:rgba(167,139,250,0.35);
             transform:translateY(-2px);box-shadow:0 8px 20px rgba(0,0,0,0.35),0 0 0 1px rgba(34,211,238,0.08)}
         #${UID} .hub-item:active{transform:translateY(-1px) scale(0.99)}
+        #${UID} .hub-item.hub-flash-ok{animation:hubItemIn .3s cubic-bezier(0.16,1,0.3,1) backwards,hubFlashOk .7s ease-out}
+        #${UID} .hub-item.hub-flash-error{animation:hubItemIn .3s cubic-bezier(0.16,1,0.3,1) backwards,hubFlashErr .7s ease-out}
 
-        #${UID} .hub-icon{width:38px;height:38px;min-width:38px;min-height:38px;display:flex;align-items:center;justify-content:center;
-            position:relative;background:linear-gradient(155deg,#fdfdfd,#e7e9f0);border-radius:11px;padding:5px;box-sizing:border-box;
-            box-shadow:0 3px 8px rgba(0,0,0,0.25),inset 0 0 0 1px rgba(255,255,255,0.6);overflow:hidden}
-        #${UID} .hub-icon img, #${UID} .hub-icon svg, #${UID} .hub-icon canvas { width:100%; height:100%; object-fit:contain; display:block }
+        /* Ícone "nu" (sem container/fundo) — só a arte, maior e com anel giratório no hover */
+        #${UID} .hub-icon{width:48px;height:48px;min-width:48px;min-height:48px;display:flex;align-items:center;justify-content:center;position:relative}
+        #${UID} .hub-icon img, #${UID} .hub-icon svg, #${UID} .hub-icon canvas{
+            width:100%;height:100%;object-fit:contain;display:block;border-radius:10px;
+            filter:drop-shadow(0 3px 7px rgba(0,0,0,0.4));transition:filter .2s ease}
         #${UID} .hub-icon [hidden]{display:none !important}
+        #${UID} .hub-icon::before{
+            content:'';position:absolute;inset:-6px;border-radius:15px;padding:1.5px;
+            background:conic-gradient(from var(--hub-angle),var(--hub-cyan),var(--hub-violet),#fff,var(--hub-violet),var(--hub-cyan));
+            -webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);
+            -webkit-mask-composite:xor;mask-composite:exclude;
+            opacity:0;transition:opacity .25s ease;animation:hubIconRing 2.6s linear infinite;animation-play-state:paused;pointer-events:none}
+        #${UID} .hub-item:hover .hub-icon::before{opacity:1;animation-play-state:running}
+        #${UID} .hub-item:hover .hub-icon img,#${UID} .hub-item:hover .hub-icon svg,#${UID} .hub-item:hover .hub-icon canvas{
+            filter:drop-shadow(0 4px 10px rgba(0,0,0,0.5))}
 
         #${UID} .hub-info{flex:1;min-width:0}
         #${UID} .hub-name{font-weight:700;color:#ffffff;font-size:12.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;letter-spacing:0.01em}
@@ -664,6 +709,7 @@
                 const status = state.moduleStates[mod.id] || STATUS.UNLOADED;
                 const item = document.createElement('div');
                 item.className = 'hub-item state-' + status;
+                item.dataset.modId = mod.id;
                 item.style.animationDelay = Math.min(idx * 35, 250) + 'ms';
                 item.setAttribute('role', 'button');
                 item.setAttribute('tabindex', '0');
