@@ -8,16 +8,16 @@
 // @match        *://*.habblet.city/bigclient*
 // @grant        none
 // @run-at       document-start
-// @updateURL    https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/hub2.js
-// @downloadURL  https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/hub2.js
+// @updateURL    https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/menu/hub2.js
+// @downloadURL  https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/menu/hub2.js
 // ==/UserScript==
 
 (function() {
     'use strict';
 
     const HUB_VERSION = "1.0.1";
-    const HUB_UPDATE_URL = "https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/hub2.js";
-    const MANIFEST_URL = "https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/manifest.json";
+    const HUB_UPDATE_URL = "https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/menu/hub2.js";
+    const MANIFEST_URL = "https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/menu/manifest.json";
 
     const UPDATE_INTERVAL_MS = 3 * 60 * 1000;
     const MANIFEST_CACHE_MS = 2 * 60 * 1000;
