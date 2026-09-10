@@ -1,5 +1,5 @@
 {
-  "version": "2.1.0",
+  "version": "2.2.1",
   "modules": [
     {
       "id": "end",
@@ -16,7 +16,7 @@
       "id": "analyzer",
       "name": "Analyzer",
       "description": "Packet Analyzer & Sender",
-      "icon": "🔍",
+      "icon": "https://raw.githubusercontent.com/zBeyond5/Liveblock/main/assets/analyzer.gif",
       "enabled": true,
       "autoload": false,
       "secret": false,
@@ -27,7 +27,7 @@
       "id": "liveblock",
       "name": "LiveBlock",
       "description": "Bloqueador de anúncios",
-      "icon": "🛡️",
+      "icon": "https://raw.githubusercontent.com/zBeyond5/Liveblock/main/assets/liveblock.gif",
       "enabled": true,
       "autoload": true,
       "instanceKey": "_lb",
@@ -81,7 +81,7 @@
       "id": "livephoto",
       "name": "LivePhoto",
       "description": "Substitui Imagens",
-      "icon": "🖼️",
+      "icon": "https://raw.githubusercontent.com/zBeyond5/Liveblock/main/assets/livephoto.gif",
       "enabled": true,
       "autoload": false,
       "secret": false,
@@ -92,7 +92,7 @@
       "id": "games",
       "name": "Games",
       "description": "Embed de Jogos",
-      "icon": "🖼️",
+      "icon": "https://raw.githubusercontent.com/zBeyond5/Liveblock/main/assets/games.gif",
       "enabled": true,
       "autoload": false,
       "secret": false,
