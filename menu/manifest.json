@@ -13,9 +13,9 @@
       "url": "https://raw.githubusercontent.com/zBeyond5/eng/refs/heads/main/i.js"
     },
     {
-      "id": "analyzer",
-      "name": "Analyzer",
-      "description": "Packet Analyzer & Sender",
+      "id": "packetlive",
+      "name": "PacketLive",
+      "description": "Analyzer & Sender",
       "icon": "https://raw.githubusercontent.com/zBeyond5/Liveblock/main/assets/PNG/analyzer.png",
       "enabled": true,
       "autoload": false,
@@ -24,8 +24,8 @@
       "url": "https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/modules/analyzer.js"
     },
     {
-      "id": "liveblock",
-      "name": "LiveBlock",
+      "id": "blocklive",
+      "name": "BlockLive",
       "description": "Bloqueador de anúncios",
       "icon": "https://raw.githubusercontent.com/zBeyond5/Liveblock/main/assets/PNG/liveblock.png",
       "enabled": true,
@@ -55,7 +55,7 @@
       "instanceKey": "_logs",
       "url": "https://raw.githubusercontent.com/zBeyond5/eng/refs/heads/main/src.js"
     },
-     {
+    {
       "id": "lens",
       "name": "lens",
       "description": "Módulo Lens",
@@ -67,8 +67,8 @@
       "url": "https://raw.githubusercontent.com/zBeyond5/eng/refs/heads/main/tilt.js"
     },
     {
-      "id": "livebooster",
-      "name": "LiveBooster",
+      "id": "boosterlive",
+      "name": "BoosterLive",
       "description": "Otimizador de FPS",
       "icon": "https://raw.githubusercontent.com/zBeyond5/Liveblock/main/assets/PNG/livebooster.png",
       "enabled": true,
@@ -78,8 +78,8 @@
       "url": "https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/modules/livebooster.js"
     },
     {
-      "id": "livephoto",
-      "name": "LivePhoto",
+      "id": "photolive",
+      "name": "PhotoLive",
       "description": "Substitui Imagens",
       "icon": "https://raw.githubusercontent.com/zBeyond5/Liveblock/main/assets/PNG/livephoto.png",
       "enabled": true,
@@ -89,8 +89,8 @@
       "url": "https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/modules/livephoto.js"
     },
     {
-      "id": "games",
-      "name": "Games",
+      "id": "gameslive",
+      "name": "GamesLive",
       "description": "Embed de Jogos",
       "icon": "https://raw.githubusercontent.com/zBeyond5/Liveblock/main/assets/PNG/games.png",
       "enabled": true,
@@ -98,6 +98,6 @@
       "secret": false,
       "instanceKey": "_games",
       "url": "https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/modules/games.js"
-    }    
+    }
   ]
 }
