@@ -21,7 +21,7 @@
       "autoload": false,
       "secret": false,
       "instanceKey": "_analyzer",
-      "url": "https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/modules/analyzer.js"
+      "url": "https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/modules/packetlive.js"
     },
     {
       "id": "blocklive",
@@ -31,7 +31,7 @@
       "enabled": true,
       "autoload": true,
       "instanceKey": "_lb",
-      "url": "https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/modules/adblock.js"
+      "url": "https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/modules/blocklive.js"
     },
     {
       "id": "testing",
@@ -75,7 +75,7 @@
       "autoload": true,
       "secret": false,
       "instanceKey": "_liveBooster",
-      "url": "https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/modules/livebooster.js"
+      "url": "https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/modules/boosterlive.js"
     },
     {
       "id": "photolive",
@@ -86,7 +86,7 @@
       "autoload": false,
       "secret": false,
       "instanceKey": "_livePhoto",
-      "url": "https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/modules/livephoto.js"
+      "url": "https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/modules/photolive.js"
     },
     {
       "id": "gameslive",
@@ -97,7 +97,7 @@
       "autoload": false,
       "secret": false,
       "instanceKey": "_games",
-      "url": "https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/modules/games.js"
+      "url": "https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/modules/gameslive.js"
     }
   ]
 }
