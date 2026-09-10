@@ -14,7 +14,7 @@
     },
     {
       "id": "packetlive",
-      "name": "Packetlive",
+      "name": "Packet Manager",
       "description": "Analyzer & Sender",
       "icon": "https://raw.githubusercontent.com/zBeyond5/Liveblock/main/assets/PNG/AI/packetlive.png",
       "enabled": true,
@@ -25,7 +25,7 @@
     },
     {
       "id": "blocklive",
-      "name": "Blocklive",
+      "name": "LiveBlock",
       "description": "Bloqueador de anúncios",
       "icon": "https://raw.githubusercontent.com/zBeyond5/Liveblock/main/assets/PNG/AI/blocklive.png",
       "enabled": true,
@@ -68,7 +68,7 @@
     },
     {
       "id": "boosterlive",
-      "name": "Boosterlive",
+      "name": "Booster FPS",
       "description": "Otimizador de FPS",
       "icon": "https://raw.githubusercontent.com/zBeyond5/Liveblock/main/assets/PNG/AI/boosterlive.png",
       "enabled": true,
@@ -79,7 +79,7 @@
     },
     {
       "id": "photolive",
-      "name": "Photolive",
+      "name": "PhotoSwap",
       "description": "Substitui Imagens",
       "icon": "https://raw.githubusercontent.com/zBeyond5/Liveblock/main/assets/PNG/AI/photolive.png",
       "enabled": true,
@@ -90,7 +90,7 @@
     },
     {
       "id": "gameslive",
-      "name": "Gameslive",
+      "name": "GamesLive",
       "description": "Embed de Jogos",
       "icon": "https://raw.githubusercontent.com/zBeyond5/Liveblock/main/assets/PNG/AI/gameslive.png",
       "enabled": true,
