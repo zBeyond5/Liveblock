@@ -1,22 +1,22 @@
 // ==UserScript==
-// @name         Sang Hub — ScriptLoader (sem módulos)
+// @name         Sang Hub
 // @namespace    http://tampermonkey.net/
-// @version      2.2.4
-// @description  Gerenciador de módulos (versão sem carregamento de secretos)
+// @version      1.0.0
+// @description  Gerenciador de módulos 
 // @author       Sang
 // @match        *://*.habblive.in/bigclient*
 // @match        *://*.habblet.city/bigclient*
 // @grant        none
 // @run-at       document-start
-// @updateURL    https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/hub.js
-// @downloadURL  https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/hub.js
+// @updateURL    https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/hub2.js
+// @downloadURL  https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/hub2.js
 // ==/UserScript==
 
 (function() {
     'use strict';
 
-    const HUB_VERSION = "2.2.4";
-    const HUB_UPDATE_URL = "https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/hub.js";
+    const HUB_VERSION = "1.0.0";
+    const HUB_UPDATE_URL = "https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/hub2.js";
     const MANIFEST_URL = "https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/manifest.json";
 
     const UPDATE_INTERVAL_MS = 3 * 60 * 1000;
@@ -26,7 +26,9 @@
 
     const SHORTCUT_KEY = 'h';
     const SHORTCUT_LABEL = 'Alt+Shift+H';
-    const AUTOLOAD_ENABLED = false;
+
+    // Manutenibilidade
+    const STATUS = { UNLOADED: 'unloaded', LOADING: 'loading', LOADED: 'loaded', ERROR: 'error' };
 
     const LOG_PREFIX = '🔶 [Hub]';
     const HLOG = (...a) => console.log(LOG_PREFIX, ...a);
@@ -42,8 +44,7 @@
         currentHubVersion: HUB_VERSION,
         updateTimer: null,
         heartbeatTimer: null,
-        isUpdating: false,
-        loadedInstances: {}
+        isUpdating: false
     };
 
     let renderListFn = null;
@@ -51,6 +52,13 @@
     let toastFn = null;
     let uiRoot = null;
     let uiPill = null;
+
+    // Segurança
+    function escapeHtml(str) {
+        return String(str ?? '').replace(/[&<>"']/g, c => ({
+            '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+        }[c]));
+    }
 
     (function setupSocketHook() {
         if (window._hubSocket) return;
@@ -78,8 +86,10 @@
         }
 
         HookedWebSocket.prototype = OriginalWebSocket.prototype;
-        Object.keys(OriginalWebSocket).forEach(key => {
-            HookedWebSocket[key] = OriginalWebSocket[key];
+
+        // Bug fix: cópia explícita das constantes estáticas (não são enumeráveis)
+        ['CONNECTING', 'OPEN', 'CLOSING', 'CLOSED'].forEach(k => {
+            HookedWebSocket[k] = OriginalWebSocket[k];
         });
 
         window.WebSocket = HookedWebSocket;
@@ -119,7 +129,7 @@
             }
         } catch(e) {
             HWARN('Erro ao matar instância ' + instanceKey + ':', e);
-            try { delete window[instanceKey]; } catch(e) {}
+            try { delete window[instanceKey]; } catch(e2) {}
         }
         return false;
     }
@@ -134,10 +144,6 @@
         if (!res.ok) throw new Error('HTTP ' + res.status);
         const code = await res.text();
         injectCode(code, mod.id);
-
-        if (mod.instanceKey) {
-            state.loadedInstances[mod.id] = mod.instanceKey;
-        }
 
         HLOG('✅ Módulo "' + mod.name + '" carregado');
     }
@@ -170,14 +176,6 @@
 
     function setCachedManifest(data) {
         setCache('sanghub_manifest_cache', data);
-    }
-
-    function getCachedHubVersion() {
-        return getCache('sanghub_version_cache', MANIFEST_CACHE_MS);
-    }
-
-    function setCachedHubVersion(version) {
-        setCache('sanghub_version_cache', version);
     }
 
     async function fetchWithRetry(url, opts, timeout, retries) {
@@ -236,6 +234,15 @@
     }
 
     function applyHubUpdate(code) {
+        // Segurança/estabilidade
+        try {
+            new Function(code);
+        } catch(e) {
+            HERR('❌ Update com erro de sintaxe, abortando (UI atual preservada):', e);
+            if (toastFn) toastFn('Update inválido — mantendo versão atual', 'error');
+            return;
+        }
+
         try {
             if (window._hubUI && typeof window._hubUI.kill === 'function') {
                 window._hubUI.kill();
@@ -248,7 +255,6 @@
             script.remove();
 
             HLOG('✅ Hub atualizado (hot reload)');
-            if (toastFn) toastFn('Hub atualizado!', 'ok');
         } catch(e) {
             HERR('❌ Falha ao aplicar atualização:', e);
         }
@@ -270,9 +276,9 @@
 
                 const newIds = new Set(manifest.modules.map(m => m.id));
                 (state.manifest.modules || []).forEach(mod => {
-                    if (!newIds.has(mod.id) && state.moduleStates[mod.id] === 'loaded') {
+                    if (!newIds.has(mod.id) && state.moduleStates[mod.id] === STATUS.LOADED) {
                         tryUnload(mod);
-                        state.moduleStates[mod.id] = 'unloaded';
+                        state.moduleStates[mod.id] = STATUS.UNLOADED;
                     }
                 });
             }
@@ -281,11 +287,10 @@
             state.syncState = 'synced';
             state.lastSyncAt = new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
 
-            if (AUTOLOAD_ENABLED) {
-                manifest.modules
-                    .filter(m => m.enabled !== false && m.autoload === true && m.secret !== true && state.moduleStates[m.id] !== 'loaded')
-                    .forEach(mod => activateModule(mod));
-            }
+            // Autoload
+            manifest.modules
+                .filter(m => m.enabled !== false && m.autoload === true && m.secret !== true && state.moduleStates[m.id] !== STATUS.LOADED)
+                .forEach(mod => activateModule(mod));
         } catch(e) {
             HERR('❌ Falha no manifesto:', e);
             state.syncState = 'error';
@@ -321,17 +326,17 @@
     }
 
     async function activateModule(mod) {
-        if (state.moduleStates[mod.id] === 'loading') return;
-        state.moduleStates[mod.id] = 'loading';
+        if (state.moduleStates[mod.id] === STATUS.LOADING) return;
+        state.moduleStates[mod.id] = STATUS.LOADING;
         if (renderListFn) renderListFn();
 
         try {
             await loadModule(mod);
-            state.moduleStates[mod.id] = 'loaded';
+            state.moduleStates[mod.id] = STATUS.LOADED;
             if (toastFn) toastFn(mod.name + ' carregado', 'ok');
         } catch(e) {
             HERR('Falha em "' + mod.name + '":', e);
-            state.moduleStates[mod.id] = 'error';
+            state.moduleStates[mod.id] = STATUS.ERROR;
             if (toastFn) toastFn('Falha em ' + mod.name, 'error');
         }
         if (renderListFn) renderListFn();
@@ -339,107 +344,179 @@
 
     function deactivateModule(mod) {
         const ok = tryUnload(mod);
-        state.moduleStates[mod.id] = 'unloaded';
+        state.moduleStates[mod.id] = STATUS.UNLOADED;
         if (toastFn) toastFn(mod.name + (ok ? ' desativado' : ' — recarregue'), ok ? 'ok' : 'warn');
         if (renderListFn) renderListFn();
     }
 
     function handleModuleClick(mod) {
-        if (mod.secret) return; 
-        const status = state.moduleStates[mod.id] || 'unloaded';
-        if (status === 'loading') return;
-        if (status === 'loaded') { deactivateModule(mod); return; }
+        if (mod.secret) return;
+        const status = state.moduleStates[mod.id] || STATUS.UNLOADED;
+        if (status === STATUS.LOADING) return;
+        if (status === STATUS.LOADED) { deactivateModule(mod); return; }
         activateModule(mod);
+    }
+
+    function setupGifIcon(item, canvas, liveImg, originalUrl) {
+        const ctx = canvas.getContext('2d');
+        const probe = new Image();
+        probe.src = originalUrl;
+        probe.onload = () => {
+            canvas.width = probe.naturalWidth || 32;
+            canvas.height = probe.naturalHeight || 32;
+            ctx.drawImage(probe, 0, 0);
+        };
+        probe.onerror = () => HWARN('Não foi possível pré-visualizar o GIF: ' + originalUrl);
+
+        item.addEventListener('mouseenter', () => {
+            if (!liveImg.src) liveImg.src = originalUrl;
+            liveImg.hidden = false;
+            canvas.hidden = true;
+        });
+        item.addEventListener('mouseleave', () => {
+            liveImg.hidden = true;
+            canvas.hidden = false;
+        });
+    }
+
+    // Processa o ícone aplicando suporte a Hover nos GIFs
+    function parseIcon(icon) {
+        if (!icon) return '<span style="font-size:18px;">📦</span>';
+        icon = icon.trim();
+        if (/^<svg/i.test(icon)) return icon;
+        if (/^https?:\/\//i.test(icon) || /^data:image/i.test(icon) || /\.(png|svg|jpg|jpeg|webp)(\?.*)?$/i.test(icon)) {
+            return `<img src="${icon}" alt="icon" />`;
+        }
+        if (/\.gif(\?.*)?$/i.test(icon)) {
+            return `<canvas class="hub-gif-frozen"></canvas><img class="hub-gif-live" data-original="${icon}" alt="icon" hidden />`;
+        }
+        return icon;
     }
 
     function buildUI() {
         const UID = '_hub';
+        // Estabilidade: AbortController centraliza a remoção dos listeners globais no kill()
+        const ac = new AbortController();
 
         const style = document.createElement('style');
         style.setAttribute('data-hub', '1');
+
+        // --- TEMA: "Aurora Glass" 
         style.textContent = `
-        @keyframes hubFade{from{opacity:0;transform:translateY(-6px)}to{opacity:1;transform:none}}
+        @keyframes hubFade{from{opacity:0;transform:translateY(-8px) scale(0.98)}to{opacity:1;transform:none}}
+        @keyframes hubItemIn{from{opacity:0;transform:translateX(-6px)}to{opacity:1;transform:none}}
         @keyframes hubPulse{0%,100%{opacity:1}50%{opacity:.35}}
         @keyframes hubSpin{to{transform:rotate(360deg)}}
+        @keyframes hubShimmer{0%{background-position:0% 50%}100%{background-position:200% 50%}}
 
-        #${UID}{position:fixed;top:16px;left:16px;width:280px;font-family:monospace;font-size:12px;
-        color:#f3e3c4;background:linear-gradient(165deg,#4d2d10,#2b1608);border:1px solid #6b3f14;
-        border-radius:10px;box-shadow:0 0 0 1px rgba(255,176,32,.18),0 16px 40px rgba(0,0,0,.55);
-        z-index:2147483647;overflow:hidden;user-select:none;animation:hubFade .2s ease-out;max-height:90vh;display:flex;flex-direction:column}
+        #${UID}{
+            --hub-cyan:#22d3ee; --hub-violet:#a78bfa; --hub-grad:linear-gradient(120deg,var(--hub-cyan),var(--hub-violet));
+            --hub-ok:#34d399; --hub-err:#fb7185; --hub-muted:#8b8fa3;
+            position:fixed;top:20px;left:20px;width:336px;
+            font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Inter,sans-serif;font-size:13px;
+            color:#f1f2f8;background:linear-gradient(175deg,rgba(20,20,28,0.92),rgba(9,9,14,0.97));backdrop-filter:blur(18px) saturate(140%);
+            border:1px solid rgba(255,255,255,0.08);border-radius:20px;
+            box-shadow:0 20px 50px rgba(0,0,0,0.55),0 2px 8px rgba(0,0,0,0.4),inset 0 1px 0 rgba(255,255,255,0.06);
+            z-index:2147483647;overflow:hidden;user-select:none;animation:hubFade .3s cubic-bezier(0.16,1,0.3,1);
+            max-height:85vh;display:flex;flex-direction:column}
         #${UID}.hidden{display:none}
+        #${UID}::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;background:var(--hub-grad);
+            background-size:200% 100%;animation:hubShimmer 4s linear infinite}
 
-        #${UID} .hub-hdr{padding:8px 10px;background:linear-gradient(180deg,rgba(255,176,32,.08),transparent);
-        border-bottom:1px solid rgba(255,176,32,.2);display:flex;align-items:center;justify-content:space-between;cursor:grab;flex-shrink:0}
+        #${UID} .hub-hdr{padding:14px 16px;display:flex;align-items:center;justify-content:space-between;cursor:grab;flex-shrink:0;
+            border-bottom:1px solid rgba(255,255,255,0.06)}
         #${UID} .hub-hdr:active{cursor:grabbing}
-        #${UID} .hub-brand{display:flex;align-items:center;gap:6px;min-width:0}
-        #${UID} .hub-key{flex-shrink:0}
-        #${UID} .hub-title{font-weight:700;color:#ffd479;font-size:12px;text-transform:uppercase;letter-spacing:.04em;white-space:nowrap}
-        #${UID} .hub-subtitle{font-size:8px;color:#a67c4a;display:flex;align-items:center;gap:4px}
-        #${UID} .hub-sync-dot{width:5px;height:5px;border-radius:50%;flex-shrink:0}
-        #${UID} .hub-sync-dot.loading{background:#ffd479;animation:hubPulse 1s infinite}
-        #${UID} .hub-sync-dot.synced{background:#4ade80}
-        #${UID} .hub-sync-dot.error{background:#f04a4a}
+        #${UID} .hub-brand{display:flex;align-items:center;gap:11px;min-width:0}
+        #${UID} .hub-key{flex-shrink:0;display:flex;align-items:center;justify-content:center;width:32px;height:32px;border-radius:10px;
+            background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.08);box-shadow:0 0 16px rgba(34,211,238,0.15);padding:5px;box-sizing:border-box}
+        #${UID} .hub-title{font-weight:800;font-size:13.5px;letter-spacing:.06em;white-space:nowrap;
+            background:var(--hub-grad);-webkit-background-clip:text;background-clip:text;color:transparent}
+        #${UID} .hub-subtitle{font-size:9.5px;color:var(--hub-muted);display:flex;align-items:center;gap:5px;margin-top:3px}
+        #${UID} .hub-sync-dot{width:6px;height:6px;border-radius:50%;flex-shrink:0}
+        #${UID} .hub-sync-dot.loading{background:var(--hub-cyan);animation:hubPulse 1s infinite}
+        #${UID} .hub-sync-dot.synced{background:var(--hub-ok);box-shadow:0 0 6px rgba(52,211,153,0.7)}
+        #${UID} .hub-sync-dot.error{background:var(--hub-err)}
 
-        #${UID} .hub-actions{display:flex;gap:3px;flex-shrink:0}
-        #${UID} .hub-hbtn{width:20px;height:20px;border-radius:4px;background:rgba(0,0,0,.25);border:1px solid rgba(255,176,32,.25);
-        color:#ffd479;display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:10px;transition:all .12s;flex-shrink:0}
-        #${UID} .hub-hbtn:hover{background:rgba(255,176,32,.2);border-color:#ffb020}
+        #${UID} .hub-actions{display:flex;gap:6px;flex-shrink:0}
+        #${UID} .hub-hbtn{width:26px;height:26px;border-radius:8px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);
+            color:#c7cad6;display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:12px;
+            transition:all .18s cubic-bezier(0.16,1,0.3,1);flex-shrink:0}
+        #${UID} .hub-hbtn:hover{color:#0b0b10;background:var(--hub-grad);border-color:transparent;box-shadow:0 0 14px rgba(34,211,238,0.35);transform:translateY(-1px)}
+        #${UID} .hub-hbtn:focus-visible,#${UID} .hub-item:focus-visible,#${UID}pill:focus-visible{outline:2px solid var(--hub-cyan);outline-offset:2px}
         #${UID} .hub-hbtn.spin svg{animation:hubSpin .6s linear infinite}
 
-        #${UID} .hub-body{padding:8px;overflow-y:auto;flex:1;min-height:0}
-        #${UID} .hub-body::-webkit-scrollbar{width:4px}
-        #${UID} .hub-body::-webkit-scrollbar-thumb{background:rgba(255,176,32,.25);border-radius:2px}
+        #${UID} .hub-body{padding:12px;overflow-y:auto;flex:1;min-height:0;display:flex;flex-direction:column;gap:7px}
+        #${UID} .hub-body::-webkit-scrollbar{width:5px}
+        #${UID} .hub-body::-webkit-scrollbar-thumb{background:linear-gradient(var(--hub-cyan),var(--hub-violet));border-radius:3px}
 
-        #${UID} .hub-empty,#${UID} .hub-error-box{padding:12px 8px;text-align:center;color:#c9a06a;font-size:10px}
-        #${UID} .hub-error-box{color:#f4a3a3}
-        #${UID} .hub-retry{display:inline-block;padding:4px 10px;margin-top:6px;border-radius:4px;
-        background:rgba(240,74,74,.12);border:1px solid rgba(240,74,74,.35);color:#f4a3a3;cursor:pointer;font-size:9px;font-weight:700}
+        #${UID} .hub-empty,#${UID} .hub-error-box{padding:20px;text-align:center;color:var(--hub-muted);font-size:11px}
+        #${UID} .hub-error-box{color:#fca5b1}
+        #${UID} .hub-retry{display:inline-block;padding:6px 14px;margin-top:10px;border-radius:8px;
+            background:rgba(251,113,133,0.12);border:1px solid rgba(251,113,133,0.35);color:#fca5b1;cursor:pointer;font-size:10px;font-weight:700;transition:all .18s}
+        #${UID} .hub-retry:hover{background:rgba(251,113,133,0.22)}
 
-        #${UID} .hub-item{display:flex;align-items:center;gap:7px;padding:6px 8px;margin-bottom:4px;
-        border-radius:6px;background:rgba(255,176,32,.04);border:1px solid rgba(255,176,32,.12);cursor:pointer;transition:all .12s;position:relative}
-        #${UID} .hub-item::before{content:'';position:absolute;left:0;top:4px;bottom:4px;width:2px;border-radius:2px;background:#6b5233}
-        #${UID} .hub-item.state-loaded::before{background:#4ade80}
-        #${UID} .hub-item.state-loading::before{background:#ffd479;animation:hubPulse 1s infinite}
-        #${UID} .hub-item.state-error::before{background:#f04a4a}
-        #${UID} .hub-item:hover{background:rgba(255,176,32,.1);border-color:rgba(255,176,32,.3)}
-        #${UID} .hub-item:active{transform:scale(.98)}
-        #${UID} .hub-item:last-child{margin-bottom:0}
+        #${UID} .hub-item{display:flex;align-items:center;gap:12px;padding:10px 12px;
+            border-radius:13px;background:rgba(255,255,255,0.025);border:1px solid rgba(255,255,255,0.05);cursor:pointer;
+            transition:all .2s cubic-bezier(0.16,1,0.3,1);position:relative;overflow:hidden;
+            animation:hubItemIn .3s cubic-bezier(0.16,1,0.3,1) backwards}
+        #${UID} .hub-item::before{content:'';position:absolute;left:0;top:0;bottom:0;width:3px;background:transparent;transition:background .2s}
+        #${UID} .hub-item.state-loaded::before{background:var(--hub-grad)}
+        #${UID} .hub-item.state-loading::before{background:var(--hub-cyan);animation:hubPulse 1s infinite}
+        #${UID} .hub-item.state-error::before{background:var(--hub-err)}
+        #${UID} .hub-item:hover{background:rgba(255,255,255,0.05);border-color:rgba(167,139,250,0.35);
+            transform:translateY(-2px);box-shadow:0 8px 20px rgba(0,0,0,0.35),0 0 0 1px rgba(34,211,238,0.08)}
+        #${UID} .hub-item:active{transform:translateY(-1px) scale(0.99)}
 
-        #${UID} .hub-icon{font-size:14px;width:18px;text-align:center;flex-shrink:0}
+        #${UID} .hub-icon{width:38px;height:38px;min-width:38px;min-height:38px;display:flex;align-items:center;justify-content:center;
+            position:relative;background:linear-gradient(155deg,#fdfdfd,#e7e9f0);border-radius:11px;padding:5px;box-sizing:border-box;
+            box-shadow:0 3px 8px rgba(0,0,0,0.25),inset 0 0 0 1px rgba(255,255,255,0.6);overflow:hidden}
+        #${UID} .hub-icon img, #${UID} .hub-icon svg, #${UID} .hub-icon canvas { width:100%; height:100%; object-fit:contain; display:block }
+        #${UID} .hub-icon [hidden]{display:none !important}
+
         #${UID} .hub-info{flex:1;min-width:0}
-        #${UID} .hub-name{font-weight:700;color:#f3e3c4;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-        #${UID} .hub-desc{font-size:8px;color:#b78e5c;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-        #${UID} .hub-chip{flex-shrink:0;font-size:7px;font-weight:700;padding:1px 5px;border-radius:10px;text-transform:uppercase}
-        #${UID} .hub-chip.unloaded{background:rgba(255,255,255,.05);color:#8a7150}
-        #${UID} .hub-chip.loading{background:rgba(255,212,121,.12);color:#ffd479}
-        #${UID} .hub-chip.loaded{background:rgba(74,222,128,.12);color:#4ade80}
-        #${UID} .hub-chip.error{background:rgba(240,74,74,.12);color:#f4a3a3}
+        #${UID} .hub-name{font-weight:700;color:#ffffff;font-size:12.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;letter-spacing:0.01em}
+        #${UID} .hub-desc{font-size:9.5px;color:var(--hub-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px}
 
-        #${UID} .hub-ftr{padding:4px 10px;background:rgba(0,0,0,.2);border-top:1px solid rgba(255,176,32,.12);
-        font-size:7.5px;color:#8a7150;display:flex;justify-content:space-between;flex-shrink:0}
-        #${UID} .hub-ftr b{color:#c9a06a}
+        #${UID} .hub-chip{flex-shrink:0;display:flex;align-items:center;gap:5px;font-size:8.5px;font-weight:800;padding:4px 9px;
+            border-radius:20px;text-transform:uppercase;letter-spacing:0.06em;border:1px solid transparent}
+        #${UID} .hub-chip::before{content:'';width:5px;height:5px;border-radius:50%;flex-shrink:0}
+        #${UID} .hub-chip.unloaded{background:rgba(255,255,255,0.04);color:#8b8fa3;border-color:rgba(255,255,255,0.06)}
+        #${UID} .hub-chip.unloaded::before{background:#5b5f70}
+        #${UID} .hub-chip.loading{background:rgba(34,211,238,0.1);color:var(--hub-cyan);border-color:rgba(34,211,238,0.25)}
+        #${UID} .hub-chip.loading::before{background:var(--hub-cyan);animation:hubPulse 1s infinite}
+        #${UID} .hub-chip.loaded{background:rgba(52,211,153,0.1);color:var(--hub-ok);border-color:rgba(52,211,153,0.25)}
+        #${UID} .hub-chip.loaded::before{background:var(--hub-ok);box-shadow:0 0 5px rgba(52,211,153,0.8)}
+        #${UID} .hub-chip.error{background:rgba(251,113,133,0.1);color:var(--hub-err);border-color:rgba(251,113,133,0.25)}
+        #${UID} .hub-chip.error::before{background:var(--hub-err)}
 
-        #${UID} .hub-toast{position:absolute;left:8px;right:8px;bottom:28px;padding:5px 8px;border-radius:5px;
-        font-size:9px;font-weight:700;text-align:center;opacity:0;transform:translateY(3px);transition:all .18s;
-        pointer-events:none;z-index:20;border:1px solid;background:#1a0d04;color:#f3e3c4;border-color:#ffb020}
+        #${UID} .hub-ftr{padding:10px 16px;background:rgba(0,0,0,0.25);border-top:1px solid rgba(255,255,255,0.05);
+            font-size:9.5px;color:var(--hub-muted);display:flex;justify-content:space-between;align-items:center;flex-shrink:0}
+        #${UID} .hub-ftr b{color:#d1d5db}
+
+        #${UID} .hub-toast{position:absolute;left:14px;right:14px;bottom:40px;padding:9px 14px;border-radius:11px;
+            font-size:10.5px;font-weight:700;text-align:center;opacity:0;transform:translateY(8px);transition:all .22s cubic-bezier(0.16,1,0.3,1);
+            pointer-events:none;z-index:20;border:1px solid;background:rgba(14,14,20,0.96);backdrop-filter:blur(10px);color:#f3f4f6}
         #${UID} .hub-toast.show{opacity:1;transform:translateY(0)}
-        #${UID} .hub-toast.ok{border-color:#4ade80;color:#c9f7d9}
-        #${UID} .hub-toast.error{border-color:#f04a4a;color:#f9c9c9}
-        #${UID} .hub-toast.warn{border-color:#ffd479;color:#ffe9c2}
+        #${UID} .hub-toast.ok{border-color:rgba(52,211,153,0.5);color:#a7f3d0;box-shadow:0 6px 18px rgba(52,211,153,0.15)}
+        #${UID} .hub-toast.error{border-color:rgba(251,113,133,0.5);color:#fecdd3;box-shadow:0 6px 18px rgba(251,113,133,0.15)}
+        #${UID} .hub-toast.warn,#${UID} .hub-toast.info{border-color:rgba(34,211,238,0.5);color:#cffafe;box-shadow:0 6px 18px rgba(34,211,238,0.15)}
 
-        #${UID}pill{position:fixed;top:16px;left:16px;display:flex;align-items:center;gap:5px;
-        padding:6px 10px 6px 8px;border-radius:999px;background:linear-gradient(165deg,#4d2d10,#2b1608);
-        border:1px solid #6b3f14;box-shadow:0 0 0 1px rgba(255,176,32,.15),0 8px 20px rgba(0,0,0,.5);
-        color:#ffd479;font-family:monospace;font-size:10px;font-weight:700;cursor:grab;z-index:2147483647;user-select:none;animation:hubFade .2s ease-out}
+        #${UID}pill{position:fixed;top:20px;left:20px;display:flex;align-items:center;gap:9px;
+            padding:9px 16px 9px 11px;border-radius:999px;background:linear-gradient(175deg,rgba(20,20,28,0.92),rgba(9,9,14,0.97));
+            backdrop-filter:blur(18px) saturate(140%);border:1px solid rgba(255,255,255,0.08);
+            box-shadow:0 12px 30px rgba(0,0,0,0.5),0 0 18px rgba(34,211,238,0.12);
+            font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;font-size:11px;font-weight:800;letter-spacing:.04em;
+            cursor:grab;z-index:2147483647;user-select:none;animation:hubFade .25s ease-out}
+        #${UID}pill span{background:var(--hub-grad,linear-gradient(120deg,#22d3ee,#a78bfa));-webkit-background-clip:text;background-clip:text;color:transparent}
         #${UID}pill:active{cursor:grabbing}
-        #${UID}pill:hover{border-color:#ffb020}
+        #${UID}pill:hover{border-color:rgba(167,139,250,0.4);box-shadow:0 12px 30px rgba(0,0,0,0.5),0 0 24px rgba(167,139,250,0.25)}
         #${UID}pill.hidden{display:none}
         `;
         document.head.appendChild(style);
 
-        const KEY_SVG = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#ffb020" stroke-width="2"><circle cx="8" cy="8" r="4.5"/><path d="M11.5 11.5L20 20M20 20L17.5 22.5M20 20L22.5 17.5" stroke-linecap="round"/></svg>`;
-        const REFRESH_SVG = `<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 12a8 8 0 1 1-2.34-5.66M20 4v5h-5"/></svg>`;
-        const UPDATE_SVG = `<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>`;
+        const MAIN_ICON = `<img src="https://raw.githubusercontent.com/zBeyond5/Liveblock/main/assets/menu.png" style="width:20px; height:20px; object-fit:contain;" />`;
+        const REFRESH_SVG = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 12a8 8 0 1 1-2.34-5.66M20 4v5h-5"/></svg>`;
+        const UPDATE_SVG = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>`;
 
         const root = document.createElement('div');
         root.id = UID;
@@ -447,17 +524,17 @@
         root.innerHTML = `
         <div class="hub-hdr" id="${UID}hdr">
             <div class="hub-brand">
-                <span class="hub-key">${KEY_SVG}</span>
+                <span class="hub-key">${MAIN_ICON}</span>
                 <div>
-                    <div class="hub-title">Sang Hub</div>
+                    <div class="hub-title">SANG HUB</div>
                     <div class="hub-subtitle"><span class="hub-sync-dot loading" id="${UID}syncdot"></span><span id="${UID}syncsubtitle">iniciando…</span></div>
                 </div>
             </div>
             <div class="hub-actions">
-                <div class="hub-hbtn" id="${UID}update" title="Auto-update (${UPDATE_INTERVAL_MS/60000}min)">${UPDATE_SVG}</div>
-                <div class="hub-hbtn" id="${UID}refresh" title="Recarregar manifesto">${REFRESH_SVG}</div>
-                <div class="hub-hbtn" id="${UID}min" title="Minimizar">−</div>
-                <div class="hub-hbtn" id="${UID}cls" title="Fechar (${SHORTCUT_LABEL})">✕</div>
+                <div class="hub-hbtn" id="${UID}update" title="Auto-update" role="button" tabindex="0" aria-label="Verificar atualizações">${UPDATE_SVG}</div>
+                <div class="hub-hbtn" id="${UID}refresh" title="Recarregar manifesto" role="button" tabindex="0" aria-label="Recarregar manifesto">${REFRESH_SVG}</div>
+                <div class="hub-hbtn" id="${UID}min" title="Minimizar" role="button" tabindex="0" aria-label="Minimizar painel">−</div>
+                <div class="hub-hbtn" id="${UID}cls" title="Fechar (${SHORTCUT_LABEL})" role="button" tabindex="0" aria-label="Fechar painel">✕</div>
             </div>
         </div>
         <div class="hub-body" id="${UID}list"></div>
@@ -474,13 +551,23 @@
         const pill = document.createElement('div');
         pill.id = UID + 'pill';
         pill.className = 'hidden';
-        pill.innerHTML = KEY_SVG + '<span>HUB</span>';
+        pill.setAttribute('role', 'button');
+        pill.setAttribute('tabindex', '0');
+        pill.setAttribute('aria-label', 'Abrir painel Sang Hub');
+        pill.innerHTML = MAIN_ICON + '<span>SANG HUB</span>';
         document.body.appendChild(pill);
         uiPill = pill;
 
         function showPanel() { root.classList.remove('hidden'); pill.classList.add('hidden'); }
         function showPill() { root.classList.add('hidden'); pill.classList.remove('hidden'); }
         function hideAll() { root.classList.add('hidden'); pill.classList.add('hidden'); }
+
+        // Acessibilidade: ativação dos botões e da pill via teclado (Enter/Espaço)
+        function onKeyActivate(handler) {
+            return (e) => {
+                if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handler(); }
+            };
+        }
 
         let drag = null;
         const hdr = root.querySelector('#' + UID + 'hdr');
@@ -490,15 +577,15 @@
             drag = { x: e.clientX - r.left, y: e.clientY - r.top };
             root.style.left = r.left + 'px';
             root.style.top = r.top + 'px';
-        });
+        }, { signal: ac.signal });
         document.addEventListener('mousemove', e => {
             if (!drag) return;
             const x = Math.max(0, e.clientX - drag.x);
             const y = Math.max(0, e.clientY - drag.y);
             root.style.left = x + 'px';
             root.style.top = y + 'px';
-        });
-        document.addEventListener('mouseup', () => { drag = null; });
+        }, { signal: ac.signal });
+        document.addEventListener('mouseup', () => { drag = null; }, { signal: ac.signal });
 
         let pillDrag = null;
         let pillDidDrag = false;
@@ -508,17 +595,18 @@
             pillDidDrag = false;
             pill.style.left = r.left + 'px';
             pill.style.top = r.top + 'px';
-        });
+        }, { signal: ac.signal });
         document.addEventListener('mousemove', e => {
             if (!pillDrag) return;
             if (Math.abs(e.clientX - pillDrag.sx) > 3 || Math.abs(e.clientY - pillDrag.sy) > 3) pillDidDrag = true;
             pill.style.left = Math.max(0, e.clientX - pillDrag.x) + 'px';
             pill.style.top = Math.max(0, e.clientY - pillDrag.y) + 'px';
-        });
+        }, { signal: ac.signal });
         document.addEventListener('mouseup', () => {
             if (pillDrag && !pillDidDrag) showPanel();
             pillDrag = null;
-        });
+        }, { signal: ac.signal });
+        pill.addEventListener('keydown', onKeyActivate(showPanel), { signal: ac.signal });
 
         let toastTm = null;
         toastFn = (msg, kind) => {
@@ -526,23 +614,30 @@
             el.textContent = msg;
             el.className = 'hub-toast show ' + (kind || 'info');
             clearTimeout(toastTm);
-            toastTm = setTimeout(() => el.classList.remove('show'), 2000);
+            toastTm = setTimeout(() => el.classList.remove('show'), 2200);
         };
 
-        root.querySelector('#' + UID + 'min').addEventListener('click', showPill);
-        root.querySelector('#' + UID + 'cls').addEventListener('click', hideAll);
-        root.querySelector('#' + UID + 'refresh').addEventListener('click', () => refreshManifest(true));
-        root.querySelector('#' + UID + 'update').addEventListener('click', () => {
-            toastFn('Verificando…', 'info');
-            autoUpdateLoop();
-        });
+        const btnMin = root.querySelector('#' + UID + 'min');
+        const btnCls = root.querySelector('#' + UID + 'cls');
+        const btnRefresh = root.querySelector('#' + UID + 'refresh');
+        const btnUpdate = root.querySelector('#' + UID + 'update');
+
+        btnMin.addEventListener('click', showPill, { signal: ac.signal });
+        btnMin.addEventListener('keydown', onKeyActivate(showPill), { signal: ac.signal });
+        btnCls.addEventListener('click', hideAll, { signal: ac.signal });
+        btnCls.addEventListener('keydown', onKeyActivate(hideAll), { signal: ac.signal });
+        btnRefresh.addEventListener('click', () => refreshManifest(true), { signal: ac.signal });
+        btnRefresh.addEventListener('keydown', onKeyActivate(() => refreshManifest(true)), { signal: ac.signal });
+        const onUpdateClick = () => { toastFn('Verificando atualizações…', 'info'); autoUpdateLoop(); };
+        btnUpdate.addEventListener('click', onUpdateClick, { signal: ac.signal });
+        btnUpdate.addEventListener('keydown', onKeyActivate(onUpdateClick), { signal: ac.signal });
 
         document.addEventListener('keydown', e => {
             if (e.altKey && e.shiftKey && e.key.toLowerCase() === SHORTCUT_KEY) {
                 e.preventDefault();
                 root.classList.contains('hidden') ? showPanel() : showPill();
             }
-        });
+        }, { signal: ac.signal });
 
         const listEl = root.querySelector('#' + UID + 'list');
         const syncDot = root.querySelector('#' + UID + 'syncdot');
@@ -552,8 +647,10 @@
         renderListFn = () => {
             listEl.innerHTML = '';
             if (state.syncState === 'error' && !state.manifest.modules.length) {
-                listEl.innerHTML = `<div class="hub-error-box">Erro ao carregar manifesto.<div class="hub-retry" id="${UID}retry">Tentar novamente</div></div>`;
-                listEl.querySelector('#' + UID + 'retry').addEventListener('click', () => refreshManifest(true));
+                listEl.innerHTML = `<div class="hub-error-box">Erro ao carregar manifesto.<div class="hub-retry" id="${UID}retry" role="button" tabindex="0">Tentar novamente</div></div>`;
+                const retryBtn = listEl.querySelector('#' + UID + 'retry');
+                retryBtn.addEventListener('click', () => refreshManifest(true));
+                retryBtn.addEventListener('keydown', onKeyActivate(() => refreshManifest(true)));
                 return;
             }
 
@@ -563,19 +660,39 @@
                 return;
             }
 
-            visible.forEach(mod => {
-                const status = state.moduleStates[mod.id] || 'unloaded';
+            visible.forEach((mod, idx) => {
+                const status = state.moduleStates[mod.id] || STATUS.UNLOADED;
                 const item = document.createElement('div');
                 item.className = 'hub-item state-' + status;
+                item.style.animationDelay = Math.min(idx * 35, 250) + 'ms';
+                item.setAttribute('role', 'button');
+                item.setAttribute('tabindex', '0');
+                item.setAttribute('aria-pressed', String(status === STATUS.LOADED));
+
+                const iconHtml = parseIcon(mod.icon);
+                // Segurança: nome/descrição escapados antes de entrar no innerHTML
+                const safeName = escapeHtml(mod.name);
+                const safeDesc = escapeHtml(mod.description || '');
+                // UX: aviso quando o módulo não pode ser desligado sem reload
+                const noUnloadHint = !mod.instanceKey ? ' title="Este módulo precisa de reload da página para desativar"' : '';
+
                 item.innerHTML = `
-                    <span class="hub-icon">${mod.icon || '📦'}</span>
-                    <div class="hub-info">
-                        <div class="hub-name">${mod.name}</div>
-                        <div class="hub-desc">${mod.description || ''}</div>
+                    <div class="hub-icon">${iconHtml}</div>
+                    <div class="hub-info"${noUnloadHint}>
+                        <div class="hub-name">${safeName}</div>
+                        <div class="hub-desc">${safeDesc}</div>
                     </div>
-                    <span class="hub-chip ${status}">${status === 'unloaded' ? '⏸' : status === 'loading' ? '⟳' : status === 'loaded' ? '✓' : '✗'}</span>
+                    <span class="hub-chip ${status}">${status === STATUS.UNLOADED ? 'OFF' : status === STATUS.LOADING ? '...' : status === STATUS.LOADED ? 'ATIVO' : 'ERR'}</span>
                 `;
+
+                const gifCanvas = item.querySelector('.hub-gif-frozen');
+                const gifLive = item.querySelector('.hub-gif-live');
+                if (gifCanvas && gifLive) {
+                    setupGifIcon(item, gifCanvas, gifLive, gifLive.getAttribute('data-original'));
+                }
+
                 item.addEventListener('click', () => handleModuleClick(mod));
+                item.addEventListener('keydown', onKeyActivate(() => handleModuleClick(mod)));
                 listEl.appendChild(item);
             });
         };
@@ -594,6 +711,7 @@
             state.killFlag = true;
             if (state.updateTimer) clearTimeout(state.updateTimer);
             if (state.heartbeatTimer) clearInterval(state.heartbeatTimer);
+            ac.abort(); // Estabilidade: remove TODOS os listeners globais de uma vez
             document.querySelectorAll('#' + UID + ', #' + UID + 'pill, style[data-hub]').forEach(el => el.remove());
         }
         window._hubUI = { kill };
