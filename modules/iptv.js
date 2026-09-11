@@ -1,6 +1,6 @@
 // modules/iptv.js — injetado pelo Sang Hub
-// v5: UI retrô de TV com scanlines, filtros por categoria, lista minimizável,
-// favoritos em localStorage, resize customizado travado em 16:9.
+// v6: 16:9 aplicado à ÁREA DO VÍDEO (não à janela toda). CRT removido do player.
+// Botão para ocultar o cabeçalho. Glow sutil nas bordas.
 (function() {
     'use strict';
     const UID = '_iptv';
@@ -18,8 +18,14 @@
     const FALHA_TTL_MS = 6 * 60 * 60 * 1000;
     const CONECTAR_TIMEOUT_MS = 9000;
     const MAX_TENTATIVAS_RECUPERACAO = 1;
+
+    // Constantes de layout — batem com o CSS abaixo
     const ASPECT_RATIO = 16 / 9;
-    const MIN_WIDTH = 480;
+    const HEADER_HEIGHT = 42;
+    const LIST_WIDTH = 240;
+    const BORDER_TOTAL = 6; // 3px cada lado
+    const MIN_VIDEO_W = 320;
+    const MAX_VIDEO_W = 2400;
 
     // ---------- Storage ----------
     function lerCache(chave, padrao) {
@@ -181,7 +187,6 @@
         const channels = resCh.value;
         const streams = resSt.value;
 
-        // Mapa de categorias: id -> nome legível
         const nomeCategoria = new Map();
         if (resCat.status === 'fulfilled' && Array.isArray(resCat.value)) {
             resCat.value.forEach(c => {
@@ -237,7 +242,6 @@
                 candidatos.unshift(linkSalvo);
             }
 
-            // Todas as categorias do canal, com nome legível
             const cats = (Array.isArray(c.categories) ? c.categories : [])
                 .map(id => nomeCategoria.get(id) || id)
                 .filter(Boolean);
@@ -255,7 +259,6 @@
 
         lista.sort((a, b) => a.name.localeCompare(b.name, 'pt-BR'));
 
-        // Categorias realmente presentes nos canais BR
         const catsDisponiveis = new Set();
         lista.forEach(c => c.categorias.forEach(cat => catsDisponiveis.add(cat)));
 
@@ -269,48 +272,73 @@
         style.setAttribute('data-iptv', '1');
         style.textContent = `
         @keyframes iptvSpin{to{transform:rotate(360deg)}}
-        @keyframes iptvScanline{0%{background-position:0 0}100%{background-position:0 4px}}
-        @keyframes iptvFlicker{0%,100%{opacity:.03}50%{opacity:.06}}
 
-        /* ===== Container principal — TRAVADO em 16:9 via JS ===== */
-        #${UID}{position:fixed;top:70px;left:70px;width:800px;height:450px;
+        /* ===== Container principal =====
+           O tamanho real é setado via JS (aplicarLayout). CSS aqui é só fallback. */
+        #${UID}{position:fixed;top:70px;left:70px;width:966px;height:453px;
+            box-sizing:border-box;
             font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
-            background:#1a1410;border:3px solid #3d2b1f;border-radius:12px;overflow:hidden;
+            background:#1a1410;
+            border:3px solid #3d2b1f;border-radius:12px;overflow:hidden;
             z-index:2147483000;display:flex;flex-direction:column;
-            box-shadow:0 24px 60px rgba(0,0,0,0.8), inset 0 0 0 1px rgba(255,140,66,0.08);
-            /* resize removido — handle customizado abaixo */}
+            box-shadow:
+                0 20px 50px rgba(0,0,0,0.75),
+                0 0 0 1px rgba(255,140,66,0.12),
+                0 0 28px rgba(255,140,66,0.10),
+                inset 0 0 0 1px rgba(255,140,66,0.10),
+                inset 0 0 22px rgba(255,140,66,0.05);
+        }
 
         /* ===== Header retrô ===== */
-        #${UID} .iptv-hdr{height:42px;flex-shrink:0;display:flex;align-items:center;justify-content:space-between;
-            padding:0 14px;cursor:grab;user-select:none;
+        #${UID} .iptv-hdr{height:${HEADER_HEIGHT}px;box-sizing:border-box;flex-shrink:0;
+            display:flex;align-items:center;justify-content:space-between;
+            padding:0 12px;cursor:grab;user-select:none;
             background:linear-gradient(180deg,#2a1f18 0%,#1a1410 100%);
-            border-bottom:2px solid #3d2b1f}
+            border-bottom:2px solid #3d2b1f;overflow:hidden;
+            transition:height .22s cubic-bezier(.4,0,.2,1),
+                       border-bottom-width .22s cubic-bezier(.4,0,.2,1),
+                       opacity .18s ease}
+        #${UID}.header-hidden .iptv-hdr{height:0;border-bottom-width:0;opacity:0}
         #${UID} .iptv-hdr:active{cursor:grabbing}
         #${UID} .iptv-brand{display:flex;align-items:center;gap:10px}
         #${UID} .iptv-led{width:7px;height:7px;border-radius:50%;background:#ff2d2d;
             box-shadow:0 0 10px #ff2d2d,0 0 20px rgba(255,45,45,0.4)}
-        #${UID} .iptv-title{font-weight:800;font-size:13px;letter-spacing:.18em;color:#e8d5b7;
+        #${UID} .iptv-title{font-weight:800;font-size:12px;letter-spacing:.18em;color:#e8d5b7;
             font-family:"Courier New",monospace;text-transform:uppercase}
         #${UID} .iptv-actions{display:flex;gap:6px;align-items:center}
-        #${UID} .iptv-btn{width:28px;height:28px;border-radius:6px;
+        #${UID} .iptv-btn{width:26px;height:26px;border-radius:6px;
             background:linear-gradient(180deg,#3d2b1f,#2a1f18);
             border:1px solid #4a3527;color:#e8d5b7;
-            display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:13px;
+            display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:12px;
             transition:all .15s ease}
         #${UID} .iptv-btn:hover{background:#ff8c42;color:#1a1410;border-color:#ff8c42;
-            box-shadow:0 0 14px rgba(255,140,66,0.6)}
-        #${UID} .iptv-btn.active{background:#ff8c42;color:#1a1410}
+            box-shadow:0 0 12px rgba(255,140,66,0.6)}
+        #${UID} .iptv-btn.active{background:#ff8c42;color:#1a1410;border-color:#ff8c42}
+
+        /* Botão flutuante que aparece quando o header está oculto */
+        #${UID} .iptv-unhide{position:absolute;top:8px;right:8px;z-index:15;
+            width:26px;height:26px;border-radius:6px;
+            background:rgba(61,43,31,0.75);
+            border:1px solid rgba(255,140,66,0.3);
+            color:#e8d5b7;display:none;align-items:center;justify-content:center;
+            font-size:12px;cursor:pointer;
+            opacity:0;transition:opacity .2s, background .15s, box-shadow .15s}
+        #${UID}.header-hidden .iptv-unhide{display:flex}
+        #${UID}:hover .iptv-unhide{opacity:1}
+        #${UID} .iptv-unhide:hover{background:#ff8c42;color:#1a1410;border-color:#ff8c42;
+            box-shadow:0 0 12px rgba(255,140,66,0.6)}
 
         /* ===== Layout ===== */
         #${UID} .iptv-main{flex:1;min-height:0;display:flex;position:relative}
 
         /* ===== Lista lateral (minimizável) ===== */
-        #${UID} .iptv-list{width:240px;flex-shrink:0;
+        #${UID} .iptv-list{width:${LIST_WIDTH}px;flex-shrink:0;
             border-right:2px solid #3d2b1f;
             display:flex;flex-direction:column;min-height:0;
             background:linear-gradient(180deg,#1e1712,#16100c);
-            transition:width .25s ease, border-width .25s ease;
-            overflow:hidden}
+            overflow:hidden;
+            transition:width .25s cubic-bezier(.4,0,.2,1),
+                       border-right-width .25s cubic-bezier(.4,0,.2,1)}
         #${UID} .iptv-main.list-hidden .iptv-list{width:0;border-right-width:0}
 
         #${UID} .iptv-search{padding:10px 10px 6px;flex-shrink:0}
@@ -321,7 +349,6 @@
         #${UID} .iptv-search input::placeholder{color:#6b5a4a}
         #${UID} .iptv-search input:focus{border-color:#ff8c42;box-shadow:0 0 8px rgba(255,140,66,0.3)}
 
-        /* Chips de filtro */
         #${UID} .iptv-filters{display:flex;flex-wrap:wrap;gap:4px;padding:0 10px 8px;flex-shrink:0;
             max-height:80px;overflow-y:auto}
         #${UID} .iptv-filters::-webkit-scrollbar{width:3px}
@@ -366,34 +393,22 @@
             border:2px solid rgba(255,140,66,0.2);border-top-color:#ff8c42;
             border-radius:50%;margin:0 auto 8px;animation:iptvSpin .7s linear infinite}
 
-        /* ===== Player ===== */
+        /* ===== Player — SEM overlay CRT ===== */
         #${UID} .iptv-player{flex:1;min-width:0;position:relative;background:#000;
-            display:flex;align-items:center;justify-content:center;overflow:hidden}
+            display:flex;align-items:center;justify-content:center;overflow:hidden;
+            /* leve vinheta interna pra dar sensação de "tela embutida" sem cobrir o vídeo */
+            box-shadow:inset 0 0 24px rgba(0,0,0,0.55)}
         #${UID} .iptv-player video{width:100%;height:100%;object-fit:contain;display:block}
         #${UID} .iptv-placeholder{color:#6b5a4a;font-size:12px;text-align:center;padding:20px;
             font-family:"Courier New",monospace}
 
-        /* ===== Overlay CRT / scanlines ===== */
-        #${UID} .iptv-crt{position:absolute;inset:0;pointer-events:none;z-index:5;
-            background:repeating-linear-gradient(
-                0deg,
-                rgba(0,0,0,0.15) 0px,
-                rgba(0,0,0,0.15) 1px,
-                transparent 1px,
-                transparent 3px
-            );
-            background-size:100% 4px;
-            animation:iptvScanline 1.2s linear infinite}
-        #${UID} .iptv-crt::after{content:'';position:absolute;inset:0;
-            background:radial-gradient(ellipse at center,
-                transparent 55%, rgba(0,0,0,0.35) 100%);
-            animation:iptvFlicker 3s ease-in-out infinite}
-
-        /* ===== Handle de resize 16:9 ===== */
-        #${UID} .iptv-resize{position:absolute;right:0;bottom:0;width:18px;height:18px;
+        /* ===== Handle de resize ===== */
+        #${UID} .iptv-resize{position:absolute;right:4px;bottom:4px;width:18px;height:18px;
             cursor:nwse-resize;z-index:20;
-            background:linear-gradient(135deg,transparent 50%,#ff8c42 50%);
-            opacity:.5;transition:opacity .15s}
+            background:linear-gradient(135deg,transparent 48%,#ff8c42 48%,#ff8c42 52%,transparent 52%,
+                                                transparent 62%,#ff8c42 62%,#ff8c42 66%,transparent 66%,
+                                                transparent 76%,#ff8c42 76%,#ff8c42 80%,transparent 80%);
+            opacity:.35;transition:opacity .15s}
         #${UID} .iptv-resize:hover{opacity:1}
         `;
         document.head.appendChild(style);
@@ -407,7 +422,8 @@
                     <span class="iptv-title">IPTV · BR</span>
                 </div>
                 <div class="iptv-actions">
-                    <div class="iptv-btn" id="${UID}toggle" title="Ocultar lista">◧</div>
+                    <div class="iptv-btn" id="${UID}hdrToggle" title="Ocultar cabeçalho">▭</div>
+                    <div class="iptv-btn" id="${UID}listToggle" title="Ocultar lista">◧</div>
                     <div class="iptv-btn" id="${UID}min" title="Minimizar">−</div>
                     <div class="iptv-btn" id="${UID}cls" title="Fechar">✕</div>
                 </div>
@@ -424,9 +440,9 @@
                 </div>
                 <div class="iptv-player" id="${UID}player">
                     <div class="iptv-placeholder">▶ selecione um canal</div>
-                    <div class="iptv-crt"></div>
                 </div>
             </div>
+            <div class="iptv-unhide" id="${UID}unhide" title="Mostrar cabeçalho">▭</div>
             <div class="iptv-resize" id="${UID}resize"></div>
         `;
         document.body.appendChild(win);
@@ -445,11 +461,36 @@
         let hls = null;
         let conectarTimeout = null;
         let chamadaAtual = 0;
-        let filtroCategoria = null; // null = todos
+        let filtroCategoria = null;
         let mostrarSoFavoritos = false;
         let termoBusca = '';
 
-        // ---- Drag ----
+        // Estado de tamanho — a janela toda em pixels (border-box)
+        const state = { winW: 966 };
+
+        // ---- Layout: calcula janela a partir do estado ----
+        function aplicarLayout(animar) {
+            const listVisible = !mainEl.classList.contains('list-hidden');
+            const headerVisible = !win.classList.contains('header-hidden');
+            const listW = listVisible ? LIST_WIDTH : 0;
+            const headerH = headerVisible ? HEADER_HEIGHT : 0;
+
+            // Largura do vídeo = largura da janela - bordas - lista
+            const videoW = state.winW - BORDER_TOTAL - listW;
+            const videoH = videoW * 9 / 16;
+            const winH = videoH + headerH + BORDER_TOTAL;
+
+            win.style.transition = animar
+                ? 'width .25s cubic-bezier(.4,0,.2,1), height .25s cubic-bezier(.4,0,.2,1)'
+                : 'none';
+            win.style.width = Math.round(state.winW) + 'px';
+            win.style.height = Math.round(winH) + 'px';
+            if (animar) {
+                setTimeout(() => { if (!resizeState) win.style.transition = ''; }, 280);
+            }
+        }
+
+        // ---- Drag do header ----
         let drag = null;
         hdr.addEventListener('mousedown', e => {
             if (e.target.closest('.iptv-btn')) return;
@@ -465,33 +506,44 @@
         document.addEventListener('mousemove', aoMoverJanela);
         document.addEventListener('mouseup', aoSoltarJanela);
 
-        // ---- Resize travado em 16:9 ----
+        // ---- Resize travado em 16:9 (na ÁREA DO VÍDEO) ----
         let resizeState = null;
         resizeHandle.addEventListener('mousedown', e => {
             e.preventDefault();
             e.stopPropagation();
-            const r = win.getBoundingClientRect();
-            resizeState = { startX: e.clientX, startY: e.clientY, startW: r.width, startH: r.height };
+            const listVisible = !mainEl.classList.contains('list-hidden');
+            resizeState = {
+                startX: e.clientX,
+                startY: e.clientY,
+                startWinW: state.winW,
+                listVisible,
+            };
+            win.style.transition = 'none';
         });
         function aoMoverResize(e) {
             if (!resizeState) return;
             const dx = e.clientX - resizeState.startX;
             const dy = e.clientY - resizeState.startY;
-            // Usa a maior variação pra definir o novo tamanho, mantendo 16:9
-            let novaW = resizeState.startW + dx;
-            let novaH = resizeState.startH + dy;
-            // Ajusta pro ratio: escolhe a dimensão que mudou mais
-            if (Math.abs(dx) >= Math.abs(dy)) {
-                novaH = novaW / ASPECT_RATIO;
-            } else {
-                novaW = novaH * ASPECT_RATIO;
-            }
-            novaW = Math.max(MIN_WIDTH, novaW);
-            novaH = novaW / ASPECT_RATIO;
-            win.style.width = Math.round(novaW) + 'px';
-            win.style.height = Math.round(novaH) + 'px';
+
+            // Converte o movimento vertical para equivalente horizontal (16:9),
+            // e usa o eixo com maior magnitude para dirigir o tamanho.
+            const dyAsDx = dy * ASPECT_RATIO;
+            const delta = Math.abs(dx) > Math.abs(dyAsDx) ? dx : dyAsDx;
+
+            const listW = resizeState.listVisible ? LIST_WIDTH : 0;
+            const minWinW = MIN_VIDEO_W + BORDER_TOTAL + listW;
+            const maxWinW = MAX_VIDEO_W + BORDER_TOTAL + listW;
+
+            let novoWinW = resizeState.startWinW + delta;
+            novoWinW = Math.max(minWinW, Math.min(maxWinW, novoWinW));
+            state.winW = novoWinW;
+            aplicarLayout(false);
         }
-        function aoSoltarResize() { resizeState = null; }
+        function aoSoltarResize() {
+            if (!resizeState) return;
+            resizeState = null;
+            win.style.transition = '';
+        }
         document.addEventListener('mousemove', aoMoverResize);
         document.addEventListener('mouseup', aoSoltarResize);
 
@@ -605,7 +657,7 @@
 
             const candidatos = ch.urls || [];
             if (!candidatos.length) {
-                playerEl.innerHTML = '<div class="iptv-placeholder">⚠ sem fonte disponível</div><div class="iptv-crt"></div>';
+                playerEl.innerHTML = '<div class="iptv-placeholder">⚠ sem fonte disponível</div>';
                 return;
             }
 
@@ -631,7 +683,7 @@
                         itemEl.insertAdjacentHTML('beforeend', badgeFalhaHtml(ch.id));
                     }
                 }
-                playerEl.innerHTML = '<div class="iptv-placeholder">⚠ nenhuma fonte funcionou</div><div class="iptv-crt"></div>';
+                playerEl.innerHTML = '<div class="iptv-placeholder">⚠ nenhuma fonte funcionou</div>';
             }
 
             function proximaFonte() {
@@ -649,7 +701,7 @@
                 const url = candidatos[indice];
                 let tentativasRecuperacao = 0;
                 const rotulo = candidatos.length > 1 ? ` (${indice + 1}/${candidatos.length})` : '';
-                playerEl.innerHTML = '<div class="iptv-placeholder"><div class="iptv-spin"></div>conectando' + rotulo + '</div><div class="iptv-crt"></div>';
+                playerEl.innerHTML = '<div class="iptv-placeholder"><div class="iptv-spin"></div>conectando' + rotulo + '</div>';
 
                 conectarTimeout = setTimeout(proximaFonte, CONECTAR_TIMEOUT_MS);
 
@@ -657,7 +709,7 @@
                     const Hls = await loadHlsJs();
                     if (minhaChamada !== chamadaAtual) return;
 
-                    playerEl.innerHTML = '<video id="' + UID + 'video" controls autoplay></video><div class="iptv-crt"></div>';
+                    playerEl.innerHTML = '<video id="' + UID + 'video" controls autoplay></video>';
                     const video = document.getElementById(UID + 'video');
                     video.addEventListener('playing', () => sucesso(url), { once: true });
 
@@ -684,7 +736,7 @@
                         video.src = url;
                     } else {
                         clearTimeout(conectarTimeout);
-                        playerEl.innerHTML = '<div class="iptv-placeholder">navegador sem suporte a HLS</div><div class="iptv-crt"></div>';
+                        playerEl.innerHTML = '<div class="iptv-placeholder">navegador sem suporte a HLS</div>';
                     }
                 } catch (e) {
                     proximaFonte();
@@ -704,13 +756,35 @@
             }, 180);
         });
 
-        // Botão ocultar lista
-        win.querySelector('#' + UID + 'toggle').addEventListener('click', (e) => {
+        // Toggle: ocultar lista (afeta a largura da janela por causa do 16:9)
+        win.querySelector('#' + UID + 'listToggle').addEventListener('click', (e) => {
+            const viraOculto = !mainEl.classList.contains('list-hidden');
+
+            // Se vamos ocultar a lista, mantém a janela: o vídeo cresce horizontalmente.
+            // Se vamos mostrar, mantém a janela: o vídeo encolhe e cede espaço.
+            // Em ambos os casos o estado winW permanece; aplicarLayout recalcula.
             mainEl.classList.toggle('list-hidden');
             e.currentTarget.classList.toggle('active', mainEl.classList.contains('list-hidden'));
+
+            // Se a janela ficaria menor que o mínimo, ajusta o winW pro mínimo
+            const listW = mainEl.classList.contains('list-hidden') ? 0 : LIST_WIDTH;
+            const minWinW = MIN_VIDEO_W + BORDER_TOTAL + listW;
+            if (state.winW < minWinW) state.winW = minWinW;
+
+            aplicarLayout(true);
         });
 
+        // Toggle: ocultar header
+        function toggleHeader() {
+            win.classList.toggle('header-hidden');
+            aplicarLayout(true);
+        }
+        win.querySelector('#' + UID + 'hdrToggle').addEventListener('click', toggleHeader);
+        win.querySelector('#' + UID + 'unhide').addEventListener('click', toggleHeader);
+
         // ---- Carga inicial ----
+        aplicarLayout(false);
+
         carregarDados()
             .then(({ canais, categorias }) => {
                 allChannels = canais;
@@ -743,7 +817,10 @@
         win.querySelector('#' + UID + 'min').addEventListener('click', minimize);
         win.querySelector('#' + UID + 'cls').addEventListener('click', kill);
 
-        window._iptv = { kill, show: () => { win.style.display = 'flex'; } };
+        window._iptv = {
+            kill,
+            show: () => { win.style.display = 'flex'; aplicarLayout(false); }
+        };
     }
 
     if (document.body) {
