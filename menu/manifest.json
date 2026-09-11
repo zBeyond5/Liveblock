@@ -109,6 +109,28 @@
       "secret": false,
       "instanceKey": "_prozilla",
       "url": "https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/modules/prozilla.js"
+    },
+    {
+      "id": "yt",
+      "name": "YouTube",
+      "description": "Assista vídeos do YouTube",
+      "icon": "https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/assets/PNG/boosterlive.png",
+      "enabled": true,
+      "autoload": false,
+      "secret": false,
+      "instanceKey": "_yt",
+      "url": "https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/modules/yt.js"
+    },
+    {
+      "id": "iptv",
+      "name": "IPTV",
+      "description": "TV aberta",
+      "icon": "https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/assets/PNG/packetlive.png",
+      "enabled": true,
+      "autoload": false,
+      "secret": false,
+      "instanceKey": "_iptv",
+      "url": "https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/modules/iptv.js"
     }
   ]
 }
