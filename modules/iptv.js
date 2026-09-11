@@ -1,9 +1,4 @@
-// modules/iptv.js — injetado pelo Sang Hub
-// v3: logos voltaram a vir do tvg-logo do M3U (método anterior que funcionava —
-// channels.json parou de trazer o campo "logo" de forma confiável). Adicionada
-// segunda fonte de stream (Free-TV/IPTV) com fallback em cascata: se a fonte
-// atual não carrega, tenta a próxima; quando uma funciona, fica salva como o
-// link preferido do canal pra próxima vez.
+
 (function() {
     'use strict';
     const UID = '_iptv';
@@ -12,29 +7,24 @@
     const HLS_JS_CDN = 'https://cdn.jsdelivr.net/npm/hls.js@1.5.15/dist/hls.min.js';
     const CHANNELS_API_URL = 'https://iptv-org.github.io/api/channels.json';
     const STREAMS_API_URL = 'https://iptv-org.github.io/api/streams.json';
-    const PLAYLIST_INDEX_URL = 'https://iptv-org.github.io/iptv/index.m3u'; // só usado pros logos (tvg-logo)
-    const FREE_TV_URL = 'https://raw.githubusercontent.com/Free-TV/IPTV/master/playlist.m3u8'; // fonte extra de stream
+    const PAIS = 'BR'; // ISO 3166-1 alpha-2
+    const PLAYLIST_INDEX_URL = `https://iptv-org.github.io/iptv/countries/${PAIS.toLowerCase()}.m3u`;
+    const FREE_TV_URL = 'https://raw.githubusercontent.com/Free-TV/IPTV/master/playlist.m3u8';
 
     const CACHE_PREFIX = 'iptv_';
-    const FALHA_TTL_MS = 6 * 60 * 60 * 1000; // depois disso, o canal volta a ser "não verificado"
-    const CONECTAR_TIMEOUT_MS = 9000; // por candidato de URL
-    const MAX_TENTATIVAS_RECUPERACAO = 1; // por candidato, antes de cair pro próximo
+    const FALHA_TTL_MS = 6 * 60 * 60 * 1000;
+    const CONECTAR_TIMEOUT_MS = 9000;
+    const MAX_TENTATIVAS_RECUPERACAO = 1;
 
-    // ---------- Storage (localStorage — módulo só roda injetado pelo Hub) ----------
+    // ---------- Storage ----------
     function lerCache(chave, padrao) {
         try {
             const raw = localStorage.getItem(CACHE_PREFIX + chave);
             return raw === null ? padrao : JSON.parse(raw);
-        } catch (e) {
-            return padrao;
-        }
+        } catch (e) { return padrao; }
     }
     function salvarCache(chave, valor) {
-        try {
-            localStorage.setItem(CACHE_PREFIX + chave, JSON.stringify(valor));
-        } catch (e) {
-            // localStorage indisponível — segue sem persistir
-        }
+        try { localStorage.setItem(CACHE_PREFIX + chave, JSON.stringify(valor)); } catch (e) {}
     }
 
     // ---------- Cache de falhas por canal ----------
@@ -56,10 +46,7 @@
     }
     function limparFalha(id) {
         const falhas = obterFalhas();
-        if (falhas[id]) {
-            delete falhas[id];
-            salvarCache('falhas', falhas);
-        }
+        if (falhas[id]) { delete falhas[id]; salvarCache('falhas', falhas); }
     }
     function formatarRelativoCurto(iso) {
         const diffMin = Math.floor((Date.now() - new Date(iso).getTime()) / 60000);
@@ -67,7 +54,7 @@
         return 'há ' + Math.floor(diffMin / 60) + 'h';
     }
 
-    // ---------- Cache do link que funcionou por canal ----------
+    // ---------- Link que funcionou por canal ----------
     function obterLinksFuncionais() {
         const dados = lerCache('links-funcionais', {});
         return dados && typeof dados === 'object' ? dados : {};
@@ -103,7 +90,25 @@
             .replace(/[^a-z0-9]/g, '');
     }
 
-    // Parser simples de M3U: extrai {name, logo, tvgId, url}
+    // Avatar SVG com a inicial do canal — substitui logo quebrada sem "buraco" visual.
+    // Cacheado por letra para não recalcular em toda renderização.
+    const _avatarCache = new Map();
+    function logoPlaceholder(nome) {
+        const letra = (String(nome || '?').trim().charAt(0) || '?').toUpperCase();
+        if (_avatarCache.has(letra)) return _avatarCache.get(letra);
+        const svg =
+            '<svg xmlns="http://www.w3.org/2000/svg" width="44" height="44">' +
+            '<rect width="44" height="44" rx="6" fill="#241010"/>' +
+            '<text x="50%" y="52%" font-family="system-ui,sans-serif" font-size="20" ' +
+            'font-weight="800" fill="#ff8080" text-anchor="middle" dominant-baseline="middle">' +
+            escapeHtml(letra) +
+            '</text></svg>';
+        const uri = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
+        _avatarCache.set(letra, uri);
+        return uri;
+    }
+
+    // ---------- Parser M3U ----------
     function parseM3U(text) {
         const lines = text.split('\n');
         const canais = [];
@@ -139,7 +144,7 @@
         return res.text();
     }
 
-    // ---------- Fonte de dados: iptv-org (metadados + streams) + Free-TV (streams extras) ----------
+    // ---------- Carga de canais (só BR) ----------
     async function carregarCanais() {
         const [resCh, resSt, resM3u, resFreeTv] = await Promise.allSettled([
             buscarJson(CHANNELS_API_URL),
@@ -154,7 +159,7 @@
         const channels = resCh.value;
         const streams = resSt.value;
 
-        // logos: método anterior que funcionava — extraído do tvg-logo do M3U
+        // Logos: extraídas do tvg-logo da playlist BR.
         const logoPorId = new Map();
         if (resM3u.status === 'fulfilled') {
             parseM3U(resM3u.value).forEach(c => {
@@ -162,8 +167,7 @@
             });
         }
 
-        // fonte secundária de streams, casada por nome normalizado (heurística —
-        // pode falhar em nomes muito genéricos, por isso entra só como candidato extra)
+        // Fonte secundária de streams (match por nome normalizado).
         const freeTvPorNome = new Map();
         if (resFreeTv.status === 'fulfilled') {
             parseM3U(resFreeTv.value).forEach(c => {
@@ -185,6 +189,11 @@
         const lista = [];
         for (const c of channels) {
             if (c.closed || c.is_nsfw) continue;
+
+            // Filtro de país — aceita string ou array (a API variou entre versões).
+            const paises = Array.isArray(c.country) ? c.country : [c.country];
+            const ehBR = paises.some(p => (p || '').toUpperCase() === PAIS);
+            if (!ehBR) continue;
 
             const candidatos = (urlsPorCanal.get(c.id) || []).slice();
 
@@ -211,7 +220,7 @@
             });
         }
 
-        lista.sort((a, b) => a.name.localeCompare(b.name));
+        lista.sort((a, b) => a.name.localeCompare(b.name, 'pt-BR'));
         return lista;
     }
 
@@ -279,7 +288,7 @@
         win.id = UID;
         win.innerHTML = `
             <div class="iptv-hdr" id="${UID}hdr">
-                <div class="iptv-brand"><span class="iptv-dot"></span><span class="iptv-title">IPTV</span></div>
+                <div class="iptv-brand"><span class="iptv-dot"></span><span class="iptv-title">IPTV · BR</span></div>
                 <div class="iptv-actions">
                     <div class="iptv-btn" id="${UID}min" title="Minimizar">−</div>
                     <div class="iptv-btn" id="${UID}cls" title="Fechar">✕</div>
@@ -287,7 +296,7 @@
             </div>
             <div class="iptv-main">
                 <div class="iptv-list">
-                    <div class="iptv-search"><input type="text" id="${UID}search" placeholder="Buscar canal, país ou categoria…" /></div>
+                    <div class="iptv-search"><input type="text" id="${UID}search" placeholder="Buscar canal ou categoria…" /></div>
                     <div class="iptv-channels" id="${UID}channels"><div class="iptv-loading"><div class="iptv-spin"></div>Carregando lista…</div></div>
                 </div>
                 <div class="iptv-player" id="${UID}player">
@@ -297,7 +306,7 @@
         `;
         document.body.appendChild(win);
 
-        // ---- Drag pelo header (listeners nomeados p/ remover no kill) ----
+        // ---- Drag ----
         let drag = null;
         const hdr = win.querySelector('#' + UID + 'hdr');
         hdr.addEventListener('mousedown', e => {
@@ -347,9 +356,13 @@
             channelsEl.innerHTML = filtered.map((c) => {
                 const falhou = !!obterStatusFalha(c.id);
                 const meta = [c.country, c.category].filter(Boolean).join(' · ');
+                const logoSrc = c.logo || logoPlaceholder(c.name);
+                const fallback = logoPlaceholder(c.name);
                 return `
                 <div class="iptv-ch${falhou ? ' iptv-ch-falhou' : ''}" data-id="${escapeHtml(c.id)}">
-                    ${c.logo ? `<img src="${c.logo}" alt="" onerror="this.style.display='none'"/>` : '<span style="width:22px"></span>'}
+                    <img src="${escapeHtml(logoSrc)}" alt=""
+                         loading="lazy" decoding="async" referrerpolicy="no-referrer"
+                         onerror="this.onerror=null;this.src='${fallback}'"/>
                     <span class="iptv-ch-info">
                         <span class="iptv-ch-name">${escapeHtml(c.name)}</span>
                         ${meta ? `<span class="iptv-ch-meta">${escapeHtml(meta)}</span>` : ''}
@@ -366,7 +379,7 @@
             });
         }
 
-        // ---- Reprodução com fallback em cascata entre candidatos de URL ----
+        // ---- Reprodução com fallback em cascata ----
         async function playChannel(ch, itemEl) {
             const minhaChamada = ++chamadaAtual;
             clearTimeout(conectarTimeout);
@@ -422,7 +435,6 @@
                 const rotulo = candidatos.length > 1 ? ` (${indice + 1}/${candidatos.length})` : '';
                 playerEl.innerHTML = '<div class="iptv-placeholder"><div class="iptv-spin" style="margin:0 auto 10px"></div>Conectando' + rotulo + '…</div>';
 
-                // watchdog: nunca deixa "Conectando…" preso — cai pro próximo candidato
                 conectarTimeout = setTimeout(proximaFonte, CONECTAR_TIMEOUT_MS);
 
                 try {
@@ -441,7 +453,7 @@
                         instancia.loadSource(url);
                         instancia.attachMedia(video);
                         instancia.on(Hls.Events.ERROR, (event, data) => {
-                            if (minhaChamada !== chamadaAtual || hls !== instancia) return; // evento atrasado
+                            if (minhaChamada !== chamadaAtual || hls !== instancia) return;
                             if (!data.fatal) return;
 
                             if (tentativasRecuperacao < MAX_TENTATIVAS_RECUPERACAO) {
@@ -452,7 +464,6 @@
                             proximaFonte();
                         });
                     } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
-                        // Safari toca HLS nativamente
                         video.addEventListener('error', proximaFonte, { once: true });
                         video.src = url;
                     } else {
@@ -477,6 +488,9 @@
             .then(lista => {
                 allChannels = lista;
                 renderChannels('');
+                if (!lista.length) {
+                    channelsEl.innerHTML = '<div class="iptv-err">Nenhum canal brasileiro com stream disponível no momento.</div>';
+                }
             })
             .catch(e => {
                 channelsEl.innerHTML = '<div class="iptv-err">⚠️ Falha ao carregar lista de canais.<br>' + escapeHtml(e.message) + '</div>';
@@ -486,7 +500,7 @@
         function kill() {
             clearTimeout(conectarTimeout);
             clearTimeout(buscaDebounce);
-            chamadaAtual++; // invalida qualquer tentativa/callback ainda em voo
+            chamadaAtual++;
             if (hls) hls.destroy();
             document.removeEventListener('mousemove', aoMoverJanela);
             document.removeEventListener('mouseup', aoSoltarJanela);
