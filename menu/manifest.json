@@ -96,6 +96,7 @@
       "enabled": true,
       "autoload": false,
       "secret": false,
+      "misc": true,
       "instanceKey": "_games",
       "url": "https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/modules/gameslive.js"
     },
@@ -107,6 +108,7 @@
       "enabled": true,
       "autoload": false,
       "secret": false,
+      "misc": true,
       "instanceKey": "_prozilla",
       "url": "https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/modules/prozilla.js"
     },
@@ -118,6 +120,7 @@
       "enabled": true,
       "autoload": false,
       "secret": false,
+      "misc": true,
       "instanceKey": "_yt",
       "url": "https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/modules/yt.js"
     },
@@ -129,6 +132,7 @@
       "enabled": true,
       "autoload": false,
       "secret": false,
+      "misc": true,
       "instanceKey": "_iptv",
       "url": "https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/modules/iptv.js"
     }
