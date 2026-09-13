@@ -31,6 +31,12 @@
     // Manutenibilidade: status centralizados (evita strings soltas/typos)
     const STATUS = { UNLOADED: 'unloaded', LOADING: 'loading', LOADED: 'loaded', ERROR: 'error' };
 
+    // Abas do painel (id -> rótulo exibido)
+    const TABS = [
+        { id: 'modules', label: 'Módulos' },
+        { id: 'misc', label: 'Adicionais' }
+    ];
+
     const LOG_PREFIX = '🔶 [Hub]';
     const HLOG = (...a) => console.log(LOG_PREFIX, ...a);
     const HWARN = (...a) => console.warn(LOG_PREFIX, ...a);
@@ -45,7 +51,8 @@
         currentHubVersion: HUB_VERSION,
         updateTimer: null,
         heartbeatTimer: null,
-        isUpdating: false
+        isUpdating: false,
+        activeTab: 'modules'
     };
 
     let renderListFn = null;
@@ -419,6 +426,15 @@
         return icon;
     }
 
+    // Filtra os módulos visíveis para a aba ativa (misc:true → Adicionais, resto → Módulos)
+    function modulesForTab(tabId) {
+        return state.manifest.modules.filter(m => {
+            if (m.enabled === false || m.secret === true) return false;
+            const isMisc = m.misc === true;
+            return tabId === 'misc' ? isMisc : !isMisc;
+        });
+    }
+
     function buildUI() {
         const UID = '_hub';
         // Estabilidade
@@ -454,8 +470,7 @@
         #${UID}::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;background:var(--hub-grad);
             background-size:200% 100%;animation:hubShimmer 4s linear infinite}
 
-        #${UID} .hub-hdr{padding:14px 16px;display:flex;align-items:center;justify-content:space-between;cursor:grab;flex-shrink:0;
-            border-bottom:1px solid rgba(255,255,255,0.06)}
+        #${UID} .hub-hdr{padding:14px 16px;display:flex;align-items:center;justify-content:space-between;cursor:grab;flex-shrink:0}
         #${UID} .hub-hdr:active{cursor:grabbing}
         #${UID} .hub-brand{display:flex;align-items:center;gap:11px;min-width:0}
         #${UID} .hub-key{flex-shrink:0;display:flex;align-items:center;justify-content:center;width:32px;height:32px;border-radius:10px;
@@ -475,8 +490,18 @@
             color:#c7cad6;display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:12px;
             transition:all .18s cubic-bezier(0.16,1,0.3,1);flex-shrink:0}
         #${UID} .hub-hbtn:hover{color:#0b0b10;background:var(--hub-grad);border-color:transparent;box-shadow:0 0 14px rgba(34,211,238,0.35);transform:translateY(-1px)}
-        #${UID} .hub-hbtn:focus-visible,#${UID} .hub-item:focus-visible,#${UID}pill:focus-visible{outline:2px solid var(--hub-cyan);outline-offset:2px}
+        #${UID} .hub-hbtn:focus-visible,#${UID} .hub-item:focus-visible,#${UID}pill:focus-visible,#${UID} .hub-tab:focus-visible{outline:2px solid var(--hub-cyan);outline-offset:2px}
         #${UID} .hub-hbtn.spin svg{animation:hubSpin .6s linear infinite}
+
+        /* Abas (Módulos / Adicionais) — mesma largura do painel, sem deslocar nada */
+        #${UID} .hub-tabs{display:flex;gap:4px;padding:0 12px;flex-shrink:0;border-bottom:1px solid rgba(255,255,255,0.06)}
+        #${UID} .hub-tab{flex:1;text-align:center;padding:9px 6px 10px;font-size:10.5px;font-weight:800;letter-spacing:.05em;
+            text-transform:uppercase;color:var(--hub-muted);background:transparent;border:none;cursor:pointer;position:relative;
+            transition:color .18s ease;font-family:inherit}
+        #${UID} .hub-tab:hover{color:#d1d5db}
+        #${UID} .hub-tab.active{color:#fff}
+        #${UID} .hub-tab.active::after{content:'';position:absolute;left:14px;right:14px;bottom:-1px;height:2px;
+            background:var(--hub-grad);border-radius:2px}
 
         #${UID} .hub-body{padding:12px;overflow-y:auto;flex:1;min-height:0;display:flex;flex-direction:column;gap:7px}
         #${UID} .hub-body::-webkit-scrollbar{width:5px}
@@ -563,6 +588,10 @@
         const REFRESH_SVG = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 12a8 8 0 1 1-2.34-5.66M20 4v5h-5"/></svg>`;
         const UPDATE_SVG = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>`;
 
+        const tabsHtml = TABS.map(t =>
+            `<button class="hub-tab${t.id === state.activeTab ? ' active' : ''}" data-tab="${t.id}" role="button" tabindex="0" aria-pressed="${t.id === state.activeTab}">${escapeHtml(t.label)}</button>`
+        ).join('');
+
         const root = document.createElement('div');
         root.id = UID;
         root.setAttribute('data-hub', '1');
@@ -582,6 +611,7 @@
                 <div class="hub-hbtn" id="${UID}cls" title="Fechar (${SHORTCUT_LABEL})" role="button" tabindex="0" aria-label="Fechar painel">✕</div>
             </div>
         </div>
+        <div class="hub-tabs" id="${UID}tabs">${tabsHtml}</div>
         <div class="hub-body" id="${UID}list"></div>
         <div class="hub-ftr">
             <span>v${HUB_VERSION}</span>
@@ -677,6 +707,23 @@
         btnUpdate.addEventListener('click', onUpdateClick, { signal: ac.signal });
         btnUpdate.addEventListener('keydown', onKeyActivate(onUpdateClick), { signal: ac.signal });
 
+        // Abas: alterna a aba ativa e re-renderiza a lista, sem tocar no resto do layout
+        const tabsEl = root.querySelector('#' + UID + 'tabs');
+        function setActiveTab(tabId) {
+            if (state.activeTab === tabId) return;
+            state.activeTab = tabId;
+            tabsEl.querySelectorAll('.hub-tab').forEach(btn => {
+                const active = btn.dataset.tab === tabId;
+                btn.classList.toggle('active', active);
+                btn.setAttribute('aria-pressed', String(active));
+            });
+            if (renderListFn) renderListFn();
+        }
+        tabsEl.querySelectorAll('.hub-tab').forEach(btn => {
+            btn.addEventListener('click', () => setActiveTab(btn.dataset.tab), { signal: ac.signal });
+            btn.addEventListener('keydown', onKeyActivate(() => setActiveTab(btn.dataset.tab)), { signal: ac.signal });
+        });
+
         document.addEventListener('keydown', e => {
             if (e.altKey && e.shiftKey && e.key.toLowerCase() === SHORTCUT_KEY) {
                 e.preventDefault();
@@ -699,9 +746,10 @@
                 return;
             }
 
-            const visible = state.manifest.modules.filter(m => m.enabled !== false && m.secret !== true);
+            const visible = modulesForTab(state.activeTab);
             if (!visible.length) {
-                listEl.innerHTML = '<div class="hub-empty">Nenhum módulo disponível.</div>';
+                const emptyMsg = state.activeTab === 'misc' ? 'Nenhum adicional disponível.' : 'Nenhum módulo disponível.';
+                listEl.innerHTML = `<div class="hub-empty">${emptyMsg}</div>`;
                 return;
             }
 
