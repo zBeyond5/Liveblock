@@ -116,7 +116,7 @@
       "id": "yt",
       "name": "YouTube",
       "description": "Assista vídeos do YouTube",
-      "icon": "https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/assets/PNG/boosterlive.png",
+      "icon": "https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/assets/GIF/yt.gif",
       "enabled": true,
       "autoload": false,
       "secret": false,
@@ -128,13 +128,25 @@
       "id": "iptv",
       "name": "IPTV",
       "description": "TV aberta",
-      "icon": "https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/assets/PNG/packetlive.png",
+      "icon": "https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/assets/GIF/iptv.gif",
       "enabled": true,
       "autoload": false,
       "secret": false,
       "misc": true,
       "instanceKey": "_iptv",
       "url": "https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/modules/iptv.js"
+    },
+    {
+      "id": "galeria",
+      "name": "Galeria",
+      "description": "Armazenamento de fotos & anotações",
+      "icon": "https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/assets/GIF/galeria.gif",
+      "enabled": true,
+      "autoload": false,
+      "secret": false,
+      "misc": true,
+      "instanceKey": "_galeria",
+      "url": "https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/modules/galeria.js"
     }
   ]
 }
