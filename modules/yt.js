@@ -144,6 +144,16 @@
         `;
         root.appendChild(panel);
 
+        // Impede que teclas digitadas no painel vazem pro listener global do jogo (chat, atalhos, etc.)
+        // O input já processou o evento normalmente antes de pararmos a propagação aqui.
+        function onHostKeydown(e) {
+            if (e.key === 'Escape' && !minimized) kill();
+            e.stopPropagation();
+        }
+        function stopProp(e) { e.stopPropagation(); }
+        const LEAK_EVENTS = ['keydown', 'keyup', 'keypress', 'input', 'beforeinput'];
+        LEAK_EVENTS.forEach(t => host.addEventListener(t, t === 'keydown' ? onHostKeydown : stopProp));
+
         const hdr = panel.querySelector('#hdr');
         const btnKey = panel.querySelector('#btnKey');
         const btnMin = panel.querySelector('#btnMin');
