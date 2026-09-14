@@ -5,9 +5,11 @@
 
     // CONFIG
     const GEOM_KEY = 'sang_panel_yt_state';
-    const APIKEY_KEY = 'AIzaSyA4vw_g3FT06O8ShTm9jbkebCQuVz86Wb8';
+    const APIKEY_KEY = 'sang_yt_api_key';
     const SEARCH_ENDPOINT = 'https://www.googleapis.com/youtube/v3/search';
-    const MIN_W = 460, MIN_H = 340;
+    const MIN_W = 460, MIN_H = 280;
+    const MAX_W = 2400;
+    const RESULTS_W = 260;
 
     // HELPERS
     function loadGeom() {
@@ -73,6 +75,7 @@
             cursor: pointer; font-size: 13px; transition: background .15s, color .15s;
         }
         .btn:hover, .btn:focus-visible { background: rgba(255,255,255,.12); color: #fff; outline: none; }
+        .btn.active { background: rgba(62,166,255,.18); color: #3ea6ff; }
         .searchbar { display: flex; gap: 8px; padding: 8px 10px; flex-shrink: 0; background: #0f0f0f; }
         .searchbar input {
             flex: 1; background: #121212; border: 1px solid rgba(255,255,255,.15); border-radius: 20px;
@@ -89,9 +92,10 @@
         .player { flex: 1; min-width: 0; position: relative; background: #000; }
         .player iframe { width: 100%; height: 100%; border: 0; }
         .results {
-            width: 260px; flex-shrink: 0; overflow-y: auto; background: #0f0f0f;
+            width: ${RESULTS_W}px; flex-shrink: 0; overflow-y: auto; background: #0f0f0f;
             border-left: 1px solid rgba(255,255,255,.06);
         }
+        .results.hidden { display: none; }
         .results::-webkit-scrollbar { width: 4px; }
         .results::-webkit-scrollbar-thumb { background: rgba(255,255,255,.15); border-radius: 2px; }
         .item { display: flex; gap: 8px; padding: 8px; cursor: pointer; transition: background .12s; }
@@ -112,19 +116,15 @@
 
         // STATE
         const geom = loadGeom() || { left: 70, top: 70, width: 820, height: 540 };
-        clampGeom(geom);
-        const state = { searchController: null, results: [] };
+        const state = { searchController: null, results: [], resultsVisible: true };
 
         const panel = document.createElement('div');
         panel.className = 'panel';
-        panel.style.left = geom.left + 'px';
-        panel.style.top = geom.top + 'px';
-        panel.style.width = geom.width + 'px';
-        panel.style.height = geom.height + 'px';
         panel.innerHTML = `
             <div class="hdr" id="hdr">
                 <div class="brand"><div class="logo"></div><span class="title">YouTube</span></div>
                 <div class="actions">
+                    <button class="btn" id="btnToggle" title="Mostrar/ocultar lista de resultados" aria-label="Alternar painel de resultados">▤</button>
                     <button class="btn" id="btnKey" title="Configurar API key" aria-label="Configurar API key">⚙</button>
                     <button class="btn" id="btnMin" title="Minimizar" aria-label="Minimizar">−</button>
                     <button class="btn" id="btnCls" title="Fechar" aria-label="Fechar">✕</button>
@@ -144,8 +144,7 @@
         `;
         root.appendChild(panel);
 
-        // Impede que teclas digitadas no painel vazem pro listener global do jogo (chat, atalhos, etc.)
-        // O input já processou o evento normalmente antes de pararmos a propagação aqui.
+        // Impede que teclas digitadas no painel vazem pro listener global do jogo
         function onHostKeydown(e) {
             if (e.key === 'Escape' && !minimized) kill();
             e.stopPropagation();
@@ -155,6 +154,7 @@
         LEAK_EVENTS.forEach(t => host.addEventListener(t, t === 'keydown' ? onHostKeydown : stopProp));
 
         const hdr = panel.querySelector('#hdr');
+        const btnToggle = panel.querySelector('#btnToggle');
         const btnKey = panel.querySelector('#btnKey');
         const btnMin = panel.querySelector('#btnMin');
         const btnCls = panel.querySelector('#btnCls');
@@ -163,13 +163,44 @@
         const playerWrap = panel.querySelector('#playerWrap');
         const resultsEl = panel.querySelector('#results');
         const resizeHandle = panel.querySelector('#resizeHandle');
+        const searchbarEl = panel.querySelector('.searchbar');
+
+        // ---- Geometria & 16:9 ---------------------------------------------------
+        // Cabeçalho (header + searchbar + bordas) não entra no cálculo do 16:9.
+        function chromeHeight() {
+            const h = hdr.getBoundingClientRect().height + searchbarEl.getBoundingClientRect().height;
+            return h + 2; // 1px top + 1px bottom de borda do panel
+        }
+
+        function computeHeightForWidth(width) {
+            const resultsW = state.resultsVisible ? RESULTS_W : 0;
+            const playerW = width - resultsW - 2; // 2px de borda horizontal
+            if (playerW <= 0) return MIN_H;
+            const playerH = playerW * 9 / 16;
+            return Math.round(playerH + chromeHeight());
+        }
 
         function clampGeom(s) {
-            s.width = Math.max(MIN_W, s.width);
+            s.width = Math.max(MIN_W, Math.min(MAX_W, s.width));
             s.height = Math.max(MIN_H, s.height);
             s.left = Math.min(Math.max(0, s.left), Math.max(0, window.innerWidth - s.width));
             s.top = Math.min(Math.max(0, s.top), Math.max(0, window.innerHeight - s.height));
         }
+
+        function applySize(width, applyPos) {
+            geom.width = Math.max(MIN_W, Math.min(MAX_W, width));
+            geom.height = computeHeightForWidth(geom.width);
+            clampGeom(geom);
+            panel.style.width = geom.width + 'px';
+            panel.style.height = geom.height + 'px';
+            if (applyPos) {
+                panel.style.left = geom.left + 'px';
+                panel.style.top = geom.top + 'px';
+            }
+        }
+
+        // Aplica tamanho inicial respeitando o 16:9
+        applySize(geom.width, true);
 
         // STORAGE
         let saveTimer = null;
@@ -191,7 +222,7 @@
                 allow="autoplay; encrypted-media; picture-in-picture; fullscreen" allowfullscreen></iframe>`;
         }
 
-        // SEARCH (YouTube Data API v3 — chamada só no submit, nunca por tecla, pra poupar cota)
+        // SEARCH
         async function runSearch(query) {
             const key = getApiKey();
             if (!key) {
@@ -228,6 +259,14 @@
                     return;
                 }
 
+                // Ao buscar, garante que a lista está visível pra escolher
+                if (!state.resultsVisible) {
+                    state.resultsVisible = true;
+                    resultsEl.classList.remove('hidden');
+                    btnToggle.classList.remove('active');
+                    applySize(geom.width, false);
+                }
+
                 resultsEl.innerHTML = state.results.map((v, i) => `
                     <div class="item" data-index="${i}">
                         <img src="${v.thumb}" alt="" loading="lazy" />
@@ -260,6 +299,13 @@
             if (videoId) {
                 loadVideo(videoId);
                 resultsEl.innerHTML = '';
+                // Se for link direto, esconde a lista pra maximizar o vídeo
+                if (state.resultsVisible) {
+                    state.resultsVisible = false;
+                    resultsEl.classList.add('hidden');
+                    btnToggle.classList.add('active');
+                    applySize(geom.width, false);
+                }
                 return;
             }
             runSearch(value);
@@ -275,6 +321,16 @@
             if (next === null) return;
             try { localStorage.setItem(APIKEY_KEY, next.trim()); } catch (_) {}
         });
+
+        // Toggle resultados
+        function toggleResults() {
+            state.resultsVisible = !state.resultsVisible;
+            resultsEl.classList.toggle('hidden', !state.resultsVisible);
+            btnToggle.classList.toggle('active', !state.resultsVisible);
+            applySize(geom.width, false);
+            scheduleSaveGeom();
+        }
+        btnToggle.addEventListener('click', toggleResults);
 
         // Drag
         let dragPointerId = null, dragStart = null, dragMoved = false;
@@ -309,20 +365,22 @@
         hdr.addEventListener('pointerup', endDrag);
         hdr.addEventListener('pointercancel', endDrag);
 
-        // Resize
+        // Resize — travado em 16:9 na área do vídeo
         let resizePointerId = null, resizeStart = null;
         function onResizeDown(e) {
             e.stopPropagation();
             resizePointerId = e.pointerId;
-            resizeStart = { mouseX: e.clientX, mouseY: e.clientY, width: geom.width, height: geom.height };
+            resizeStart = { mouseX: e.clientX, mouseY: e.clientY, width: geom.width };
             resizeHandle.setPointerCapture(resizePointerId);
         }
         function onResizeMove(e) {
             if (resizePointerId === null || e.pointerId !== resizePointerId) return;
-            geom.width = resizeStart.width + (e.clientX - resizeStart.mouseX);
-            geom.height = resizeStart.height + (e.clientY - resizeStart.mouseY);
-            clampGeom(geom);
-            panel.style.width = geom.width + 'px'; panel.style.height = geom.height + 'px';
+            const dx = e.clientX - resizeStart.mouseX;
+            const dy = e.clientY - resizeStart.mouseY;
+            // Converte dy pra equivalente horizontal (16:9) e usa o eixo dominante
+            const dyAsDx = dy * 16 / 9;
+            const delta = Math.abs(dx) > Math.abs(dyAsDx) ? dx : dyAsDx;
+            applySize(resizeStart.width + delta, false);
         }
         function endResize(e) {
             if (resizePointerId === null || (e && e.pointerId !== resizePointerId)) return;
@@ -351,7 +409,6 @@
         function onKeyDown(e) { if (e.key === 'Escape' && !minimized) kill(); }
         document.addEventListener('keydown', onKeyDown);
 
-        // kill(): limpa listeners, fetch em andamento, player e DOM
         function kill() {
             if (saveTimer) clearTimeout(saveTimer);
             if (state.searchController) state.searchController.abort();
@@ -368,7 +425,7 @@
             resizeHandle.removeEventListener('pointerup', endResize);
             resizeHandle.removeEventListener('pointercancel', endResize);
 
-            playerWrap.innerHTML = ''; // garante que o iframe pare de tocar
+            playerWrap.innerHTML = '';
             host.remove();
             delete window[UID];
         }
