@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LiveBlock v4.7 — [By Sang]
 // @namespace    http://tampermonkey.net/
-// @version      4.7.8
+// @version      4.7.9
 // @description  Bloqueador de anúncios 
 // @author       Sang
 // @match        *://*.habblive.in/bigclient*
@@ -15,21 +15,13 @@
 (function() {
     'use strict';
 
-    if (window._lb) {
-        try {
-            if (typeof window._lb.kill === 'function') {
-                window._lb.kill();
-            }
-        } catch(e) {}
-        delete window._lb;
+    if (window._blocklive) {
+        try { if (typeof window._blocklive.kill === 'function') window._blocklive.kill(); } catch(e) {}
+        try { delete window._blocklive; } catch(e) {}
     }
-    if (window.__lb) {
-        try {
-            if (typeof window.__lb.kill === 'function') {
-                window.__lb.kill();
-            }
-        } catch(e) {}
-        delete window.__lb;
+    if (window.__blocklive) {
+        try { if (typeof window.__blocklive.kill === 'function') window.__blocklive.kill(); } catch(e) {}
+        try { delete window.__blocklive; } catch(e) {}
     }
 
     const LOG = (...args) => console.log('🔵 [LiveBlock]', ...args);
@@ -37,7 +29,7 @@
     const ERR = (...args) => console.error('🔴 [LiveBlock]', ...args);
 
     // ─── VERSÃO ───
-    const VERSION = "4.7.8";
+    const VERSION = "4.7.9";
     const RAW_URL = "https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/adblock.js";
     const REPO_VIEW_URL = "https://github.com/zBeyond5/Liveblock/blob/main/adblock.js";
 
@@ -227,7 +219,7 @@
     // ─── CLEAN WINDOW ───
     const cleanWindow = () => {
         const props = Object.getOwnPropertyNames(window);
-        const bad = ['__lb', '_lb', 'lb', 'adblock', 'adblocker', 'ublock', 'adguard'];
+        const bad = ['__blocklive', '_blocklive', 'lb', 'adblock', 'adblocker', 'ublock', 'adguard'];
         props.forEach(p => {
             const low = p.toLowerCase();
             if (bad.some(b => low.includes(b))) {
@@ -339,6 +331,13 @@
         if (n) push("DOM", `Removidos ${n}`);
     };
 
+    // Debounce: evita rodar o scan pesado do removeAds() a cada mutação individual do DOM.
+    let removeAdsTimer = null;
+    const scheduleRemoveAds = () => {
+        if (removeAdsTimer) return;
+        removeAdsTimer = setTimeout(() => { removeAdsTimer = null; removeAds(); }, 150);
+    };
+
     // ─── LOG ───
     let _renderLogs = () => {}, _renderStats = () => {}, _toast = () => {};
 
@@ -355,15 +354,17 @@
     let obs = null;
     let timerInterval = null;
     let toastTm = null;
+    let refreshTimer = null;
+    let onDocClick = null;
 
     const initObserver = () => {
         if (obs) obs.disconnect();
-        obs = new MutationObserver(removeAds);
+        obs = new MutationObserver(scheduleRemoveAds);
         obs.observe(document.documentElement, { childList: true, subtree: true });
     };
 
     const refreshLoop = () => {
-        setInterval(() => {
+        refreshTimer = setInterval(() => {
             if (S.killFlag) return;
             cleanWindow();
             removeAds();
@@ -375,7 +376,7 @@
         if (S.injected) return;
 
         try {
-            const UID = "_lb" + Math.random().toString(36).slice(2, 8);
+            const UID = "_blocklive" + Math.random().toString(36).slice(2, 8);
 
             const style = document.createElement("style");
             style.setAttribute("data-lb", "1");
@@ -551,11 +552,12 @@
                 popEl.classList.toggle("show");
             });
 
-            document.addEventListener("click", (e) => {
+            onDocClick = (e) => {
                 if (!popEl.contains(e.target) && e.target.id !== `${UID}aSocial`) {
                     popEl.classList.remove("show");
                 }
-            });
+            };
+            document.addEventListener("click", onDocClick);
 
             // ─── AÇÕES ───
             root.querySelector(`#${UID}aClean`).addEventListener("click", () => { push("ACTION","Limpeza manual",true); _toast("Limpando..."); removeAds(); });
@@ -635,19 +637,30 @@
             // ─── KILL ───
             function kill() {
                 S.killFlag = true;
+
                 if (timerInterval) clearInterval(timerInterval);
                 if (toastTm) clearTimeout(toastTm);
+                if (removeAdsTimer) clearTimeout(removeAdsTimer);
+                if (refreshTimer) clearInterval(refreshTimer);
                 if (obs) obs.disconnect();
+
                 document.removeEventListener("mousemove", onMove);
                 document.removeEventListener("mouseup", onUp);
+                if (onDocClick) document.removeEventListener("click", onDocClick);
+
+                window.fetch = _fetch;
+                window.XMLHttpRequest = _XHR;
+                console.log = _origLog;
+                console.warn = _origWarn;
+                console.error = _origError;
+
                 if (root && root.parentNode) root.remove();
                 if (style && style.parentNode) style.remove();
-                try { delete window._lb; } catch(e) {}
-                try { delete window.__lb; } catch(e) {}
+                try { delete window._blocklive; } catch(e) {}
                 cleanWindow();
             }
 
-            window._lb = { kill, S };
+            window._blocklive = { kill, S };
 
             _renderStats();
             _renderLogs();
@@ -709,21 +722,6 @@
         document.addEventListener('DOMContentLoaded', aggressiveInject);
         setTimeout(aggressiveInject, 1000);
     }
-
-    // ─── WINDOW STEALTH ───
-    const _lbSym = Symbol('lb');
-    Object.defineProperty(window, '_lb', {
-        get() { return window[_lbSym]; },
-        set(v) { window[_lbSym] = v; },
-        enumerable: false,
-        configurable: false
-    });
-
-    Object.defineProperty(window, '__lb', {
-        get: () => undefined,
-        enumerable: false,
-        configurable: false
-    });
 
     LOG('✅ LiveBlock v4.7 inicializado com sucesso');
 
