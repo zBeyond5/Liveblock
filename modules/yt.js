@@ -171,7 +171,7 @@
         hdr.addEventListener('pointerup', endDrag);
         hdr.addEventListener('pointercancel', endDrag);
 
-        // ---- Resize (handle próprio via Pointer Events, sem `resize:both` nativo) ----
+        // ---- Resize 
         let resizePointerId = null;
         let resizeStart = null; // { mouseX, mouseY, width, height }
 
