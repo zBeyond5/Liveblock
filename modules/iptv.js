@@ -1,7 +1,10 @@
 // modules/iptv.js — injetado pelo Sang Hub
-// v7: UI refeita como smart TV — home em grade cheia de canais (estilo launcher),
-// tela de player separada (grade some, só o vídeo fica em foco), tema
-// grafite/azul. Navegação só por mouse. Lógica de dados/fallback/cache mantida.
+// v7.1: correções de performance e robustez sem alterar UI nem comportamento.
+// - Estado (favoritos/falhas/links) agora vive em memória com persistência debounced
+// - renderChannels lê o estado uma vez por render (antes: ~600 JSON.parse)
+// - fetches deixam de usar cache:'no-store' (respeitam Cache-Control do iptv-org)
+// - AbortController nos fetches + flush no kill
+// - setTimeout do aplicarLayout guardado por handle
 (function() {
     'use strict';
     const UID = '_iptv';
@@ -20,11 +23,10 @@
     const CONECTAR_TIMEOUT_MS = 9000;
     const MAX_TENTATIVAS_RECUPERACAO = 1;
 
-    // Constantes de layout — batem com o CSS abaixo
     const ASPECT_RATIO = 16 / 9;
     const HEADER_HEIGHT = 44;
     const CONTROLBAR_HEIGHT = 58;
-    const BORDER_TOTAL = 2; // 1px cada lado
+    const BORDER_TOTAL = 2;
     const MIN_VIDEO_W = 360;
     const MAX_VIDEO_W = 2400;
     const MIN_HOME_W = 620;
@@ -32,7 +34,7 @@
     const MIN_HOME_H = 420;
     const MAX_HOME_H = 1050;
 
-    // ---------- Storage ----------
+    // ---------- Storage bruto ----------
     function lerCache(chave, padrao) {
         try {
             const raw = localStorage.getItem(CACHE_PREFIX + chave);
@@ -43,60 +45,113 @@
         try { localStorage.setItem(CACHE_PREFIX + chave, JSON.stringify(valor)); } catch (e) {}
     }
 
-    // ---------- Favoritos ----------
-    function obterFavoritos() {
-        const dados = lerCache('favoritos', []);
-        return Array.isArray(dados) ? dados : [];
-    }
-    function toggleFavorito(id) {
-        const favs = obterFavoritos();
-        const idx = favs.indexOf(id);
-        if (idx === -1) favs.push(id);
-        else favs.splice(idx, 1);
-        salvarCache('favoritos', favs);
-        return idx === -1;
-    }
-    function ehFavorito(id) {
-        return obterFavoritos().includes(id);
+    // ---------- Estado em memória (fonte da verdade) ----------
+    // localStorage só é tocado por persistirAgora(). Isso elimina os JSON.parse
+    // repetidos por item e as escritas em cascata quando muitos canais falham.
+    const estado = {
+        favoritos: null,   // Set
+        falhas: null,      // { [id]: { em: number(ts) | string(iso), motivo } }
+        links: null,       // { [id]: url }
+        _dirty: false,
+        _timeout: null,
+        _carregado: false,
+    };
+
+    function _garantirEstadoCarregado() {
+        if (estado._carregado) return;
+        const favs = lerCache('favoritos', []);
+        estado.favoritos = new Set(Array.isArray(favs) ? favs : []);
+        const f = lerCache('falhas', {});
+        estado.falhas = (f && typeof f === 'object') ? f : {};
+        const l = lerCache('links-funcionais', {});
+        estado.links = (l && typeof l === 'object') ? l : {};
+        estado._carregado = true;
     }
 
-    // ---------- Cache de falhas ----------
+    function persistirAgora() {
+        if (!estado._carregado || !estado._dirty) return;
+        if (estado._timeout) { clearTimeout(estado._timeout); estado._timeout = null; }
+        salvarCache('favoritos', [...estado.favoritos]);
+        salvarCache('falhas', estado.falhas);
+        salvarCache('links-funcionais', estado.links);
+        estado._dirty = false;
+    }
+
+    function persistirDebounced() {
+        if (!estado._carregado) return;
+        estado._dirty = true;
+        if (estado._timeout) return;
+        estado._timeout = setTimeout(persistirAgora, 500);
+    }
+
+    // ---------- Favoritos (API pública sobre o Set em memória) ----------
+    function obterFavoritos() {
+        _garantirEstadoCarregado();
+        return estado.favoritos;
+    }
+    function toggleFavorito(id) {
+        _garantirEstadoCarregado();
+        if (estado.favoritos.has(id)) {
+            estado.favoritos.delete(id);
+            persistirDebounced();
+            return false;
+        }
+        estado.favoritos.add(id);
+        persistirDebounced();
+        return true;
+    }
+    function ehFavorito(id) {
+        _garantirEstadoCarregado();
+        return estado.favoritos.has(id);
+    }
+
+    // ---------- Falhas ----------
     function obterFalhas() {
-        const dados = lerCache('falhas', {});
-        return dados && typeof dados === 'object' ? dados : {};
+        _garantirEstadoCarregado();
+        return estado.falhas;
+    }
+    function _tsDe(em) {
+        return typeof em === 'number' ? em : Date.parse(em);
     }
     function obterStatusFalha(id) {
-        const falhas = obterFalhas();
-        const registro = falhas[id];
+        _garantirEstadoCarregado();
+        const registro = estado.falhas[id];
         if (!registro) return null;
-        if (Date.now() - new Date(registro.em).getTime() > FALHA_TTL_MS) return null;
+        if (Date.now() - _tsDe(registro.em) > FALHA_TTL_MS) return null;
         return registro;
     }
     function marcarFalha(id, motivo) {
-        const falhas = obterFalhas();
-        falhas[id] = { em: new Date().toISOString(), motivo: motivo || 'desconhecido' };
-        salvarCache('falhas', falhas);
+        _garantirEstadoCarregado();
+        estado.falhas[id] = { em: Date.now(), motivo: motivo || 'desconhecido' };
+        persistirDebounced();
     }
     function limparFalha(id) {
-        const falhas = obterFalhas();
-        if (falhas[id]) { delete falhas[id]; salvarCache('falhas', falhas); }
+        _garantirEstadoCarregado();
+        if (estado.falhas[id]) {
+            delete estado.falhas[id];
+            persistirDebounced();
+        }
     }
-    function formatarRelativoCurto(iso) {
-        const diffMin = Math.floor((Date.now() - new Date(iso).getTime()) / 60000);
+    function formatarRelativoCurto(em) {
+        const diffMin = Math.floor((Date.now() - _tsDe(em)) / 60000);
         if (diffMin < 60) return 'há ' + diffMin + ' min';
         return 'há ' + Math.floor(diffMin / 60) + 'h';
     }
 
     // ---------- Link funcional ----------
     function obterLinksFuncionais() {
-        const dados = lerCache('links-funcionais', {});
-        return dados && typeof dados === 'object' ? dados : {};
+        _garantirEstadoCarregado();
+        return estado.links;
     }
     function salvarLinkFuncional(id, url) {
-        const dados = obterLinksFuncionais();
-        dados[id] = url;
-        salvarCache('links-funcionais', dados);
+        _garantirEstadoCarregado();
+        if (estado.links[id] === url) return;
+        estado.links[id] = url;
+        persistirDebounced();
     }
+
+    // ---------- AbortController global do módulo ----------
+    let abortController = null;
 
     function loadHlsJs() {
         return new Promise((resolve, reject) => {
@@ -163,13 +218,15 @@
         return canais;
     }
 
+    // Cache HTTP passa a valer (sem cache:'no-store'). iptv-org serve com
+    // Cache-Control razoável, então a segunda abertura fica muito mais rápida.
     async function buscarJson(url) {
-        const res = await fetch(url, { cache: 'no-store' });
+        const res = await fetch(url, { signal: abortController ? abortController.signal : undefined });
         if (!res.ok) throw new Error('HTTP ' + res.status + ' (' + url + ')');
         return res.json();
     }
     async function buscarTexto(url) {
-        const res = await fetch(url, { cache: 'no-store' });
+        const res = await fetch(url, { signal: abortController ? abortController.signal : undefined });
         if (!res.ok) throw new Error('HTTP ' + res.status + ' (' + url + ')');
         return res.text();
     }
@@ -220,7 +277,8 @@
             if (!lista.includes(s.url)) lista.push(s.url);
         }
 
-        const linksFuncionais = obterLinksFuncionais();
+        // Link funcional agora sai do estado em memória, sem parse adicional.
+        const linksFuncionais = estado.links;
 
         const lista = [];
         for (const c of channels) {
@@ -271,6 +329,9 @@
     function init() {
         if (window._iptv) return;
 
+        _garantirEstadoCarregado();
+        abortController = new AbortController();
+
         const style = document.createElement('style');
         style.setAttribute('data-iptv', '1');
         style.textContent = `
@@ -285,7 +346,6 @@
             --tv-star:#f5b942;
         }
 
-        /* ===== Container principal ===== */
         #${UID}{position:fixed;top:60px;left:60px;width:1000px;height:640px;
             box-sizing:border-box;
             font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;
@@ -295,7 +355,6 @@
             box-shadow:0 26px 64px rgba(0,0,0,.65),0 0 0 1px rgba(59,130,246,.10),0 0 26px rgba(59,130,246,.08);
         }
 
-        /* ===== Header ===== */
         #${UID} .iptv-hdr{height:${HEADER_HEIGHT}px;box-sizing:border-box;flex-shrink:0;
             display:flex;align-items:center;justify-content:space-between;
             padding:0 14px;cursor:grab;user-select:none;
@@ -325,12 +384,10 @@
         #${UID}:hover .iptv-unhide{opacity:1}
         #${UID} .iptv-unhide:hover{background:var(--tv-accent);color:#fff}
 
-        /* ===== Body ===== */
         #${UID} .iptv-body{flex:1;min-height:0;position:relative;display:flex;flex-direction:column}
         #${UID}.vista-home .tv-player{display:none}
         #${UID}.vista-player .tv-home{display:none}
 
-        /* ===== Home (grade) ===== */
         #${UID} .tv-home{flex:1;min-height:0;display:flex;flex-direction:column}
 
         #${UID} .tv-toolbar{flex-shrink:0;padding:12px 16px 8px;display:flex;flex-direction:column;gap:9px}
@@ -393,7 +450,6 @@
             border-top-color:var(--tv-accent);border-radius:50%;margin:0 auto 10px;
             animation:iptvSpin .7s linear infinite}
 
-        /* ===== Player ===== */
         #${UID} .tv-player{flex:1;min-height:0;display:flex;flex-direction:column}
         #${UID} .tv-video-wrap{flex:1;min-height:0;position:relative;background:#000;
             display:flex;align-items:center;justify-content:center;overflow:hidden}
@@ -417,7 +473,6 @@
         #${UID} .tv-controlbar .tv-star{position:static;flex-shrink:0;background:var(--tv-bg-card);
             border:1px solid var(--tv-border);width:34px;height:34px}
 
-        /* ===== Resize handle ===== */
         #${UID} .iptv-resize{position:absolute;right:3px;bottom:3px;width:16px;height:16px;
             cursor:nwse-resize;z-index:20;opacity:.3;transition:opacity .15s;
             background:linear-gradient(135deg,transparent 48%,var(--tv-accent-bright) 48%,var(--tv-accent-bright) 52%,transparent 52%,
@@ -474,7 +529,6 @@
         `;
         document.body.appendChild(win);
 
-        // ---- Elementos ----
         const gridEl = win.querySelector('#' + UID + 'grid');
         const videoWrapEl = win.querySelector('#' + UID + 'video-wrap');
         const searchEl = win.querySelector('#' + UID + 'search');
@@ -491,9 +545,15 @@
         let filtroCategoria = null;
         let mostrarSoFavoritos = false;
         let termoBusca = '';
-        let vista = 'home'; // 'home' | 'player'
+        let vista = 'home';
+        let layoutTimeout = null;
 
         const state = { winW: 1000, winHHome: 640 };
+
+        // ---- Flush em unload ----
+        function aoDescarregar() { persistirAgora(); }
+        window.addEventListener('beforeunload', aoDescarregar);
+        window.addEventListener('pagehide', aoDescarregar);
 
         // ---- Layout ----
         function aplicarLayout(animar) {
@@ -515,10 +575,16 @@
                 win.style.height = Math.round(state.winHHome) + 'px';
             }
 
-            if (animar) setTimeout(() => { if (!resizeState) win.style.transition = ''; }, 280);
+            if (animar) {
+                clearTimeout(layoutTimeout);
+                layoutTimeout = setTimeout(() => {
+                    if (!resizeState) win.style.transition = '';
+                    layoutTimeout = null;
+                }, 280);
+            }
         }
 
-        // ---- Drag do header ----
+        // ---- Drag ----
         let drag = null;
         hdr.addEventListener('mousedown', e => {
             if (e.target.closest('.iptv-btn')) return;
@@ -534,7 +600,7 @@
         document.addEventListener('mousemove', aoMoverJanela);
         document.addEventListener('mouseup', aoSoltarJanela);
 
-        // ---- Resize: livre na home, travado em 16:9 no player ----
+        // ---- Resize ----
         let resizeState = null;
         resizeHandle.addEventListener('mousedown', e => {
             e.preventDefault();
@@ -589,7 +655,7 @@
         }
         backBtn.addEventListener('click', voltarParaHome);
 
-        // ---- Estrela (favorito) — sincroniza grade + barra do player ----
+        // ---- Estrela (favorito) ----
         function sincronizarEstrela(id) {
             const fav = ehFavorito(id);
             win.querySelectorAll(`[data-star="${id}"]`).forEach(btn => {
@@ -599,7 +665,7 @@
             });
         }
 
-        // ---- Clique delegado: estrela e tiles ----
+        // ---- Clique delegado ----
         win.addEventListener('click', (e) => {
             const starBtn = e.target.closest('.tv-star');
             if (starBtn && starBtn.dataset.star) {
@@ -617,7 +683,7 @@
             }
         });
 
-        // ---- Filtros (delegado) ----
+        // ---- Filtros ----
         filtersEl.addEventListener('click', (e) => {
             const chip = e.target.closest('.tv-chip');
             if (!chip) return;
@@ -648,13 +714,14 @@
             return '<span class="tv-tile-badge" title="Falhou ' + escapeHtml(formatarRelativoCurto(registro.em)) + '">OFFLINE</span>';
         }
 
+        // renderChannels agora lê o estado uma única vez. Antes eram ~600
+        // JSON.parse por render (2 leituras × 300 itens). Agora é O(1) por item.
         function renderChannels() {
             const q = termoBusca.toLowerCase();
             let filtered = allChannels;
 
             if (mostrarSoFavoritos) {
-                const favs = obterFavoritos();
-                filtered = filtered.filter(c => favs.includes(c.id));
+                filtered = filtered.filter(c => estado.favoritos.has(c.id));
             }
             if (filtroCategoria) {
                 filtered = filtered.filter(c => c.categorias.includes(filtroCategoria));
@@ -674,9 +741,18 @@
             const limit = q || filtroCategoria || mostrarSoFavoritos ? filtered.length : 300;
             const visiveis = filtered.slice(0, limit);
 
+            const agora = Date.now();
+            const falhas = estado.falhas;
+            const favs = estado.favoritos;
+
             gridEl.innerHTML = visiveis.map(c => {
-                const falhou = !!obterStatusFalha(c.id);
-                const fav = ehFavorito(c.id);
+                const reg = falhas[c.id];
+                let falhou = false;
+                if (reg) {
+                    const t = typeof reg.em === 'number' ? reg.em : Date.parse(reg.em);
+                    falhou = (agora - t) < FALHA_TTL_MS;
+                }
+                const fav = favs.has(c.id);
                 const logoSrc = c.logo || logoPlaceholder(c.name);
                 const fallback = logoPlaceholder(c.name);
                 const meta = c.categorias.slice(0, 2).join(' · ');
@@ -834,6 +910,7 @@
 
         carregarDados()
             .then(({ canais, categorias }) => {
+                if (abortController && abortController.signal.aborted) return;
                 allChannels = canais;
                 allCategories = categorias;
                 renderFiltros();
@@ -843,6 +920,7 @@
                 }
             })
             .catch(e => {
+                if (e && e.name === 'AbortError') return;
                 gridEl.innerHTML = '<div class="tv-empty">⚠ Falha ao carregar canais.<br>' + escapeHtml(e.message) + '</div>';
             });
 
@@ -851,8 +929,13 @@
         function kill() {
             clearTimeout(conectarTimeout);
             clearTimeout(buscaDebounce);
+            clearTimeout(layoutTimeout);
             chamadaAtual++;
-            if (hls) hls.destroy();
+            if (hls) { try { hls.destroy(); } catch (e) {} hls = null; }
+            if (abortController) { try { abortController.abort(); } catch (e) {} abortController = null; }
+            persistirAgora();
+            window.removeEventListener('beforeunload', aoDescarregar);
+            window.removeEventListener('pagehide', aoDescarregar);
             document.removeEventListener('mousemove', aoMoverJanela);
             document.removeEventListener('mouseup', aoSoltarJanela);
             document.removeEventListener('mousemove', aoMoverResize);
