@@ -5,7 +5,7 @@
 
     // CONFIG
     const GEOM_KEY = 'sang_panel_yt_state';
-    const APIKEY_KEY = 'sang_yt_api_key';
+    const APIKEY_KEY = 'AIzaSyA4vw_g3FT06O8ShTm9jbkebCQuVz86Wb8';
     const SEARCH_ENDPOINT = 'https://www.googleapis.com/youtube/v3/search';
     const MIN_W = 460, MIN_H = 340;
 
