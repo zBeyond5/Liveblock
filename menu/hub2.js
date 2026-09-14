@@ -6,6 +6,8 @@
 // @author       Sang
 // @match        *://*.habblive.in/bigclient*
 // @match        *://*.habblet.city/bigclient*
+// @match        *://*.habblive.in/me*
+// @match        *://*.habblet.city/me*
 // @grant        none
 // @run-at       document-start
 // @updateURL    https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/menu/hub2.js
@@ -14,6 +16,44 @@
 
 (function() {
     'use strict';
+
+    // Página 
+    if (/\/me(\/|$|\?)/.test(location.pathname)) {
+        function buildHeadshotUrl(walkgifUrl) {
+            try {
+                const u = new URL(walkgifUrl);
+                u.pathname = u.pathname.replace('/walkgif', '/avatarimage');
+                u.searchParams.set('headonly', '1');
+                u.searchParams.set('size', 'm');
+                u.searchParams.set('direction', '2');
+                u.searchParams.set('head_direction', '3');
+                return u.toString();
+            } catch(e) { return walkgifUrl; }
+        }
+
+        function captureFromMePage() {
+            const nameEl = document.querySelector('#new-personal-info > div:nth-child(2) > a > div > img');
+            const mottoEl = document.querySelector('#motto-container > div > p > input[type=text]');
+            const name = nameEl ? nameEl.getAttribute('alt') || '' : '';
+            const mission = mottoEl ? mottoEl.value.trim() : '';
+            const rawAvatarUrl = nameEl ? nameEl.getAttribute('src') || '' : '';
+            const avatarUrl = rawAvatarUrl ? buildHeadshotUrl(rawAvatarUrl) : '';
+            if (!name) return false;
+            try {
+                localStorage.setItem('sanghub_player_cache', JSON.stringify({ name, mission, avatarUrl, capturedAt: Date.now() }));
+            } catch(e) {}
+            return true;
+        }
+
+        // Retry
+        let attempts = 0;
+        const captureInterval = setInterval(() => {
+            attempts++;
+            const ok = captureFromMePage();
+            if (ok || attempts >= 20) clearInterval(captureInterval);
+        }, 500);
+        return;
+    }
 
     const HUB_VERSION = "1.0.1";
     const HUB_UPDATE_URL = "https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/menu/hub2.js";
@@ -26,12 +66,16 @@
 
     const SHORTCUT_KEY = 'h';
     const SHORTCUT_LABEL = 'Alt+Shift+H';
-    const GIF_PLAY_MS = 2000; // duração fixa da animação do GIF por hover
+    const GIF_PLAY_MS = 2000;
 
-    // Manutenibilidade: status centralizados (evita strings soltas/typos)
+    const PLAYTIME_KEY = 'sanghub_playtime_total_ms';
+    const PLAYTIME_FLUSH_MS = 60 * 1000;
+    const CLOCK_TICK_MS = 1000;
+
+    const PLAYER_CACHE_KEY = 'sanghub_player_cache';
+
     const STATUS = { UNLOADED: 'unloaded', LOADING: 'loading', LOADED: 'loaded', ERROR: 'error' };
 
-    // Abas do painel (id -> rótulo exibido)
     const TABS = [
         { id: 'modules', label: 'Módulos' },
         { id: 'misc', label: 'Adicionais' }
@@ -61,7 +105,6 @@
     let uiRoot = null;
     let uiPill = null;
 
-    // Segurança: escapa strings vindas do manifest antes de ir pro innerHTML
     function escapeHtml(str) {
         return String(str ?? '').replace(/[&<>"']/g, c => ({
             '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
@@ -95,7 +138,6 @@
 
         HookedWebSocket.prototype = OriginalWebSocket.prototype;
 
-        // Bug fix: cópia explícita das constantes estáticas (não são enumeráveis)
         ['CONNECTING', 'OPEN', 'CLOSING', 'CLOSED'].forEach(k => {
             HookedWebSocket[k] = OriginalWebSocket[k];
         });
@@ -186,6 +228,57 @@
         setCache('sanghub_manifest_cache', data);
     }
 
+    // Playtime
+    function loadTotalPlaytimeMs() {
+        try {
+            const raw = localStorage.getItem(PLAYTIME_KEY);
+            return raw ? (parseInt(raw, 10) || 0) : 0;
+        } catch(e) { return 0; }
+    }
+
+    function saveTotalPlaytimeMs(ms) {
+        try { localStorage.setItem(PLAYTIME_KEY, String(Math.floor(ms))); } catch(e) {}
+    }
+
+    const playtime = {
+        baseTotalMs: loadTotalPlaytimeMs(),
+        sessionStartedAt: Date.now(),
+        flushTimer: null
+    };
+
+    function sessionElapsedMs() {
+        return Date.now() - playtime.sessionStartedAt;
+    }
+
+    function currentTotalMs() {
+        return playtime.baseTotalMs + sessionElapsedMs();
+    }
+
+    // Flush
+    function flushPlaytime() {
+        saveTotalPlaytimeMs(currentTotalMs());
+    }
+
+    function formatDuration(ms) {
+        const totalSec = Math.max(0, Math.floor(ms / 1000));
+        const h = Math.floor(totalSec / 3600);
+        const m = Math.floor((totalSec % 3600) / 60);
+        const s = totalSec % 60;
+        const pad = n => String(n).padStart(2, '0');
+        return pad(h) + ':' + pad(m) + ':' + pad(s);
+    }
+
+    function formatClock() {
+        return new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+    }
+
+    function loadPlayerCache() {
+        try {
+            const raw = localStorage.getItem(PLAYER_CACHE_KEY);
+            return raw ? JSON.parse(raw) : null;
+        } catch(e) { return null; }
+    }
+
     async function fetchWithRetry(url, opts, timeout, retries) {
         let lastErr = null;
         for (let i = 0; i <= retries; i++) {
@@ -242,7 +335,6 @@
     }
 
     function applyHubUpdate(code) {
-        // Segurança/estabilidade: valida sintaxe ANTES de destruir a UI atual
         try {
             new Function(code);
         } catch(e) {
@@ -252,6 +344,7 @@
         }
 
         try {
+            flushPlaytime();
             if (window._hubUI && typeof window._hubUI.kill === 'function') {
                 window._hubUI.kill();
             }
@@ -295,7 +388,6 @@
             state.syncState = 'synced';
             state.lastSyncAt = new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
 
-            // Autoload
             manifest.modules
                 .filter(m => m.enabled !== false && m.autoload === true && m.secret !== true && state.moduleStates[m.id] !== STATUS.LOADED)
                 .forEach(mod => activateModule(mod));
@@ -333,7 +425,6 @@
         }
     }
 
-    // UX: pulso curto
     function flashItem(modId, kind) {
         if (!uiRoot) return;
         const el = uiRoot.querySelector('.hub-item[data-mod-id="' + CSS.escape(String(modId)) + '"]');
@@ -412,7 +503,6 @@
         item.addEventListener('mouseleave', stop);
     }
 
-    // Processa o ícone aplicando suporte a Hover nos GIFs
     function parseIcon(icon) {
         if (!icon) return '<span style="font-size:26px;">📦</span>';
         icon = icon.trim();
@@ -426,7 +516,6 @@
         return icon;
     }
 
-    // Filtra os módulos visíveis para a aba ativa (misc:true → Adicionais, resto → Módulos)
     function modulesForTab(tabId) {
         return state.manifest.modules.filter(m => {
             if (m.enabled === false || m.secret === true) return false;
@@ -437,13 +526,11 @@
 
     function buildUI() {
         const UID = '_hub';
-        // Estabilidade
         const ac = new AbortController();
 
         const style = document.createElement('style');
         style.setAttribute('data-hub', '1');
 
-        // --- TEMA
         style.textContent = `
         @keyframes hubFade{from{opacity:0;transform:translateY(-8px) scale(0.98)}to{opacity:1;transform:none}}
         @keyframes hubItemIn{from{opacity:0;transform:translateX(-6px)}to{opacity:1;transform:none}}
@@ -452,6 +539,7 @@
         @keyframes hubShimmer{0%{background-position:0% 50%}100%{background-position:200% 50%}}
         @keyframes hubTitleShine{to{background-position:-200% center}}
         @keyframes hubIconRing{to{--hub-angle:360deg}}
+        @keyframes hubPillRing{to{--hub-angle:360deg}}
         @keyframes hubFlashOk{0%{box-shadow:0 0 0 0 rgba(52,211,153,.45)}100%{box-shadow:0 0 0 16px rgba(52,211,153,0)}}
         @keyframes hubFlashErr{0%{box-shadow:0 0 0 0 rgba(251,113,133,.45)}100%{box-shadow:0 0 0 16px rgba(251,113,133,0)}}
         @property --hub-angle{syntax:'<angle>';inherits:false;initial-value:0deg}
@@ -467,6 +555,8 @@
             z-index:2147483647;overflow:hidden;user-select:none;animation:hubFade .3s cubic-bezier(0.16,1,0.3,1);
             max-height:85vh;display:flex;flex-direction:column}
         #${UID}.hidden{display:none}
+        #${UID}{transition:width .22s cubic-bezier(0.16,1,0.3,1),max-height .22s cubic-bezier(0.16,1,0.3,1),opacity .18s ease}
+        #${UID}.hub-collapsed{width:250px;max-height:100px;opacity:0}
         #${UID}::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;background:var(--hub-grad);
             background-size:200% 100%;animation:hubShimmer 4s linear infinite}
 
@@ -493,7 +583,6 @@
         #${UID} .hub-hbtn:focus-visible,#${UID} .hub-item:focus-visible,#${UID}pill:focus-visible,#${UID} .hub-tab:focus-visible{outline:2px solid var(--hub-cyan);outline-offset:2px}
         #${UID} .hub-hbtn.spin svg{animation:hubSpin .6s linear infinite}
 
-        /* Abas (Módulos / Adicionais) — mesma largura do painel, sem deslocar nada */
         #${UID} .hub-tabs{display:flex;gap:4px;padding:0 12px;flex-shrink:0;border-bottom:1px solid rgba(255,255,255,0.06)}
         #${UID} .hub-tab{flex:1;text-align:center;padding:9px 6px 10px;font-size:10.5px;font-weight:800;letter-spacing:.05em;
             text-transform:uppercase;color:var(--hub-muted);background:transparent;border:none;cursor:pointer;position:relative;
@@ -527,7 +616,6 @@
         #${UID} .hub-item.hub-flash-ok{animation:hubItemIn .3s cubic-bezier(0.16,1,0.3,1) backwards,hubFlashOk .7s ease-out}
         #${UID} .hub-item.hub-flash-error{animation:hubItemIn .3s cubic-bezier(0.16,1,0.3,1) backwards,hubFlashErr .7s ease-out}
 
-        /* Ícone "nu" (sem container/fundo) — só a arte, maior e com anel giratório no hover */
         #${UID} .hub-icon{width:48px;height:48px;min-width:48px;min-height:48px;display:flex;align-items:center;justify-content:center;position:relative}
         #${UID} .hub-icon img, #${UID} .hub-icon svg, #${UID} .hub-icon canvas{
             width:100%;height:100%;object-fit:contain;display:block;border-radius:10px;
@@ -571,20 +659,61 @@
         #${UID} .hub-toast.error{border-color:rgba(251,113,133,0.5);color:#fecdd3;box-shadow:0 6px 18px rgba(251,113,133,0.15)}
         #${UID} .hub-toast.warn,#${UID} .hub-toast.info{border-color:rgba(34,211,238,0.5);color:#cffafe;box-shadow:0 6px 18px rgba(34,211,238,0.15)}
 
-        #${UID}pill{position:fixed;top:20px;left:20px;display:flex;align-items:center;gap:9px;
-            padding:9px 16px 9px 11px;border-radius:999px;background:linear-gradient(175deg,rgba(20,20,28,0.92),rgba(9,9,14,0.97));
-            backdrop-filter:blur(18px) saturate(140%);border:1px solid rgba(255,255,255,0.08);
-            box-shadow:0 12px 30px rgba(0,0,0,0.5),0 0 18px rgba(34,211,238,0.12);
-            font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;font-size:11px;font-weight:800;letter-spacing:.04em;
-            cursor:grab;z-index:2147483647;user-select:none;animation:hubFade .25s ease-out}
-        #${UID}pill span{background:var(--hub-grad,linear-gradient(120deg,#22d3ee,#a78bfa));-webkit-background-clip:text;background-clip:text;color:transparent}
-        #${UID}pill:active{cursor:grabbing}
-        #${UID}pill:hover{border-color:rgba(167,139,250,0.4);box-shadow:0 12px 30px rgba(0,0,0,0.5),0 0 24px rgba(167,139,250,0.25)}
+        /* Card (pill expandido) */
+        #${UID}pill{
+            --hub-cyan:#22d3ee; --hub-violet:#a78bfa; --hub-grad:linear-gradient(120deg,var(--hub-cyan),var(--hub-violet));
+            position:fixed;top:20px;left:20px;width:250px;
+            font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Inter,sans-serif;
+            border-radius:20px;z-index:2147483647;user-select:none;animation:hubFade .25s ease-out;
+            padding:2px}
+        #${UID}pill::before{
+            content:'';position:absolute;inset:0;border-radius:20px;padding:2px;
+            background:conic-gradient(from var(--hub-angle),var(--hub-cyan),var(--hub-violet),#fff,var(--hub-violet),var(--hub-cyan));
+            -webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);
+            -webkit-mask-composite:xor;mask-composite:exclude;
+            animation:hubPillRing 6s linear infinite;pointer-events:none;
+            box-shadow:0 0 14px rgba(34,211,238,0.35),0 0 22px rgba(167,139,250,0.2)}
+        #${UID}pill{transition:opacity .18s ease .04s;opacity:1}
+        #${UID}pillinner{
+            display:block;border-radius:18px;cursor:grab;color:#f1f2f8;
+            background:linear-gradient(175deg,rgba(20,20,28,0.94),rgba(9,9,14,0.98));
+            box-shadow:0 20px 50px rgba(0,0,0,0.55);overflow:hidden}
+        #${UID}pillinner:active{cursor:grabbing}
         #${UID}pill.hidden{display:none}
+
+        #${UID}pill .hub-p-hdr{padding:11px 13px;display:flex;align-items:center;gap:9px}
+        #${UID}pill .hub-p-icon{flex-shrink:0;width:28px;height:28px;border-radius:9px;background:rgba(255,255,255,0.05);
+            border:1px solid rgba(255,255,255,0.08);display:flex;align-items:center;justify-content:center}
+        #${UID}pill .hub-p-icon img{width:16px;height:16px;object-fit:contain}
+        #${UID}pill .hub-p-title{flex:1;min-width:0;font-weight:800;font-size:11.5px;letter-spacing:.05em;white-space:nowrap;
+            background:linear-gradient(100deg,var(--hub-cyan) 0%,var(--hub-violet) 35%,#fff 50%,var(--hub-violet) 65%,var(--hub-cyan) 100%);
+            background-size:220% auto;-webkit-background-clip:text;background-clip:text;color:transparent;
+            animation:hubTitleShine 3.2s linear infinite}
+        #${UID}pill .hub-p-clock{flex-shrink:0;font-size:10px;font-weight:700;color:#e5e7eb;font-variant-numeric:tabular-nums}
+
+        #${UID}pill .hub-p-divider{height:1px;background:rgba(255,255,255,0.06);margin:0 13px}
+
+        #${UID}pill .hub-p-player{margin:9px 13px 0;display:flex;align-items:center;gap:9px;
+            background:rgba(255,255,255,0.02);border:1px dashed rgba(255,255,255,0.1);border-radius:10px;padding:7px 8px}
+        #${UID}pill .hub-p-player-avatar{width:28px;height:28px;border-radius:8px;background:rgba(255,255,255,0.05);flex-shrink:0;
+            overflow:hidden;position:relative;
+            display:flex;align-items:center;justify-content:center;color:var(--hub-muted,#8b8fa3);font-size:13px}
+        #${UID}pill .hub-p-player-info{flex:1;min-width:0}
+        #${UID}pill .hub-p-player-name{font-size:10.5px;font-weight:700;color:#e5e7eb;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+        #${UID}pill .hub-p-player-mission{font-size:9px;color:#8b8fa3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px}
+
+        #${UID}pill .hub-p-stats{margin:9px 13px 11px;display:flex;gap:8px}
+        #${UID}pill .hub-p-stat{flex:1;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.05);
+            border-radius:10px;padding:6px 8px}
+        #${UID}pill .hub-p-stat-label{font-size:8px;color:#8b8fa3;text-transform:uppercase;letter-spacing:.05em}
+        #${UID}pill .hub-p-stat-value{font-size:12.5px;font-weight:700;margin-top:2px;font-variant-numeric:tabular-nums}
+        #${UID}pill .hub-p-stat-value.session{color:var(--hub-cyan)}
+        #${UID}pill .hub-p-stat-value.total{color:var(--hub-violet)}
         `;
         document.head.appendChild(style);
 
         const MAIN_ICON = `<img src="https://raw.githubusercontent.com/zBeyond5/Liveblock/main/assets/PNG/menu.png" style="width:20px; height:20px; object-fit:contain;" />`;
+        const MAIN_ICON_SM = `<img src="https://raw.githubusercontent.com/zBeyond5/Liveblock/main/assets/PNG/menu.png" style="width:16px; height:16px; object-fit:contain;" />`;
         const REFRESH_SVG = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 12a8 8 0 1 1-2.34-5.66M20 4v5h-5"/></svg>`;
         const UPDATE_SVG = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>`;
 
@@ -595,6 +724,7 @@
         const root = document.createElement('div');
         root.id = UID;
         root.setAttribute('data-hub', '1');
+        root.classList.add('hidden');
         root.innerHTML = `
         <div class="hub-hdr" id="${UID}hdr">
             <div class="hub-brand">
@@ -623,21 +753,63 @@
         document.body.appendChild(root);
         uiRoot = root;
 
+        // Card 
         const pill = document.createElement('div');
         pill.id = UID + 'pill';
-        pill.className = 'hidden';
-        pill.setAttribute('role', 'button');
-        pill.setAttribute('tabindex', '0');
-        pill.setAttribute('aria-label', 'Abrir painel Sang Hub');
-        pill.innerHTML = MAIN_ICON + '<span>SANG HUB</span>';
+        pill.setAttribute('data-hub', '1');
+        pill.innerHTML = `
+        <div id="${UID}pillinner">
+            <div class="hub-p-hdr">
+                <span class="hub-p-icon">${MAIN_ICON_SM}</span>
+                <span class="hub-p-title">SANG HUB</span>
+                <span class="hub-p-clock" id="${UID}clock">--:--</span>
+            </div>
+            <div class="hub-p-divider"></div>
+            <div class="hub-p-player" id="${UID}player">
+                <span class="hub-p-player-avatar" id="${UID}playeravatar">👤</span>
+                <div class="hub-p-player-info">
+                    <div class="hub-p-player-name" id="${UID}playername">—</div>
+                    <div class="hub-p-player-mission" id="${UID}playermission">—</div>
+                </div>
+            </div>
+            <div class="hub-p-stats">
+                <div class="hub-p-stat">
+                    <div class="hub-p-stat-label">Sessão</div>
+                    <div class="hub-p-stat-value session" id="${UID}sessiontime">00:00:00</div>
+                </div>
+                <div class="hub-p-stat">
+                    <div class="hub-p-stat-label">Total</div>
+                    <div class="hub-p-stat-value total" id="${UID}totaltime">00:00:00</div>
+                </div>
+            </div>
+        </div>
+        `;
         document.body.appendChild(pill);
         uiPill = pill;
 
-        function showPanel() { root.classList.remove('hidden'); pill.classList.add('hidden'); }
-        function showPill() { root.classList.add('hidden'); pill.classList.remove('hidden'); }
+        // Ancora
+        function syncPos(fromEl, toEl) {
+            const r = fromEl.getBoundingClientRect();
+            toEl.style.left = r.left + 'px';
+            toEl.style.top = r.top + 'px';
+        }
+
+        function showPanel() {
+            syncPos(pill, root);
+            pill.classList.add('hidden');
+            root.classList.remove('hidden');
+            requestAnimationFrame(() => root.classList.remove('hub-collapsed'));
+        }
+        function showPill() {
+            syncPos(root, pill);
+            root.classList.add('hub-collapsed');
+            setTimeout(() => {
+                root.classList.add('hidden');
+                pill.classList.remove('hidden');
+            }, 220);
+        }
         function hideAll() { root.classList.add('hidden'); pill.classList.add('hidden'); }
 
-        // Acessibilidade: ativação dos botões e da pill via teclado (Enter/Espaço)
         function onKeyActivate(handler) {
             return (e) => {
                 if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handler(); }
@@ -662,9 +834,10 @@
         }, { signal: ac.signal });
         document.addEventListener('mouseup', () => { drag = null; }, { signal: ac.signal });
 
+        const pillInner = pill.querySelector('#' + UID + 'pillinner');
         let pillDrag = null;
         let pillDidDrag = false;
-        pill.addEventListener('mousedown', e => {
+        pillInner.addEventListener('mousedown', e => {
             const r = pill.getBoundingClientRect();
             pillDrag = { x: e.clientX - r.left, y: e.clientY - r.top, sx: e.clientX, sy: e.clientY };
             pillDidDrag = false;
@@ -681,7 +854,10 @@
             if (pillDrag && !pillDidDrag) showPanel();
             pillDrag = null;
         }, { signal: ac.signal });
-        pill.addEventListener('keydown', onKeyActivate(showPanel), { signal: ac.signal });
+        pillInner.setAttribute('role', 'button');
+        pillInner.setAttribute('tabindex', '0');
+        pillInner.setAttribute('aria-label', 'Abrir painel Sang Hub');
+        pillInner.addEventListener('keydown', onKeyActivate(showPanel), { signal: ac.signal });
 
         let toastTm = null;
         toastFn = (msg, kind) => {
@@ -707,7 +883,6 @@
         btnUpdate.addEventListener('click', onUpdateClick, { signal: ac.signal });
         btnUpdate.addEventListener('keydown', onKeyActivate(onUpdateClick), { signal: ac.signal });
 
-        // Abas: alterna a aba ativa e re-renderiza a lista, sem tocar no resto do layout
         const tabsEl = root.querySelector('#' + UID + 'tabs');
         function setActiveTab(tabId) {
             if (state.activeTab === tabId) return;
@@ -764,10 +939,8 @@
                 item.setAttribute('aria-pressed', String(status === STATUS.LOADED));
 
                 const iconHtml = parseIcon(mod.icon);
-                // Segurança: nome/descrição escapados antes de entrar no innerHTML
                 const safeName = escapeHtml(mod.name);
                 const safeDesc = escapeHtml(mod.description || '');
-                // UX: aviso quando o módulo não pode ser desligado sem reload
                 const noUnloadHint = !mod.instanceKey ? ' title="Este módulo precisa de reload da página para desativar"' : '';
 
                 item.innerHTML = `
@@ -798,17 +971,55 @@
             ftrMid.textContent = state.manifest.version ? 'v' + state.manifest.version : '·';
         };
 
+        // Clock/stats
+        const clockEl = pill.querySelector('#' + UID + 'clock');
+        const sessionEl = pill.querySelector('#' + UID + 'sessiontime');
+        const totalEl = pill.querySelector('#' + UID + 'totaltime');
+
+        function renderPillStats() {
+            clockEl.textContent = formatClock();
+            sessionEl.textContent = formatDuration(sessionElapsedMs());
+            totalEl.textContent = formatDuration(currentTotalMs());
+        }
+
+        const clockTimer = setInterval(() => {
+            if (state.killFlag) return;
+            if (!pill.classList.contains('hidden')) renderPillStats();
+        }, CLOCK_TICK_MS);
+        renderPillStats();
+
         renderListFn();
         renderChromeFn();
 
+        // Nome/missão/avatar
+        const nameEl = pill.querySelector('#' + UID + 'playername');
+        const missionEl = pill.querySelector('#' + UID + 'playermission');
+        const avatarEl = pill.querySelector('#' + UID + 'playeravatar');
+
+        function applyPlayerData(data) {
+            nameEl.textContent = data.name || '—';
+            missionEl.textContent = data.mission || '—';
+            if (data.avatarUrl) {
+                avatarEl.innerHTML = `<img src="${data.avatarUrl}" style="position:absolute;top:-25%;left:-40%;width:180%;height:180%;object-fit:cover" alt="avatar" />`;
+            }
+        }
+
+        const cached = loadPlayerCache();
+        if (cached) applyPlayerData(cached);
+
         function kill() {
             state.killFlag = true;
+            flushPlaytime();
             if (state.updateTimer) clearTimeout(state.updateTimer);
             if (state.heartbeatTimer) clearInterval(state.heartbeatTimer);
-            ac.abort(); // Estabilidade: remove TODOS os listeners globais de uma vez
+            clearInterval(clockTimer);
+            if (playtime.flushTimer) clearInterval(playtime.flushTimer);
+            ac.abort();
             document.querySelectorAll('#' + UID + ', #' + UID + 'pill, style[data-hub]').forEach(el => el.remove());
         }
         window._hubUI = { kill };
+
+        showPill();
     }
 
     async function boot() {
@@ -819,6 +1030,9 @@
 
         buildUI();
         await refreshManifest(false);
+
+        playtime.flushTimer = setInterval(flushPlaytime, PLAYTIME_FLUSH_MS);
+        window.addEventListener('beforeunload', flushPlaytime);
 
         if (!state.killFlag) {
             state.updateTimer = setTimeout(autoUpdateLoop, UPDATE_INTERVAL_MS);
