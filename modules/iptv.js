@@ -1,10 +1,3 @@
-// modules/iptv.js — injetado pelo Sang Hub
-// v7.1: correções de performance e robustez sem alterar UI nem comportamento.
-// - Estado (favoritos/falhas/links) agora vive em memória com persistência debounced
-// - renderChannels lê o estado uma vez por render (antes: ~600 JSON.parse)
-// - fetches deixam de usar cache:'no-store' (respeitam Cache-Control do iptv-org)
-// - AbortController nos fetches + flush no kill
-// - setTimeout do aplicarLayout guardado por handle
 (function() {
     'use strict';
     const UID = '_iptv';
@@ -45,9 +38,7 @@
         try { localStorage.setItem(CACHE_PREFIX + chave, JSON.stringify(valor)); } catch (e) {}
     }
 
-    // ---------- Estado em memória (fonte da verdade) ----------
-    // localStorage só é tocado por persistirAgora(). Isso elimina os JSON.parse
-    // repetidos por item e as escritas em cascata quando muitos canais falham.
+    // ---------- Estado em memória ----------
     const estado = {
         favoritos: null,   // Set
         falhas: null,      // { [id]: { em: number(ts) | string(iso), motivo } }
