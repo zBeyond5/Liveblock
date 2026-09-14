@@ -30,7 +30,7 @@
       "icon": "https://raw.githubusercontent.com/zBeyond5/Liveblock/main/assets/GIF/blocklive.gif",
       "enabled": true,
       "autoload": true,
-      "instanceKey": "_lb",
+      "instanceKey": "_blocklive",
       "url": "https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/modules/blocklive.js"
     },
     {
