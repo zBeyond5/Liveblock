@@ -1,258 +1,274 @@
-(function() {
+(function () {
     'use strict';
     const UID = '_yt';
-    if (window._yt) return;
+    if (window[UID]) return;
 
-    // Importa a biblioteca yt-search-lib dinamicamente
-    async function loadYtSearchLib() {
-        if (window.YouTubeClient) return window.YouTubeClient;
-        return new Promise((resolve, reject) => {
-            const script = document.createElement('script');
-            script.type = 'module';
-            script.textContent = `
-                import YouTubeClient from 'https://cdn.jsdelivr.net/npm/yt-search-lib/+esm';
-                window.YouTubeClient = YouTubeClient;
-                window.dispatchEvent(new Event('yt-search-lib-ready'));
-            `;
-            document.head.appendChild(script);
-            window.addEventListener('yt-search-lib-ready', () => resolve(window.YouTubeClient), { once: true });
-            setTimeout(() => reject(new Error('Timeout ao carregar yt-search-lib')), 10000);
-        });
+    const STORAGE_KEY = 'sang_panel_yt_state';
+
+    function loadState() {
+        try {
+            const raw = localStorage.getItem(STORAGE_KEY);
+            if (!raw) return null;
+            const s = JSON.parse(raw);
+            if (
+                typeof s.left === 'number' && typeof s.top === 'number' &&
+                typeof s.width === 'number' && typeof s.height === 'number'
+            ) return s;
+        } catch (_) {}
+        return null;
     }
 
     function init() {
-        if (window._yt) return;
+        if (window[UID]) return;
+
+        // ---- Host + Shadow DOM (isola de CSS do jogo, evita reflow custoso por especificidade externa) ----
+        const host = document.createElement('div');
+        host.id = UID + '_host';
+        host.style.cssText = 'all:initial;position:fixed;top:0;left:0;z-index:2147483000;';
+        document.body.appendChild(host);
+        const root = host.attachShadow({ mode: 'open' });
 
         const style = document.createElement('style');
-        style.setAttribute('data-yt', '1');
         style.textContent = `
-        @keyframes ytlBreathe{0%,100%{box-shadow:0 20px 50px rgba(0,0,0,0.6),0 0 18px rgba(255,30,30,0.18),0 0 0 1px rgba(255,60,60,0.12)}
-            50%{box-shadow:0 20px 50px rgba(0,0,0,0.6),0 0 34px rgba(255,30,30,0.4),0 0 0 1px rgba(255,60,60,0.3)}}
-
-        #${UID}{position:fixed;top:70px;left:70px;width:800px;height:520px;min-width:420px;min-height:320px;
-            font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
-            background:linear-gradient(175deg,rgba(18,10,10,0.94),rgba(8,4,4,0.98));backdrop-filter:blur(16px) saturate(140%);
-            border:1px solid rgba(255,60,60,0.18);border-radius:18px;overflow:hidden;
-            z-index:2147483000;display:flex;flex-direction:column;resize:both;
-            animation:ytlBreathe 4.5s ease-in-out infinite}
-
-        #${UID} .ytl-hdr{height:38px;flex-shrink:0;display:flex;align-items:center;justify-content:space-between;
-            padding:0 12px;cursor:grab;user-select:none;border-bottom:1px solid rgba(255,60,60,0.12)}
-        #${UID} .ytl-hdr:active{cursor:grabbing}
-        #${UID} .ytl-brand{display:flex;align-items:center;gap:8px;min-width:0}
-        #${UID} .ytl-dot{width:8px;height:8px;border-radius:50%;background:#ff2d2d;box-shadow:0 0 8px rgba(255,45,45,0.9);flex-shrink:0}
-        #${UID} .ytl-title{font-weight:800;font-size:12.5px;letter-spacing:.06em;color:#ffecec;white-space:nowrap}
-        #${UID} .ytl-actions{display:flex;gap:6px;flex-shrink:0}
-        #${UID} .ytl-btn{width:24px;height:24px;border-radius:7px;background:rgba(255,60,60,0.08);
-            border:1px solid rgba(255,60,60,0.18);color:#ffb3b3;display:flex;align-items:center;justify-content:center;
-            cursor:pointer;font-size:12px;transition:all .18s ease}
-        #${UID} .ytl-btn:hover{background:#ff2d2d;color:#1a0505;border-color:transparent;box-shadow:0 0 12px rgba(255,45,45,0.5)}
-
-        #${UID} .ytl-searchbar{display:flex;gap:6px;padding:8px 10px;flex-shrink:0;border-bottom:1px solid rgba(255,60,60,0.1)}
-        #${UID} .ytl-searchbar input{flex:1;background:rgba(255,255,255,0.04);border:1px solid rgba(255,60,60,0.15);
-            border-radius:9px;padding:7px 10px;color:#fff;font-size:11.5px;outline:none}
-        #${UID} .ytl-searchbar input::placeholder{color:#8b6b6b}
-        #${UID} .ytl-searchbar input:focus{border-color:rgba(255,60,60,0.5);box-shadow:0 0 0 2px rgba(255,45,45,0.12)}
-        #${UID} .ytl-searchbar button{background:linear-gradient(120deg,#ff2d2d,#c41414);border:none;border-radius:9px;
-            padding:0 14px;color:#fff;font-weight:700;font-size:11px;cursor:pointer;transition:filter .15s;white-space:nowrap}
-        #${UID} .ytl-searchbar button:hover{filter:brightness(1.15)}
-
-        #${UID} .ytl-body{flex:1;min-height:0;position:relative;background:#000;display:flex}
-        #${UID} .ytl-player-wrap{flex:1;min-width:0;position:relative}
-        #${UID} .ytl-player-wrap iframe{width:100%;height:100%;border:0}
-        #${UID} .ytl-results{width:260px;flex-shrink:0;border-left:1px solid rgba(255,60,60,0.1);
-            display:flex;flex-direction:column;min-height:0;overflow-y:auto;background:rgba(255,255,255,0.02)}
-        #${UID} .ytl-results::-webkit-scrollbar{width:4px}
-        #${UID} .ytl-results::-webkit-scrollbar-thumb{background:rgba(255,45,45,0.3);border-radius:2px}
-        #${UID} .ytl-result-item{display:flex;gap:8px;padding:8px;border-bottom:1px solid rgba(255,60,60,0.06);
-            cursor:pointer;transition:background .15s}
-        #${UID} .ytl-result-item:hover{background:rgba(255,45,45,0.1)}
-        #${UID} .ytl-result-item img{width:80px;height:45px;object-fit:cover;border-radius:4px;flex-shrink:0;background:#111}
-        #${UID} .ytl-result-info{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px}
-        #${UID} .ytl-result-title{font-size:10px;color:#d4c4b0;line-height:1.3;
-            display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
-        #${UID} .ytl-result-meta{font-size:9px;color:#6b5a4a;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-
-        #${UID} .ytl-empty{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
-            color:#7a5252;font-size:11.5px;text-align:center;padding:20px}
-        #${UID} .ytl-spin{width:16px;height:16px;border:2px solid rgba(255,45,45,0.25);border-top-color:#ff2d2d;
-            border-radius:50%;margin:0 auto 8px;animation:ytlSpin .7s linear infinite}
-        @keyframes ytlSpin{to{transform:rotate(360deg)}}
+        :host { all: initial; }
+        @media (prefers-reduced-motion: no-preference) {
+            @keyframes breathe {
+                0%,100% { box-shadow:0 20px 50px rgba(0,0,0,.6),0 0 18px rgba(255,30,30,.18),0 0 0 1px rgba(255,60,60,.12); }
+                50%     { box-shadow:0 20px 50px rgba(0,0,0,.6),0 0 34px rgba(255,30,30,.4),0 0 0 1px rgba(255,60,60,.3); }
+            }
+            .panel { animation: breathe 4.5s ease-in-out infinite; }
+        }
+        .panel {
+            position: fixed;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background: linear-gradient(175deg, rgba(18,10,10,.94), rgba(8,4,4,.98));
+            backdrop-filter: blur(16px) saturate(140%);
+            border: 1px solid rgba(255,60,60,.18);
+            border-radius: 18px;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+            /* resize:both nativo removido: usamos ResizeObserver + handle próprio,
+               pra ter controle e persistência do tamanho sem custo extra de layout */
+            contain: layout style paint; /* isola reflow/repaint do resto da página */
+        }
+        .hdr {
+            height: 38px; flex-shrink: 0;
+            display: flex; align-items: center; justify-content: space-between;
+            padding: 0 12px; cursor: grab; user-select: none; touch-action: none;
+            border-bottom: 1px solid rgba(255,60,60,.12);
+        }
+        .hdr.dragging { cursor: grabbing; }
+        .brand { display: flex; align-items: center; gap: 8px; min-width: 0; }
+        .dot { width: 8px; height: 8px; border-radius: 50%; background: #ff2d2d; box-shadow: 0 0 8px rgba(255,45,45,.9); flex-shrink: 0; }
+        .title { font-weight: 800; font-size: 12.5px; letter-spacing: .06em; color: #ffecec; white-space: nowrap; }
+        .actions { display: flex; gap: 6px; flex-shrink: 0; }
+        .btn {
+            width: 24px; height: 24px; border-radius: 7px;
+            background: rgba(255,60,60,.08); border: 1px solid rgba(255,60,60,.18);
+            color: #ffb3b3; display: flex; align-items: center; justify-content: center;
+            cursor: pointer; font-size: 12px; transition: background .18s ease, color .18s ease, box-shadow .18s ease;
+        }
+        .btn:hover, .btn:focus-visible { background: #ff2d2d; color: #1a0505; border-color: transparent; box-shadow: 0 0 12px rgba(255,45,45,.5); outline: none; }
+        .body { flex: 1; min-height: 0; position: relative; background: #000; }
+        .resize-handle {
+            position: absolute; right: 0; bottom: 0; width: 16px; height: 16px;
+            cursor: nwse-resize; touch-action: none;
+            background: linear-gradient(135deg, transparent 50%, rgba(255,60,60,.35) 50%);
+        }
         `;
-        document.head.appendChild(style);
+        root.appendChild(style);
 
-        const win = document.createElement('div');
-        win.id = UID;
-        win.innerHTML = `
-            <div class="ytl-hdr" id="${UID}hdr">
-                <div class="ytl-brand"><span class="ytl-dot"></span><span class="ytl-title">YOUTUBE</span></div>
-                <div class="ytl-actions">
-                    <div class="ytl-btn" id="${UID}min" title="Minimizar">−</div>
-                    <div class="ytl-btn" id="${UID}cls" title="Fechar">✕</div>
+        // ---- Estado inicial (persistido ou default) ----
+        const saved = loadState();
+        const MIN_W = 420, MIN_H = 320;
+        const state = saved || { left: 70, top: 70, width: 800, height: 520 };
+        clampState(state);
+
+        const panel = document.createElement('div');
+        panel.className = 'panel';
+        panel.style.left = state.left + 'px';
+        panel.style.top = state.top + 'px';
+        panel.style.width = state.width + 'px';
+        panel.style.height = state.height + 'px';
+        panel.innerHTML = `
+            <div class="hdr" id="hdr">
+                <div class="brand"><span class="dot"></span><span class="title">PAINEL</span></div>
+                <div class="actions">
+                    <div class="btn" id="btnMin" role="button" tabindex="0" aria-label="Minimizar">−</div>
+                    <div class="btn" id="btnCls" role="button" tabindex="0" aria-label="Fechar">✕</div>
                 </div>
             </div>
-            <div class="ytl-searchbar">
-                <input type="text" id="${UID}input" placeholder="Pesquise vídeos ou cole um link do YouTube…" />
-                <button id="${UID}go">Buscar</button>
+            <div class="body" id="body">
+                <!-- conteúdo do módulo entra aqui -->
             </div>
-            <div class="ytl-body" id="${UID}body">
-                <div class="ytl-player-wrap" id="${UID}playerWrap">
-                    <div class="ytl-empty">Pesquise ou cole um link do YouTube acima</div>
-                </div>
-                <div class="ytl-results" id="${UID}results"></div>
-            </div>
+            <div class="resize-handle" id="resizeHandle" aria-hidden="true"></div>
         `;
-        document.body.appendChild(win);
+        root.appendChild(panel);
 
-        // Drag pelo header
-        let drag = null;
-        const hdr = win.querySelector('#' + UID + 'hdr');
-        hdr.addEventListener('mousedown', e => {
-            if (e.target.closest('.ytl-btn')) return;
-            const r = win.getBoundingClientRect();
-            drag = { x: e.clientX - r.left, y: e.clientY - r.top };
-        });
-        document.addEventListener('mousemove', e => {
-            if (!drag) return;
-            win.style.left = Math.max(0, e.clientX - drag.x) + 'px';
-            win.style.top = Math.max(0, e.clientY - drag.y) + 'px';
-        });
-        document.addEventListener('mouseup', () => { drag = null; });
+        const hdr = panel.querySelector('#hdr');
+        const btnMin = panel.querySelector('#btnMin');
+        const btnCls = panel.querySelector('#btnCls');
+        const resizeHandle = panel.querySelector('#resizeHandle');
 
-        const body = win.querySelector('#' + UID + 'body');
-        const playerWrap = win.querySelector('#' + UID + 'playerWrap');
-        const resultsEl = win.querySelector('#' + UID + 'results');
-        const input = win.querySelector('#' + UID + 'input');
-        const goBtn = win.querySelector('#' + UID + 'go');
-
-        let ytClient = null;
-        let resultadosAtuais = [];
-
-        // Inicializa o cliente de busca
-        (async () => {
-            try {
-                const YTClient = await loadYtSearchLib();
-                ytClient = new YTClient({
-                    proxyUrl: 'https://api.allorigins.win/raw?url=',
-                    useCache: true,
-                    cacheMaxAge: 3600000 // 1 hora
-                });
-            } catch (e) {
-                console.warn('Falha ao carregar yt-search-lib:', e);
-            }
-        })();
-
-        // Extrai ID de vídeo de qualquer formato
-        function extrairVideoId(input) {
-            input = input.trim();
-            const patterns = [
-                /(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/|youtube\.com\/shorts\/)([a-zA-Z0-9_-]{11})/,
-                /^([a-zA-Z0-9_-]{11})$/
-            ];
-            for (const re of patterns) {
-                const m = input.match(re);
-                if (m) return m[1];
-            }
-            return null;
+        function clampState(s) {
+            s.width = Math.max(MIN_W, s.width);
+            s.height = Math.max(MIN_H, s.height);
+            const maxLeft = Math.max(0, window.innerWidth - s.width);
+            const maxTop = Math.max(0, window.innerHeight - s.height);
+            s.left = Math.min(Math.max(0, s.left), maxLeft);
+            s.top = Math.min(Math.max(0, s.top), maxTop);
         }
 
-        // Carrega um vídeo no player
-        function carregarVideo(videoId) {
-            const params = [
-                'autoplay=1', 'controls=1', 'rel=0', 'iv_load_policy=3',
-                'playsinline=1', 'enablejsapi=1'
-            ].join('&');
-            playerWrap.innerHTML = `<iframe
-                src="https://www.youtube.com/embed/${videoId}?${params}"
-                allow="autoplay; encrypted-media; picture-in-picture; fullscreen"
-                allowfullscreen></iframe>`;
+        // ---- Persistência
+        let saveTimer = null;
+        function scheduleSave() {
+            if (saveTimer) clearTimeout(saveTimer);
+            saveTimer = setTimeout(() => {
+                try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch (_) {}
+            }, 300);
         }
 
-        // Realiza a busca
-        async function buscar(termo) {
-            if (!ytClient) {
-                resultsEl.innerHTML = '<div class="ytl-empty" style="position:static;padding:20px">Biblioteca de busca ainda carregando…</div>';
-                return;
-            }
+        // ---- Drag (Pointer Events + setPointerCapture, com threshold pra evitar drag fantasma) ----
+        let dragPointerId = null;
+        let dragStart = null; // { mouseX, mouseY, left, top }
+        let dragMoved = false;
+        const DRAG_THRESHOLD = 3;
 
-            resultsEl.innerHTML = '<div class="ytl-empty" style="position:static;padding:20px"><div class="ytl-spin"></div>Buscando…</div>';
-
-            try {
-                const resultados = await ytClient.search(termo, { limit: 15 });
-                resultadosAtuais = resultados;
-
-                if (!resultados.length) {
-                    resultsEl.innerHTML = '<div class="ytl-empty" style="position:static;padding:20px">Nenhum resultado encontrado.</div>';
-                    return;
-                }
-
-                resultsEl.innerHTML = resultados.map((v, i) => `
-                    <div class="ytl-result-item" data-index="${i}">
-                        <img src="${v.thumbnail_url}" alt="" loading="lazy"/>
-                        <div class="ytl-result-info">
-                            <div class="ytl-result-title">${v.title}</div>
-                            <div class="ytl-result-meta">${v.channel_name || ''}</div>
-                        </div>
-                    </div>
-                `).join('');
-
-                resultsEl.querySelectorAll('.ytl-result-item').forEach(el => {
-                    el.addEventListener('click', () => {
-                        const idx = parseInt(el.dataset.index, 10);
-                        const video = resultadosAtuais[idx];
-                        if (video) {
-                            carregarVideo(video.videoId);
-                            input.value = video.link;
-                        }
-                    });
-                });
-
-                // Auto-carrega o primeiro resultado
-                if (resultados.length > 0) {
-                    carregarVideo(resultados[0].videoId);
-                    input.value = resultados[0].link;
-                }
-            } catch (e) {
-                resultsEl.innerHTML = '<div class="ytl-empty" style="position:static;padding:20px">Falha na busca.<br>' + (e.message || '') + '</div>';
-            }
+        function onPointerDown(e) {
+            if (e.target.closest('.btn')) return;
+            dragPointerId = e.pointerId;
+            dragMoved = false;
+            dragStart = { mouseX: e.clientX, mouseY: e.clientY, left: state.left, top: state.top };
+            hdr.setPointerCapture(dragPointerId);
+            hdr.classList.add('dragging');
         }
 
-        // Ação principal: decide entre busca ou link direto
-        function acaoPrincipal() {
-            const valor = input.value.trim();
-            if (!valor) return;
+        function onPointerMove(e) {
+            if (dragPointerId === null || e.pointerId !== dragPointerId) return;
+            const dx = e.clientX - dragStart.mouseX;
+            const dy = e.clientY - dragStart.mouseY;
+            if (!dragMoved && Math.hypot(dx, dy) < DRAG_THRESHOLD) return;
+            dragMoved = true;
 
-            const videoId = extrairVideoId(valor);
-            if (videoId) {
-                carregarVideo(videoId);
-                resultsEl.innerHTML = ''; // Limpa a lista de resultados
-                return;
-            }
-
-            // Se não for um link, trata como termo de busca
-            buscar(valor);
+            state.left = dragStart.left + dx;
+            state.top = dragStart.top + dy;
+            clampState(state);
+            panel.style.left = state.left + 'px';
+            panel.style.top = state.top + 'px';
         }
 
-        goBtn.addEventListener('click', acaoPrincipal);
-        input.addEventListener('keydown', e => { if (e.key === 'Enter') acaoPrincipal(); });
+        function endDrag(e) {
+            if (dragPointerId === null || (e && e.pointerId !== dragPointerId)) return;
+            try { hdr.releasePointerCapture(dragPointerId); } catch (_) {}
+            hdr.classList.remove('dragging');
+            dragPointerId = null;
+            if (dragMoved) scheduleSave();
+        }
 
-        function minimize() { win.style.display = 'none'; }
+        hdr.addEventListener('pointerdown', onPointerDown);
+        hdr.addEventListener('pointermove', onPointerMove);
+        hdr.addEventListener('pointerup', endDrag);
+        hdr.addEventListener('pointercancel', endDrag);
+
+        // ---- Resize (handle próprio via Pointer Events, sem `resize:both` nativo) ----
+        let resizePointerId = null;
+        let resizeStart = null; // { mouseX, mouseY, width, height }
+
+        function onResizeDown(e) {
+            e.stopPropagation();
+            resizePointerId = e.pointerId;
+            resizeStart = { mouseX: e.clientX, mouseY: e.clientY, width: state.width, height: state.height };
+            resizeHandle.setPointerCapture(resizePointerId);
+        }
+
+        function onResizeMove(e) {
+            if (resizePointerId === null || e.pointerId !== resizePointerId) return;
+            const dx = e.clientX - resizeStart.mouseX;
+            const dy = e.clientY - resizeStart.mouseY;
+            state.width = resizeStart.width + dx;
+            state.height = resizeStart.height + dy;
+            clampState(state);
+            panel.style.width = state.width + 'px';
+            panel.style.height = state.height + 'px';
+        }
+
+        function endResize(e) {
+            if (resizePointerId === null || (e && e.pointerId !== resizePointerId)) return;
+            try { resizeHandle.releasePointerCapture(resizePointerId); } catch (_) {}
+            resizePointerId = null;
+            scheduleSave();
+        }
+
+        resizeHandle.addEventListener('pointerdown', onResizeDown);
+        resizeHandle.addEventListener('pointermove', onResizeMove);
+        resizeHandle.addEventListener('pointerup', endResize);
+        resizeHandle.addEventListener('pointercancel', endResize);
+
+        // ---- Reclamp 
+        function onWindowResize() {
+            clampState(state);
+            panel.style.left = state.left + 'px';
+            panel.style.top = state.top + 'px';
+            panel.style.width = state.width + 'px';
+            panel.style.height = state.height + 'px';
+        }
+        window.addEventListener('resize', onWindowResize);
+
+        // ---- Minimizar / Fechar ----
+        let minimized = false;
+        function toggleMinimize() {
+            minimized = !minimized;
+            panel.style.display = minimized ? 'none' : 'flex';
+        }
+        function onKeydownActivate(e) {
+            if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.currentTarget.click(); }
+        }
+        btnMin.addEventListener('click', toggleMinimize);
+        btnMin.addEventListener('keydown', onKeydownActivate);
+        btnCls.addEventListener('click', kill);
+        btnCls.addEventListener('keydown', onKeydownActivate);
+
+        // ---- Esc fecha (só quando o painel está visível e focado no host) ----
+        function onKeyDown(e) {
+            if (e.key === 'Escape' && !minimized) kill();
+        }
+        document.addEventListener('keydown', onKeyDown);
+
+        // ---- kill(): limpa TUDO — listeners globais, observers, timers, DOM ----
         function kill() {
-            win.remove();
-            style.remove();
-            delete window._yt;
-        }
-        win.querySelector('#' + UID + 'min').addEventListener('click', minimize);
-        win.querySelector('#' + UID + 'cls').addEventListener('click', kill);
+            if (saveTimer) clearTimeout(saveTimer);
+            document.removeEventListener('keydown', onKeyDown);
+            window.removeEventListener('resize', onWindowResize);
 
-        window._yt = { kill, show: () => { win.style.display = 'flex'; } };
+            hdr.removeEventListener('pointerdown', onPointerDown);
+            hdr.removeEventListener('pointermove', onPointerMove);
+            hdr.removeEventListener('pointerup', endDrag);
+            hdr.removeEventListener('pointercancel', endDrag);
+
+            resizeHandle.removeEventListener('pointerdown', onResizeDown);
+            resizeHandle.removeEventListener('pointermove', onResizeMove);
+            resizeHandle.removeEventListener('pointerup', endResize);
+            resizeHandle.removeEventListener('pointercancel', endResize);
+
+            host.remove();
+            delete window[UID];
+        }
+
+        window[UID] = {
+            kill,
+            show: () => { minimized = false; panel.style.display = 'flex'; },
+            hide: () => { minimized = true; panel.style.display = 'none'; },
+            get body() { return panel.querySelector('#body'); } // ponto de extensão pro conteúdo do módulo
+        };
     }
 
     if (document.body) {
         init();
     } else {
-        const iv = setInterval(() => {
-            if (document.body) { clearInterval(iv); init(); }
-        }, 80);
+        // observer em vez de setInterval: dispara uma única vez, sem polling
+        new MutationObserver((_, obs) => {
+            if (document.body) { obs.disconnect(); init(); }
+        }).observe(document.documentElement, { childList: true });
     }
 })();
