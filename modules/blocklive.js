@@ -1,17 +1,3 @@
-// ==UserScript==
-// @name         LiveBlock v4.7 — [By Sang]
-// @namespace    http://tampermonkey.net/
-// @version      4.7.9
-// @description  Bloqueador de anúncios 
-// @author       Sang
-// @match        *://*.habblive.in/bigclient*
-// @match        *://*.habblet.city/bigclient*
-// @grant        none
-// @run-at       document-start
-// @updateURL    https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/adblock.js
-// @downloadURL  https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/adblock.js
-// ==/UserScript==
-
 (function() {
     'use strict';
 
