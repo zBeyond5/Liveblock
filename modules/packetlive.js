@@ -1,15 +1,27 @@
 (function() {
     'use strict';
+    const UID = '_analyzer';
+    if (window[UID]) { try { window[UID].kill(); } catch(e) {} }
 
-    // ==========================================
-    // MÓDULO 1: GERENCIAMENTO DE ESTADO (STORAGE)
-    // ==========================================
+    // ─── Cleanup global ───
+    const cleanup = [];
+    const on = (target, type, fn, opts) => {
+        target.addEventListener(type, fn, opts);
+        cleanup.push(() => { try { target.removeEventListener(type, fn, opts); } catch(e) {} });
+    };
+    let _alive = true;
+
+    // ─── Storage ───
     const Storage = {
         get(key, def) {
-            try { return JSON.parse(localStorage.getItem(`hl_pro_${key}`)) || def; } catch { return def; }
+            try {
+                const raw = localStorage.getItem(`hl_pro_${key}`);
+                if (raw === null) return def;
+                return JSON.parse(raw);
+            } catch (e) { return def; }
         },
         set(key, val) {
-            localStorage.setItem(`hl_pro_${key}`, JSON.stringify(val));
+            try { localStorage.setItem(`hl_pro_${key}`, JSON.stringify(val)); } catch (e) {}
         }
     };
 
@@ -25,14 +37,14 @@
         maxLogs: 2000,
         isPaused: false,
         killSwitchActive: false,
-        fontSize: Storage.get('font_size', 14),
+        fontSize: Storage.get('font_size', 13),
         showSend: true,
-        showRecv: true
+        showRecv: true,
+        dicionario: Storage.get('dicionario', {}),  // { [id]: { count, primeiro, ultimo, tamanhoMedio, descricao? } }
+        chatIA: []  // histórico da conversa com a IA (em memória, não persiste)
     };
 
-    // ==========================================
-    // MÓDULO 2: UTILITÁRIOS BINÁRIOS
-    // ==========================================
+    // ─── Utilitários binários ───
     const Utils = {
         bufferToHex(buffer) {
             if (!buffer || buffer.byteLength === 0) return '';
@@ -74,9 +86,7 @@
         }
     };
 
-    // ==========================================
-    // MÓDULO 3: FIREWALL E FILTROS
-    // ==========================================
+    // ─── Firewall e filtros ───
     const PacketFilter = {
         isVisualBlocked(packet) {
             if (AppState.blIds.has(packet.header)) return true;
@@ -101,17 +111,12 @@
         manageList(type, action, val) {
             let targetSet, targetArr, storeKeyId, storeKeyStr;
             if (type === 'VISUAL') {
-                targetSet = AppState.blIds;
-                targetArr = AppState.blPayloads;
-                storeKeyId = 'bl_ids';
-                storeKeyStr = 'bl_payloads';
+                targetSet = AppState.blIds; targetArr = AppState.blPayloads;
+                storeKeyId = 'bl_ids'; storeKeyStr = 'bl_payloads';
             } else {
-                targetSet = AppState.dropIds;
-                targetArr = AppState.dropPayloads;
-                storeKeyId = 'drop_ids';
-                storeKeyStr = 'drop_payloads';
+                targetSet = AppState.dropIds; targetArr = AppState.dropPayloads;
+                storeKeyId = 'drop_ids'; storeKeyStr = 'drop_payloads';
             }
-
             if (action === 'ADD_ID' && !isNaN(val)) { targetSet.add(Number(val)); Storage.set(storeKeyId, [...targetSet]); }
             if (action === 'ADD_STR' && val) { if (!targetArr.includes(val)) targetArr.push(val); Storage.set(storeKeyStr, targetArr); }
             if (action === 'REMOVE_ID' && !isNaN(val)) { targetSet.delete(Number(val)); Storage.set(storeKeyId, [...targetSet]); }
@@ -120,43 +125,115 @@
         }
     };
 
-    // ==========================================
-    // MÓDULO 4: INBOUND TRANSFORMER
-    // ==========================================
+    // ─── Inbound transformer (pass-through) ───
     const InboundTransformer = {
         rules: {},
-        transform(data) {
-            if (!(data instanceof ArrayBuffer)) return data;
-            const view = new DataView(data);
-            const header = view.getInt16(4, false);
-            if (this.rules[header]) {
-                const rule = this.rules[header];
-                const ascii = Utils.bufferToString(data.slice(6));
-                if (ascii.includes(rule.search)) {
-                    const newAscii = ascii.replace(rule.search, rule.replace);
-                    const encoder = new TextEncoder();
-                    const newPayloadBytes = encoder.encode(newAscii);
-                    const newTotalLen = 2 + newPayloadBytes.length;
-                    const newBuffer = new ArrayBuffer(4 + newTotalLen);
-                    const newView = new DataView(newBuffer);
-                    newView.setInt32(0, newTotalLen, false);
-                    newView.setInt16(4, header, false);
-                    new Uint8Array(newBuffer).set(newPayloadBytes, 6);
-                    return newBuffer;
-                }
+        transform(data) { return data; }
+    };
+
+    // ═══════════════════════════════════════════════════════════════
+    // SANG AI SERVICE — toda comunicação com Groq passa por aqui
+    // ═══════════════════════════════════════════════════════════════
+    const SangAI = {
+        disponivel() {
+            return !!(window._apis?.groq && window._apis.getKey?.('groq'));
+        },
+
+        async _chamar(systemPrompt, userContent, opts = {}) {
+            if (!this.disponivel()) throw new Error('Sang AI não configurada');
+            const ctrl = new AbortController();
+            const timer = setTimeout(() => ctrl.abort(), opts.timeout || 12000);
+            try {
+                const r = await window._apis.groq({
+                    mensagens: [
+                        { role: 'system', content: systemPrompt },
+                        { role: 'user', content: userContent }
+                    ],
+                    maxTokens: opts.maxTokens || 500,
+                    temperature: opts.temperature ?? 0.3
+                }, { signal: ctrl.signal, forceRefresh: true });
+                return (r || '').trim();
+            } finally {
+                clearTimeout(timer);
             }
-            return data;
+        },
+
+        async analisarPacote(packet) {
+            return this._chamar(
+                'Você analisa pacotes de rede de um jogo online estilo Habbo. ' +
+                'Responda em português, direto, sem introdução. Máximo 4 frases. ' +
+                'Explique: (1) o que o pacote parece fazer, (2) o que os bytes representam, ' +
+                '(3) se é comum ou suspeito. Se não souber, diga "provável" ou "possível".',
+                `ID: ${packet.header}\nTamanho: ${packet.byteLength} bytes\n` +
+                `Hex: ${packet.fullHex}\nASCII: ${packet.ascii || '(binário)'}`,
+                { maxTokens: 350 }
+            );
+        },
+
+        async analisarSequencia(packets) {
+            const linhas = packets.slice(0, 30).map(p =>
+                `[${p.dir}] ID ${p.header} (${p.byteLength}b): ${p.fullHex.slice(0, 120)}`
+            ).join('\n');
+            return this._chamar(
+                'Você analisa uma sequência de pacotes de rede de um jogo online estilo Habbo. ' +
+                'Responda em português, direto, sem introdução. Máximo 5 frases. ' +
+                'Conte a "história" da sequência: o que está acontecendo entre cliente e servidor.',
+                `Últimos ${packets.length} pacotes:\n\n${linhas}`,
+                { maxTokens: 500 }
+            );
+        },
+
+        async criarFiltroLinguagemNatural(descricao, amostras) {
+            const amostrasTxt = amostras.slice(0, 20).map(p =>
+                `ID ${p.header} (${p.byteLength}b) ASCII: "${p.ascii.slice(0, 40)}"`
+            ).join('\n');
+            return this._chamar(
+                'Você converte comandos em português em regras de filtro para um analisador de pacotes. ' +
+                'Responda SOMENTE com JSON válido, sem markdown, sem comentários.\n' +
+                'Formato: {"ids":[123],"strings":["ABC"],"motivo":"..."}\n' +
+                '- "ids": array de IDs numéricos (pode ser vazio)\n' +
+                '- "strings": array de strings para buscar no hex/ascii (pode ser vazio)\n' +
+                '- "motivo": explicação curta da regra',
+                `Comando: "${descricao}"\n\nAmostras recentes:\n${amostrasTxt}`,
+                { maxTokens: 300, temperature: 0.2 }
+            );
+        },
+
+        async gerarJs(descricao, contexto) {
+            return this._chamar(
+                'Você gera código JavaScript para uma fila de ações em um analisador de pacotes de jogo. ' +
+                'O código roda dentro de uma função assíncrona com acesso a:\n' +
+                '- window.gameWS.send(buffer) para enviar pacotes\n' +
+                '- sleep(ms) para aguardar\n' +
+                '- Utils.buildPacket(id, hexPayload) para montar pacotes\n\n' +
+                'Responda SOMENTE com o código JS, sem markdown, sem comentários explicativos, ' +
+                'sem bloco de código. Use uma linha só se possível.',
+                `Pedido: "${descricao}"\n\nContexto: ${contexto || 'nenhum'}`,
+                { maxTokens: 400, temperature: 0.2 }
+            );
+        },
+
+        async chatLivre(mensagem, contextoPacotes) {
+            const ctx = contextoPacotes && contextoPacotes.length
+                ? '\n\nContexto — últimos pacotes capturados:\n' +
+                  contextoPacotes.slice(0, 15).map(p =>
+                      `[${p.dir}] ID ${p.header} (${p.byteLength}b): ${p.fullHex.slice(0, 80)}`
+                  ).join('\n')
+                : '';
+            return this._chamar(
+                'Você é Sang AI, assistente embutida num analisador de pacotes de rede de jogo online ' +
+                '(estilo Habbo). Responda em português, direto. Você pode ajudar a entender pacotes, ' +
+                'sugerir filtros, explicar o protocolo, gerar comandos. Seja útil e específica.',
+                mensagem + ctx,
+                { maxTokens: 600 }
+            );
         }
     };
 
-    // ==========================================
-    // MÓDULO 5: FUNÇÕES DE JANELA (drag + resize + persistência)
-    // ==========================================
-
-    // Mantém o painel dentro da viewport, com uma margem mínima visível
+    // ─── Helpers de janela ───
     function clampToViewport(targetEl, x, y) {
         const rect = targetEl.getBoundingClientRect();
-        const margin = 40; // mantém pelo menos 40px do painel visível/agarrável
+        const margin = 40;
         const maxX = window.innerWidth - margin;
         const maxY = window.innerHeight - margin;
         const minX = margin - rect.width;
@@ -169,8 +246,6 @@
 
     function makeDraggable(handleEl, targetEl, storageKey) {
         let isDragging = false, offX, offY;
-
-        // Restaura posição salva
         if (storageKey) {
             const saved = Storage.get(storageKey + '_pos', null);
             if (saved && typeof saved.left === 'number' && typeof saved.top === 'number') {
@@ -181,16 +256,14 @@
                 targetEl.style.transform = 'none';
             }
         }
-
-        handleEl.addEventListener('mousedown', function(e) {
+        on(handleEl, 'mousedown', function(e) {
             if (['BUTTON', 'INPUT', 'SELECT', 'TEXTAREA'].includes(e.target.tagName)) return;
             isDragging = true;
             const rect = targetEl.getBoundingClientRect();
             offX = e.clientX - rect.left;
             offY = e.clientY - rect.top;
-            targetEl.style.transition = 'none';
         });
-        document.addEventListener('mousemove', function(e) {
+        on(document, 'mousemove', function(e) {
             if (!isDragging) return;
             const clamped = clampToViewport(targetEl, e.clientX - offX, e.clientY - offY);
             targetEl.style.left = clamped.x + 'px';
@@ -199,7 +272,7 @@
             targetEl.style.bottom = 'auto';
             targetEl.style.transform = 'none';
         });
-        document.addEventListener('mouseup', function() {
+        on(document, 'mouseup', function() {
             if (!isDragging) return;
             isDragging = false;
             if (storageKey) {
@@ -210,11 +283,8 @@
             }
         });
         handleEl.style.cursor = 'move';
-        targetEl.style.willChange = 'transform';
     }
 
-    // Adiciona um "grip" no canto inferior direito para redimensionar o painel.
-    // minW/minH em px; storageKey persiste o tamanho entre sessões.
     function makeResizable(targetEl, { minW = 320, minH = 200, maxW = 1200, maxH = 1000, storageKey } = {}) {
         if (storageKey) {
             const saved = Storage.get(storageKey + '_size', null);
@@ -223,40 +293,28 @@
                 targetEl.style.height = Math.min(Math.max(saved.h, minH), maxH) + 'px';
             }
         }
-
         const grip = document.createElement('div');
         grip.className = 'resize-grip';
         Object.assign(grip.style, {
-            position: 'absolute',
-            right: '0',
-            bottom: '0',
-            width: '16px',
-            height: '16px',
-            cursor: 'nwse-resize',
-            zIndex: '5',
-            background: 'linear-gradient(135deg, transparent 50%, #6c63ff 50%, #6c63ff 60%, transparent 60%, transparent 70%, #6c63ff 70%, #6c63ff 80%, transparent 80%)',
-            borderRadius: '0 0 8px 0',
-            opacity: '0.6',
-            transition: 'opacity 0.15s'
+            position: 'absolute', right: '0', bottom: '0', width: '18px', height: '18px',
+            cursor: 'nwse-resize', zIndex: '5',
+            background: 'linear-gradient(135deg, transparent 45%, #a78bfa 45%, #a78bfa 52%, transparent 52%, transparent 62%, #a78bfa 62%, #a78bfa 69%, transparent 69%, transparent 79%, #a78bfa 79%, #a78bfa 86%, transparent 86%)',
+            opacity: '0.4', transition: 'opacity 0.15s'
         });
-        grip.addEventListener('mouseenter', () => { grip.style.opacity = '1'; });
-        grip.addEventListener('mouseleave', () => { grip.style.opacity = '0.6'; });
-        targetEl.style.position = 'fixed';
+        on(grip, 'mouseenter', () => { grip.style.opacity = '1'; });
+        on(grip, 'mouseleave', () => { grip.style.opacity = '0.4'; });
         targetEl.appendChild(grip);
 
         let resizing = false, startX, startY, startW, startH;
-        grip.addEventListener('mousedown', (e) => {
+        on(grip, 'mousedown', (e) => {
             e.preventDefault();
             e.stopPropagation();
             resizing = true;
-            startX = e.clientX;
-            startY = e.clientY;
+            startX = e.clientX; startY = e.clientY;
             const rect = targetEl.getBoundingClientRect();
-            startW = rect.width;
-            startH = rect.height;
-            targetEl.style.transition = 'none';
+            startW = rect.width; startH = rect.height;
         });
-        document.addEventListener('mousemove', (e) => {
+        on(document, 'mousemove', (e) => {
             if (!resizing) return;
             const newW = Math.min(Math.max(startW + (e.clientX - startX), minW), maxW);
             const newH = Math.min(Math.max(startH + (e.clientY - startY), minH), maxH);
@@ -264,7 +322,7 @@
             targetEl.style.height = newH + 'px';
             targetEl.style.maxHeight = 'none';
         });
-        document.addEventListener('mouseup', () => {
+        on(document, 'mouseup', () => {
             if (!resizing) return;
             resizing = false;
             if (storageKey) {
@@ -274,70 +332,43 @@
         });
     }
 
-    // Botão de fechar padronizado pro header de qualquer painel
     function createCloseButton(onClose) {
         const btn = document.createElement('button');
         btn.textContent = '\u2715';
-        btn.title = 'Fechar (reabra pelo atalho ou pela toolbar)';
+        btn.title = 'Fechar';
         Object.assign(btn.style, {
-            background: 'transparent',
-            color: '#8a8a9a',
-            border: 'none',
-            cursor: 'pointer',
-            fontSize: '14px',
-            padding: '2px 6px',
-            borderRadius: '4px',
-            transition: 'all 0.15s',
-            marginLeft: '4px'
+            background: 'transparent', color: '#8a8a9a', border: 'none',
+            cursor: 'pointer', fontSize: '14px', padding: '2px 6px',
+            borderRadius: '4px', transition: 'all 0.15s', marginLeft: '4px'
         });
-        btn.addEventListener('mouseenter', () => { btn.style.background = '#ff4757'; btn.style.color = '#fff'; });
-        btn.addEventListener('mouseleave', () => { btn.style.background = 'transparent'; btn.style.color = '#8a8a9a'; });
-        btn.addEventListener('click', (e) => { e.stopPropagation(); onClose(); });
+        on(btn, 'mouseenter', () => { btn.style.background = '#ef4444'; btn.style.color = '#fff'; });
+        on(btn, 'mouseleave', () => { btn.style.background = 'transparent'; btn.style.color = '#8a8a9a'; });
+        on(btn, 'click', (e) => { e.stopPropagation(); onClose(); });
         return btn;
     }
 
-    // ==========================================
-    // MÓDULO 6: TOOLBAR
-    // ==========================================
+    // ─── Toolbar ───
     const Toolbar = (function() {
         const el = document.createElement('div');
         el.id = 'hl-toolbar';
         Object.assign(el.style, {
-            position: 'fixed',
-            top: '0',
-            left: '50%',
-            transform: 'translateX(-50%)',
-            display: 'flex',
-            alignItems: 'center',
-            gap: '6px',
-            padding: '6px 16px',
-            background: '#0a0a0f',
-            border: '1px solid #1a1a2e',
-            borderTop: 'none',
-            borderRadius: '0 0 8px 8px',
-            zIndex: '100000',
-            fontFamily: 'monospace',
-            fontSize: '12px',
-            userSelect: 'none',
+            position: 'fixed', top: '0', left: '50%', transform: 'translateX(-50%)',
+            display: 'flex', alignItems: 'center', gap: '6px', padding: '6px 16px',
+            background: '#0a0a0f', border: '1px solid #1a1a2e', borderTop: 'none',
+            borderRadius: '0 0 8px 8px', zIndex: '100000',
+            fontFamily: 'monospace', fontSize: '12px', userSelect: 'none',
             backdropFilter: 'blur(8px)'
         });
 
         const btnBase = {
-            background: '#13131a',
-            color: '#e1e1e6',
-            border: '1px solid #1a1a2e',
-            cursor: 'pointer',
-            padding: '5px 12px',
-            fontSize: '11px',
-            fontFamily: 'monospace',
-            borderRadius: '6px',
-            transition: 'all 0.15s ease',
-            whiteSpace: 'nowrap',
-            outline: 'none'
+            background: '#13131a', color: '#e1e1e6', border: '1px solid #1a1a2e',
+            cursor: 'pointer', padding: '5px 12px', fontSize: '11px',
+            fontFamily: 'monospace', borderRadius: '6px', transition: 'all 0.15s ease',
+            whiteSpace: 'nowrap', outline: 'none'
         };
 
         const btnAnalyzer = document.createElement('button');
-        btnAnalyzer.textContent = '\uD83D\uDD0D Sang Analyzer';
+        btnAnalyzer.textContent = '\uD83D\uDD0D Analyzer';
         btnAnalyzer.title = 'Atalho: Ctrl+Alt+A';
         Object.assign(btnAnalyzer.style, btnBase);
 
@@ -354,29 +385,23 @@
         let analyzerVisible = false;
         let senderVisible = false;
 
+        function highlight(btn, on_) {
+            if (on_) {
+                btn.style.background = 'linear-gradient(135deg, #6c63ff, #a855f7)';
+                btn.style.borderColor = 'transparent';
+                btn.style.color = '#fff';
+                btn.style.boxShadow = '0 0 10px rgba(108,99,255,0.35)';
+            } else {
+                btn.style.background = '#13131a';
+                btn.style.borderColor = '#1a1a2e';
+                btn.style.color = '#e1e1e6';
+                btn.style.boxShadow = 'none';
+            }
+        }
+
         function updateButtons() {
-            if (analyzerVisible) {
-                btnAnalyzer.style.background = '#6c63ff';
-                btnAnalyzer.style.borderColor = '#6c63ff';
-                btnAnalyzer.style.color = '#fff';
-                btnAnalyzer.style.boxShadow = '0 0 10px rgba(108,99,255,0.3)';
-            } else {
-                btnAnalyzer.style.background = '#13131a';
-                btnAnalyzer.style.borderColor = '#1a1a2e';
-                btnAnalyzer.style.color = '#e1e1e6';
-                btnAnalyzer.style.boxShadow = 'none';
-            }
-            if (senderVisible) {
-                btnSender.style.background = '#6c63ff';
-                btnSender.style.borderColor = '#6c63ff';
-                btnSender.style.color = '#fff';
-                btnSender.style.boxShadow = '0 0 10px rgba(108,99,255,0.3)';
-            } else {
-                btnSender.style.background = '#13131a';
-                btnSender.style.borderColor = '#1a1a2e';
-                btnSender.style.color = '#e1e1e6';
-                btnSender.style.boxShadow = 'none';
-            }
+            highlight(btnAnalyzer, analyzerVisible);
+            highlight(btnSender, senderVisible);
         }
 
         function setAnalyzerVisible(show) {
@@ -392,25 +417,14 @@
         function toggleAnalyzer() { setAnalyzerVisible(!analyzerVisible); }
         function toggleSender() { setSenderVisible(!senderVisible); }
         function toggleBoth() {
-            if (analyzerVisible || senderVisible) {
-                setAnalyzerVisible(false);
-                setSenderVisible(false);
-            } else {
-                setAnalyzerVisible(true);
-                setSenderVisible(true);
-            }
+            const anyVisible = analyzerVisible || senderVisible;
+            setAnalyzerVisible(!anyVisible);
+            setSenderVisible(!anyVisible);
         }
 
-        btnAnalyzer.addEventListener('mouseenter', () => { if (!analyzerVisible) btnAnalyzer.style.background = '#1a1a2e'; });
-        btnAnalyzer.addEventListener('mouseleave', () => { if (!analyzerVisible) btnAnalyzer.style.background = '#13131a'; });
-        btnSender.addEventListener('mouseenter', () => { if (!senderVisible) btnSender.style.background = '#1a1a2e'; });
-        btnSender.addEventListener('mouseleave', () => { if (!senderVisible) btnSender.style.background = '#13131a'; });
-        btnEye.addEventListener('mouseenter', () => { btnEye.style.background = '#1a1a2e'; });
-        btnEye.addEventListener('mouseleave', () => { btnEye.style.background = '#13131a'; });
-
-        btnAnalyzer.addEventListener('click', toggleAnalyzer);
-        btnSender.addEventListener('click', toggleSender);
-        btnEye.addEventListener('click', toggleBoth);
+        on(btnAnalyzer, 'click', toggleAnalyzer);
+        on(btnSender, 'click', toggleSender);
+        on(btnEye, 'click', toggleBoth);
 
         el.appendChild(btnAnalyzer);
         el.appendChild(btnSender);
@@ -418,9 +432,7 @@
 
         makeDraggable(el, el, 'toolbar');
 
-        // Atalhos de teclado — funcionam mesmo com os painéis fechados,
-        // então dá pra reabrir sem precisar clicar na toolbar.
-        document.addEventListener('keydown', (e) => {
+        on(document, 'keydown', (e) => {
             if (!e.altKey || !e.ctrlKey) return;
             const tag = (e.target && e.target.tagName) || '';
             if (['INPUT', 'TEXTAREA', 'SELECT'].includes(tag)) return;
@@ -429,472 +441,923 @@
             else if (e.code === 'KeyQ') { e.preventDefault(); toggleBoth(); }
         });
 
-        return {
-            element: el,
-            setAnalyzerVisible, setSenderVisible,
-            toggleAnalyzer, toggleSender, toggleBoth
-        };
+        return { element: el, setAnalyzerVisible, setSenderVisible, toggleAnalyzer, toggleSender, toggleBoth };
     })();
 
-    // Referência para comunicação Analyzer → Sender
     const SenderRef = { fill: null };
 
-    // ==========================================
-    // MÓDULO 7: ANALYZER UI
-    // ==========================================
+    // ═══════════════════════════════════════════════════════════════
+    // ANALYZER UI — com tabs (Log | Filtros | IA)
+    // ═══════════════════════════════════════════════════════════════
     const AnalyzerUI = (function() {
         const el = document.createElement('div');
         el.id = 'hl-analyzer';
         Object.assign(el.style, {
-            position: 'fixed',
-            top: '50px',
-            left: '10px',
-            width: '620px',
-            height: '600px',
+            position: 'fixed', top: '50px', left: '10px',
+            width: '720px', height: '640px',
             maxHeight: 'calc(100vh - 70px)',
-            background: '#13131a',
-            color: '#e1e1e6',
-            border: '1px solid #1a1a2e',
-            zIndex: '99998',
-            fontFamily: 'monospace',
-            fontSize: '12px',
-            borderRadius: '8px',
-            display: 'none',
-            flexDirection: 'column',
-            boxShadow: '0 8px 32px rgba(0,0,0,0.5)'
+            background: '#0f0f16', color: '#e1e1e6',
+            border: '1px solid #1e1e2e', zIndex: '99998',
+            fontFamily: 'monospace', fontSize: '12px',
+            borderRadius: '10px', display: 'none', flexDirection: 'column',
+            boxShadow: '0 12px 40px rgba(0,0,0,0.6), 0 0 0 1px rgba(108,99,255,0.06)'
         });
 
         el.innerHTML = `
+            <!-- Header -->
             <div class="drag-header" style="
-                background:#0a0a0f;padding:8px 12px;cursor:move;
-                border-bottom:1px solid #1a1a2e;border-radius:8px 8px 0 0;
+                background:linear-gradient(180deg, #12121c 0%, #0a0a12 100%);
+                padding:11px 14px;cursor:move;
+                border-bottom:1px solid #1e1e2e;border-radius:10px 10px 0 0;
                 font-weight:bold;display:flex;justify-content:space-between;align-items:center;
-                font-size:12px;color:#e1e1e6;user-select:none;
+                font-size:12px;color:#e1e1e6;user-select:none;letter-spacing:0.05em;
             ">
-                <span>\uD83D\uDD0D SANG ANALYZER</span>
+                <span style="display:flex;align-items:center;gap:10px;">
+                    <span style="width:8px;height:8px;border-radius:50%;background:#00d4aa;
+                        box-shadow:0 0 8px #00d4aa,0 0 16px rgba(0,212,170,0.5);"></span>
+                    <span style="background:linear-gradient(90deg,#e1e1e6,#8a8a9a);
+                        -webkit-background-clip:text;background-clip:text;color:transparent;">
+                        SANG ANALYZER
+                    </span>
+                </span>
                 <div id="analyzerHeaderBtns" style="display:flex;gap:5px;align-items:center;">
-                    <button id="btnFontMinus" style="background:#1a1a2e;color:#e1e1e6;border:1px solid #1a1a2e;cursor:pointer;padding:2px 7px;border-radius:4px;font-size:11px;">A-</button>
-                    <button id="btnFontPlus" style="background:#1a1a2e;color:#e1e1e6;border:1px solid #1a1a2e;cursor:pointer;padding:2px 7px;border-radius:4px;font-size:11px;">A+</button>
+                    <button id="btnFontMinus" title="Diminuir fonte" style="background:#1a1a2e;color:#e1e1e6;border:1px solid #1e1e2e;cursor:pointer;padding:3px 8px;border-radius:4px;font-size:11px;">A−</button>
+                    <button id="btnFontPlus" title="Aumentar fonte" style="background:#1a1a2e;color:#e1e1e6;border:1px solid #1e1e2e;cursor:pointer;padding:3px 8px;border-radius:4px;font-size:11px;">A+</button>
                 </div>
             </div>
-            <div id="analyzerBody" style="display:flex;flex-direction:column;flex:1;overflow:hidden;min-height:0;">
-                <div style="padding:6px 10px;display:flex;gap:10px;align-items:center;background:#0a0a0f;border-bottom:1px solid #1a1a2e;">
-                    <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:11px;color:#e1e1e6;">
-                        <input type="checkbox" id="chkSend" checked style="accent-color:#00d4aa;"> \uD83D\uDCE4 Enviados
+
+            <!-- Tabs -->
+            <div id="analyzerTabs" style="display:flex;background:#0a0a12;border-bottom:1px solid #1e1e2e;padding:0 8px;gap:2px;">
+                <button class="az-tab active" data-tab="log" style="
+                    background:transparent;color:#e1e1e6;border:none;cursor:pointer;
+                    padding:10px 16px;font-size:11px;font-family:monospace;
+                    letter-spacing:0.05em;position:relative;transition:color 0.15s;
+                    outline:none;
+                ">📋 LOG</button>
+                <button class="az-tab" data-tab="filtros" style="
+                    background:transparent;color:#8a8a9a;border:none;cursor:pointer;
+                    padding:10px 16px;font-size:11px;font-family:monospace;
+                    letter-spacing:0.05em;position:relative;transition:color 0.15s;
+                    outline:none;
+                ">🛡️ FILTROS</button>
+                <button class="az-tab" data-tab="ia" style="
+                    background:transparent;color:#8a8a9a;border:none;cursor:pointer;
+                    padding:10px 16px;font-size:11px;font-family:monospace;
+                    letter-spacing:0.05em;position:relative;transition:color 0.15s;
+                    outline:none;
+                ">✨ SANG AI</button>
+            </div>
+
+            <!-- Pane: LOG -->
+            <div id="paneLog" style="display:flex;flex-direction:column;flex:1;overflow:hidden;min-height:0;">
+                <div style="padding:8px 12px;display:flex;gap:12px;align-items:center;background:#0a0a12;border-bottom:1px solid #1e1e2e;">
+                    <label style="display:flex;align-items:center;gap:5px;cursor:pointer;font-size:11px;color:#00d4aa;font-weight:600;">
+                        <input type="checkbox" id="chkSend" checked style="accent-color:#00d4aa;cursor:pointer;"> ENVIADOS
                     </label>
-                    <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:11px;color:#e1e1e6;">
-                        <input type="checkbox" id="chkRecv" checked style="accent-color:#6c63ff;"> \uD83D\uDCE5 Recebidos
+                    <label style="display:flex;align-items:center;gap:5px;cursor:pointer;font-size:11px;color:#6c63ff;font-weight:600;">
+                        <input type="checkbox" id="chkRecv" checked style="accent-color:#6c63ff;cursor:pointer;"> RECEBIDOS
                     </label>
-                    <div style="flex:1;"></div>
-                    <input id="logSearch" type="text" placeholder="Buscar nos logs..." style="
-                        width:150px;background:#0a0a0f;color:#e1e1e6;
-                        border:1px solid #1a1a2e;padding:4px 8px;font-size:11px;
-                        border-radius:4px;font-family:monospace;outline:none;
-                    ">
-                </div>
-                <div style="padding:6px 10px;display:flex;gap:6px;background:#0a0a0f;border-bottom:1px solid #1a1a2e;">
-                    <button id="btnPauseLogs" style="
-                        background:#1a1a2e;color:#e1e1e6;border:1px solid #1a1a2e;
-                        cursor:pointer;padding:5px 10px;border-radius:6px;font-size:11px;
-                        font-family:monospace;flex:1;transition:all 0.15s;
-                    ">\u23F8 PAUSAR</button>
-                    <button id="btnClearLogs" style="
-                        background:#1a1a2e;color:#ff4757;border:1px solid #ff4757;
-                        cursor:pointer;padding:5px 10px;border-radius:6px;font-size:11px;
-                        font-family:monospace;flex:1;transition:all 0.15s;
-                    ">\uD83D\uDDD1 LIMPAR</button>
-                    <button id="btnCopyAll" style="
-                        background:#1a1a2e;color:#00d4aa;border:1px solid #00d4aa;
-                        cursor:pointer;padding:5px 10px;border-radius:6px;font-size:11px;
-                        font-family:monospace;flex:1;transition:all 0.15s;
-                    ">\uD83D\uDCCB COPIAR TUDO</button>
-                </div>
-                <div style="padding:6px 10px;background:#0a0a0f;text-align:center;border-bottom:1px solid #1a1a2e;">
-                    <button id="btnKillSwitch" style="
-                        background:#1a1a2e;color:#ff4757;border:2px solid #ff4757;
-                        cursor:pointer;padding:8px;border-radius:6px;font-weight:bold;
-                        width:100%;font-size:12px;font-family:monospace;transition:all 0.2s;
-                    ">\u26A0\uFE0F HABILITAR KILL SWITCH</button>
-                </div>
-                <div id="logArea" style="flex:1;overflow-y:auto;padding:8px;min-height:80px;"></div>
-                <div style="display:flex;background:#0a0a0f;border-top:1px solid #1a1a2e;min-height:120px;flex-shrink:0;">
-                    <div style="flex:1;padding:8px;border-right:1px solid #1a1a2e;display:flex;flex-direction:column;">
-                        <div style="text-align:center;color:#6c63ff;font-weight:bold;margin-bottom:6px;font-size:11px;">\uD83D\uDC41\uFE0F OCULTAR DO LOG</div>
-                        <div style="display:flex;gap:3px;margin-bottom:3px;">
-                            <input id="vId" type="number" placeholder="ID" style="width:50px;background:#0a0a0f;color:#e1e1e6;border:1px solid #1a1a2e;padding:3px;font-size:11px;border-radius:4px;">
-                            <button id="btnAddVId" style="background:#13131a;color:#6c63ff;border:1px solid #6c63ff;cursor:pointer;padding:3px 8px;border-radius:4px;font-size:11px;">+</button>
-                        </div>
-                        <div style="display:flex;gap:3px;margin-bottom:4px;">
-                            <input id="vStr" type="text" placeholder="HEX/Str" style="flex:1;background:#0a0a0f;color:#e1e1e6;border:1px solid #1a1a2e;padding:3px;font-size:11px;border-radius:4px;">
-                            <button id="btnAddVStr" style="background:#13131a;color:#6c63ff;border:1px solid #6c63ff;cursor:pointer;padding:3px 8px;border-radius:4px;font-size:11px;">+</button>
-                        </div>
-                        <div id="listV" style="flex:1;max-height:70px;overflow-y:auto;margin-bottom:4px;font-size:10px;"></div>
-                        <button id="btnClrV" style="width:100%;background:#1a1a2e;color:#ff4757;border:1px solid #ff4757;cursor:pointer;padding:3px;border-radius:4px;font-size:10px;">LIMPAR TUDO</button>
+                    <div style="flex:1;min-width:0;">
+                        <input id="logSearch" type="text"
+                            placeholder="🔍 Filtrar por ID, hex, texto…"
+                            style="width:100%;background:#13131a;color:#e1e1e6;
+                            border:1px solid #1e1e2e;padding:6px 10px;font-size:11px;
+                            border-radius:6px;font-family:monospace;outline:none;box-sizing:border-box;">
                     </div>
-                    <div style="flex:1;padding:8px;display:flex;flex-direction:column;">
-                        <div style="text-align:center;color:#ff4757;font-weight:bold;margin-bottom:6px;font-size:11px;">\uD83D\uDED1 BLOQUEAR ENVIO</div>
-                        <div style="display:flex;gap:3px;margin-bottom:3px;">
-                            <input id="dId" type="number" placeholder="ID" style="width:50px;background:#0a0a0f;color:#e1e1e6;border:1px solid #1a1a2e;padding:3px;font-size:11px;border-radius:4px;">
-                            <button id="btnAddDId" style="background:#13131a;color:#ff4757;border:1px solid #ff4757;cursor:pointer;padding:3px 8px;border-radius:4px;font-size:11px;">+</button>
+                    <span id="logCounter" style="font-size:10px;color:#8a8a9a;white-space:nowrap;">0 logs</span>
+                </div>
+
+                <div style="padding:6px 12px;display:flex;gap:6px;background:#0a0a12;border-bottom:1px solid #1e1e2e;">
+                    <button id="btnPauseLogs" class="az-action" style="flex:1;background:#13131a;color:#e1e1e6;border:1px solid #1e1e2e;cursor:pointer;padding:6px 10px;border-radius:6px;font-size:11px;font-family:monospace;transition:all 0.15s;">⏸ PAUSAR</button>
+                    <button id="btnCopyAll" class="az-action" style="flex:1;background:#13131a;color:#00d4aa;border:1px solid #1e1e2e;cursor:pointer;padding:6px 10px;border-radius:6px;font-size:11px;font-family:monospace;transition:all 0.15s;">📋 COPIAR</button>
+                    <button id="btnClearLogs" class="az-action" style="flex:1;background:#13131a;color:#ef4444;border:1px solid #1e1e2e;cursor:pointer;padding:6px 10px;border-radius:6px;font-size:11px;font-family:monospace;transition:all 0.15s;">🗑 LIMPAR</button>
+                    <button id="btnKillSwitch" style="background:#13131a;color:#ef4444;border:1px solid #ef4444;cursor:pointer;padding:6px 12px;border-radius:6px;font-weight:bold;font-size:11px;font-family:monospace;transition:all 0.2s;white-space:nowrap;">⚠️ DROP ALL</button>
+                </div>
+
+                <div id="logArea" style="flex:1;overflow-y:auto;padding:10px;min-height:80px;"></div>
+            </div>
+
+            <!-- Pane: FILTROS -->
+            <div id="paneFiltros" style="display:none;flex-direction:column;flex:1;overflow:hidden;min-height:0;padding:14px;gap:14px;">
+                <div style="display:flex;gap:14px;flex:1;min-height:0;">
+                    <div style="flex:1;display:flex;flex-direction:column;min-width:0;background:#13131a;border:1px solid #1e1e2e;border-radius:8px;padding:12px;">
+                        <div style="color:#6c63ff;font-weight:bold;margin-bottom:10px;font-size:11px;letter-spacing:0.05em;display:flex;align-items:center;gap:6px;">
+                            <span style="width:6px;height:6px;border-radius:50%;background:#6c63ff;"></span>
+                            OCULTAR DO LOG
                         </div>
-                        <div style="display:flex;gap:3px;margin-bottom:4px;">
-                            <input id="dStr" type="text" placeholder="HEX/Str" style="flex:1;background:#0a0a0f;color:#e1e1e6;border:1px solid #1a1a2e;padding:3px;font-size:11px;border-radius:4px;">
-                            <button id="btnAddDStr" style="background:#13131a;color:#ff4757;border:1px solid #ff4757;cursor:pointer;padding:3px 8px;border-radius:4px;font-size:11px;">+</button>
+                        <div style="font-size:10px;color:#6a6a7a;margin-bottom:8px;line-height:1.5;">
+                            Some da visualização — o pacote ainda trafega normalmente.
                         </div>
-                        <div id="listD" style="flex:1;max-height:70px;overflow-y:auto;margin-bottom:4px;font-size:10px;"></div>
-                        <button id="btnClrD" style="width:100%;background:#1a1a2e;color:#ff4757;border:1px solid #ff4757;cursor:pointer;padding:3px;border-radius:4px;font-size:10px;">LIMPAR TUDO</button>
+                        <div style="display:flex;gap:4px;margin-bottom:6px;">
+                            <input id="vId" type="number" placeholder="ID" style="width:70px;background:#0a0a12;color:#e1e1e6;border:1px solid #1e1e2e;padding:6px 8px;font-size:11px;border-radius:5px;outline:none;box-sizing:border-box;font-family:monospace;">
+                            <button id="btnAddVId" style="background:#13131a;color:#6c63ff;border:1px solid #6c63ff;cursor:pointer;padding:6px 12px;border-radius:5px;font-size:11px;font-weight:bold;">+</button>
+                        </div>
+                        <div style="display:flex;gap:4px;margin-bottom:8px;">
+                            <input id="vStr" type="text" placeholder="HEX ou texto no payload" style="flex:1;background:#0a0a12;color:#e1e1e6;border:1px solid #1e1e2e;padding:6px 8px;font-size:11px;border-radius:5px;outline:none;min-width:0;box-sizing:border-box;font-family:monospace;">
+                            <button id="btnAddVStr" style="background:#13131a;color:#6c63ff;border:1px solid #6c63ff;cursor:pointer;padding:6px 12px;border-radius:5px;font-size:11px;font-weight:bold;">+</button>
+                        </div>
+                        <div id="listV" style="flex:1;overflow-y:auto;margin-bottom:8px;font-size:10px;"></div>
+                        <button id="btnClrV" style="width:100%;background:#13131a;color:#ef4444;border:1px solid #ef4444;cursor:pointer;padding:5px;border-radius:5px;font-size:10px;transition:all 0.15s;">LIMPAR TUDO</button>
                     </div>
+                    <div style="flex:1;display:flex;flex-direction:column;min-width:0;background:#13131a;border:1px solid #1e1e2e;border-radius:8px;padding:12px;">
+                        <div style="color:#ef4444;font-weight:bold;margin-bottom:10px;font-size:11px;letter-spacing:0.05em;display:flex;align-items:center;gap:6px;">
+                            <span style="width:6px;height:6px;border-radius:50%;background:#ef4444;"></span>
+                            BLOQUEAR ENVIO
+                        </div>
+                        <div style="font-size:10px;color:#6a6a7a;margin-bottom:8px;line-height:1.5;">
+                            Impede o pacote de sair — o servidor nunca o recebe.
+                        </div>
+                        <div style="display:flex;gap:4px;margin-bottom:6px;">
+                            <input id="dId" type="number" placeholder="ID" style="width:70px;background:#0a0a12;color:#e1e1e6;border:1px solid #1e1e2e;padding:6px 8px;font-size:11px;border-radius:5px;outline:none;box-sizing:border-box;font-family:monospace;">
+                            <button id="btnAddDId" style="background:#13131a;color:#ef4444;border:1px solid #ef4444;cursor:pointer;padding:6px 12px;border-radius:5px;font-size:11px;font-weight:bold;">+</button>
+                        </div>
+                        <div style="display:flex;gap:4px;margin-bottom:8px;">
+                            <input id="dStr" type="text" placeholder="HEX ou texto no payload" style="flex:1;background:#0a0a12;color:#e1e1e6;border:1px solid #1e1e2e;padding:6px 8px;font-size:11px;border-radius:5px;outline:none;min-width:0;box-sizing:border-box;font-family:monospace;">
+                            <button id="btnAddDStr" style="background:#13131a;color:#ef4444;border:1px solid #ef4444;cursor:pointer;padding:6px 12px;border-radius:5px;font-size:11px;font-weight:bold;">+</button>
+                        </div>
+                        <div id="listD" style="flex:1;overflow-y:auto;margin-bottom:8px;font-size:10px;"></div>
+                        <button id="btnClrD" style="width:100%;background:#13131a;color:#ef4444;border:1px solid #ef4444;cursor:pointer;padding:5px;border-radius:5px;font-size:10px;transition:all 0.15s;">LIMPAR TUDO</button>
+                    </div>
+                </div>
+
+                <!-- Linguagem natural -->
+                <div style="background:linear-gradient(135deg, rgba(168,85,247,0.08), rgba(108,99,255,0.05));
+                    border:1px solid rgba(168,85,247,0.25);border-radius:8px;padding:12px;">
+                    <div style="color:#c4b5fd;font-weight:bold;font-size:11px;letter-spacing:0.05em;margin-bottom:8px;display:flex;align-items:center;gap:6px;">
+                        ✨ CRIAR FILTRO COM LINGUAGEM NATURAL
+                    </div>
+                    <div style="display:flex;gap:6px;">
+                        <input id="nlFiltro" type="text"
+                            placeholder="Ex: esconde pacotes de movimento, bloqueia chat…"
+                            style="flex:1;background:#0a0a12;color:#e1e1e6;border:1px solid rgba(168,85,247,0.3);
+                            padding:8px 10px;font-size:11px;border-radius:6px;outline:none;
+                            font-family:monospace;box-sizing:border-box;min-width:0;">
+                        <button id="btnNlFiltro" style="background:linear-gradient(135deg,#a855f7,#6c63ff);
+                            color:#fff;border:none;cursor:pointer;padding:8px 16px;border-radius:6px;
+                            font-weight:bold;font-size:11px;font-family:monospace;white-space:nowrap;">GERAR</button>
+                    </div>
+                    <div id="nlFiltroResultado" style="margin-top:8px;font-size:10.5px;color:#8a8a9a;line-height:1.5;"></div>
+                </div>
+            </div>
+
+            <!-- Pane: IA -->
+            <div id="paneIA" style="display:none;flex-direction:column;flex:1;overflow:hidden;min-height:0;">
+                <div id="iaChat" style="flex:1;overflow-y:auto;padding:14px;display:flex;flex-direction:column;gap:10px;min-height:0;"></div>
+                <div style="padding:8px 12px;background:#0a0a12;border-top:1px solid #1e1e2e;display:flex;gap:6px;flex-wrap:wrap;">
+                    <button class="ia-quick" style="background:#13131a;color:#c4b5fd;border:1px solid rgba(168,85,247,0.3);cursor:pointer;padding:5px 10px;border-radius:5px;font-size:10px;font-family:monospace;">Últimos 10 pacotes</button>
+                    <button class="ia-quick" style="background:#13131a;color:#c4b5fd;border:1px solid rgba(168,85,247,0.3);cursor:pointer;padding:5px 10px;border-radius:5px;font-size:10px;font-family:monospace;">Sugerir filtros</button>
+                    <button class="ia-quick" style="background:#13131a;color:#c4b5fd;border:1px solid rgba(168,85,247,0.3);cursor:pointer;padding:5px 10px;border-radius:5px;font-size:10px;font-family:monospace;">Detectar anomalias</button>
+                    <button class="ia-quick" style="background:#13131a;color:#c4b5fd;border:1px solid rgba(168,85,247,0.3);cursor:pointer;padding:5px 10px;border-radius:5px;font-size:10px;font-family:monospace;">O que é ID 4521?</button>
+                </div>
+                <div style="padding:10px 12px;background:#0a0a12;border-top:1px solid #1e1e2e;display:flex;gap:6px;align-items:flex-end;">
+                    <textarea id="iaInput" rows="1"
+                        placeholder="Pergunte algo ou descreva o que procura…"
+                        style="flex:1;background:#13131a;color:#e1e1e6;border:1px solid #1e1e2e;
+                        padding:8px 10px;font-size:11.5px;border-radius:6px;outline:none;
+                        font-family:monospace;resize:none;min-height:36px;max-height:100px;
+                        box-sizing:border-box;line-height:1.4;"></textarea>
+                    <button id="iaSend" style="background:linear-gradient(135deg,#a855f7,#6c63ff);
+                        color:#fff;border:none;cursor:pointer;padding:8px 16px;border-radius:6px;
+                        font-weight:bold;font-size:11px;font-family:monospace;white-space:nowrap;
+                        transition:all 0.15s;">ENVIAR</button>
                 </div>
             </div>
         `;
 
         makeDraggable(el.querySelector('.drag-header'), el, 'analyzer');
-        makeResizable(el, { minW: 420, minH: 320, maxW: 1100, maxH: 1000, storageKey: 'analyzer' });
+        makeResizable(el, { minW: 520, minH: 420, maxW: 1300, maxH: 1000, storageKey: 'analyzer' });
 
-        // Botão de fechar no header (some antes dos botões A-/A+)
         const closeBtn = createCloseButton(() => Toolbar.setAnalyzerVisible(false));
         el.querySelector('#analyzerHeaderBtns').appendChild(closeBtn);
 
+        // ─── Referências ───
         const logArea = el.querySelector('#logArea');
         logArea.style.fontSize = AppState.fontSize + 'px';
-
-        // Font size
-        el.querySelector('#btnFontPlus').onclick = () => {
-            AppState.fontSize = Math.min(24, AppState.fontSize + 2);
-            logArea.style.fontSize = AppState.fontSize + 'px';
-            Storage.set('font_size', AppState.fontSize);
-        };
-        el.querySelector('#btnFontMinus').onclick = () => {
-            AppState.fontSize = Math.max(8, AppState.fontSize - 2);
-            logArea.style.fontSize = AppState.fontSize + 'px';
-            Storage.set('font_size', AppState.fontSize);
-        };
-
-        // Kill Switch
-        const btnKill = el.querySelector('#btnKillSwitch');
-        btnKill.onclick = () => {
-            AppState.killSwitchActive = !AppState.killSwitchActive;
-            if (AppState.killSwitchActive) {
-                btnKill.style.background = '#ff4757';
-                btnKill.style.color = '#fff';
-                btnKill.style.borderColor = '#ff4757';
-                btnKill.textContent = '\uD83D\uDED1 KILL SWITCH ATIVO';
-            } else {
-                btnKill.style.background = '#1a1a2e';
-                btnKill.style.color = '#ff4757';
-                btnKill.style.borderColor = '#ff4757';
-                btnKill.textContent = '\u26A0\uFE0F HABILITAR KILL SWITCH';
-            }
-        };
-
-        // Pause
-        const btnPause = el.querySelector('#btnPauseLogs');
-        btnPause.onclick = () => {
-            AppState.isPaused = !AppState.isPaused;
-            if (AppState.isPaused) {
-                btnPause.textContent = '\u25B6 CONTINUAR';
-                btnPause.style.color = '#00d4aa';
-                btnPause.style.borderColor = '#00d4aa';
-            } else {
-                btnPause.textContent = '\u23F8 PAUSAR';
-                btnPause.style.color = '#e1e1e6';
-                btnPause.style.borderColor = '#1a1a2e';
-            }
-        };
-
-        // Clear / Copy All
-        el.querySelector('#btnClearLogs').onclick = () => { logArea.innerHTML = ''; AppState.logs = []; };
-        el.querySelector('#btnCopyAll').onclick = () => {
-            if (AppState.logs.length === 0) return alert('Logs vazios.');
-            const allText = AppState.logs.map(l => l.rawText).join('\n\n-----------------\n\n');
-            navigator.clipboard.writeText(allText).then(() => alert(AppState.logs.length + ' logs copiados!'));
-        };
-
-        // Search & Filter
+        const logCounter = el.querySelector('#logCounter');
         const searchInp = el.querySelector('#logSearch');
         const chkSend = el.querySelector('#chkSend');
         const chkRecv = el.querySelector('#chkRecv');
 
-        const refreshVisibility = () => {
+        // ─── Tabs ───
+        const tabs = el.querySelectorAll('.az-tab');
+        const panes = {
+            log: el.querySelector('#paneLog'),
+            filtros: el.querySelector('#paneFiltros'),
+            ia: el.querySelector('#paneIA')
+        };
+        const tabUnderline = 'position:absolute;left:0;right:0;bottom:-1px;height:2px;background:linear-gradient(90deg,#a855f7,#6c63ff);border-radius:2px;';
+
+        function setActiveTab(name) {
+            tabs.forEach(t => {
+                const isActive = t.dataset.tab === name;
+                t.classList.toggle('active', isActive);
+                t.style.color = isActive ? '#e1e1e6' : '#8a8a9a';
+                // Underline
+                let underline = t.querySelector('.az-underline');
+                if (isActive && !underline) {
+                    underline = document.createElement('span');
+                    underline.className = 'az-underline';
+                    underline.style.cssText = tabUnderline;
+                    t.appendChild(underline);
+                } else if (!isActive && underline) {
+                    underline.remove();
+                }
+            });
+            Object.keys(panes).forEach(k => {
+                panes[k].style.display = (k === name) ? (k === 'log' ? 'flex' : k === 'filtros' ? 'flex' : 'flex') : 'none';
+            });
+            if (name === 'ia') {
+                panes.ia.style.flexDirection = 'column';
+                if (!panes.ia.dataset.iniciado) {
+                    panes.ia.dataset.iniciado = '1';
+                    iaInit();
+                }
+            }
+        }
+
+        tabs.forEach(t => on(t, 'click', () => setActiveTab(t.dataset.tab)));
+        // Marca underline inicial
+        setTimeout(() => setActiveTab('log'), 0);
+
+        // ─── Fonte ───
+        on(el.querySelector('#btnFontPlus'), 'click', () => {
+            AppState.fontSize = Math.min(24, AppState.fontSize + 1);
+            logArea.style.fontSize = AppState.fontSize + 'px';
+            Storage.set('font_size', AppState.fontSize);
+        });
+        on(el.querySelector('#btnFontMinus'), 'click', () => {
+            AppState.fontSize = Math.max(9, AppState.fontSize - 1);
+            logArea.style.fontSize = AppState.fontSize + 'px';
+            Storage.set('font_size', AppState.fontSize);
+        });
+
+        // ─── Kill switch ───
+        const btnKill = el.querySelector('#btnKillSwitch');
+        on(btnKill, 'click', () => {
+            AppState.killSwitchActive = !AppState.killSwitchActive;
+            if (AppState.killSwitchActive) {
+                btnKill.style.background = '#ef4444';
+                btnKill.style.color = '#fff';
+                btnKill.textContent = '🛑 DROP ATIVO';
+            } else {
+                btnKill.style.background = '#13131a';
+                btnKill.style.color = '#ef4444';
+                btnKill.textContent = '⚠️ DROP ALL';
+            }
+        });
+
+        // ─── Pause ───
+        const btnPause = el.querySelector('#btnPauseLogs');
+        on(btnPause, 'click', () => {
+            AppState.isPaused = !AppState.isPaused;
+            if (AppState.isPaused) {
+                btnPause.textContent = '▶ CONTINUAR';
+                btnPause.style.color = '#00d4aa';
+                btnPause.style.borderColor = '#00d4aa';
+            } else {
+                btnPause.textContent = '⏸ PAUSAR';
+                btnPause.style.color = '#e1e1e6';
+                btnPause.style.borderColor = '#1e1e2e';
+            }
+        });
+
+        // ─── Clear / Copy ───
+        on(el.querySelector('#btnClearLogs'), 'click', () => {
+            logArea.innerHTML = '';
+            AppState.logs = [];
+            logCounter.textContent = '0 logs';
+        });
+        on(el.querySelector('#btnCopyAll'), 'click', () => {
+            if (AppState.logs.length === 0) return;
+            const allText = AppState.logs.map(l => l.rawText).join('\n\n-----------------\n\n');
+            navigator.clipboard.writeText(allText);
+        });
+
+        // ─── Filtro de visibilidade ───
+        function refreshVisibility() {
             const q = searchInp.value.toLowerCase();
+            let visibleCount = 0;
             for (const item of AppState.logs) {
                 let visible = true;
                 if (item.dir === 'SEND' && !AppState.showSend) visible = false;
                 if (item.dir === 'RECV' && !AppState.showRecv) visible = false;
                 if (q && !item.searchString.includes(q)) visible = false;
                 item.el.style.display = visible ? 'block' : 'none';
+                if (visible) visibleCount++;
             }
-        };
+            logCounter.textContent = visibleCount + ' de ' + AppState.logs.length;
+        }
+        on(chkSend, 'change', () => { AppState.showSend = chkSend.checked; refreshVisibility(); });
+        on(chkRecv, 'change', () => { AppState.showRecv = chkRecv.checked; refreshVisibility(); });
+        on(searchInp, 'input', refreshVisibility);
 
-        chkSend.onchange = () => { AppState.showSend = chkSend.checked; refreshVisibility(); };
-        chkRecv.onchange = () => { AppState.showRecv = chkRecv.checked; refreshVisibility(); };
-        searchInp.addEventListener('input', refreshVisibility);
-
-        // Filter tags
-        const createTag = (type, act, rawVal, displayVal) => {
+        // ─── Tags de filtro ───
+        function createTag(type, act, rawVal, displayVal, cor) {
             const d = document.createElement('div');
             Object.assign(d.style, {
                 display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-                background: '#0a0a0f', border: '1px solid #1a1a2e',
-                margin: '1px 0', padding: '1px 4px', fontSize: '10px',
-                color: '#8a8a9a', borderRadius: '2px'
+                background: '#0a0a12', border: '1px solid #1e1e2e',
+                margin: '2px 0', padding: '3px 7px', fontSize: '10px',
+                color: '#b8b8c8', borderRadius: '4px'
             });
-            d.innerHTML = `<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:85%;">${displayVal}</span>
-                <button style="color:#ff4757;background:none;border:none;cursor:pointer;font-weight:bold;padding:0 3px;">\u2715</button>`;
-            d.querySelector('button').onclick = () => { PacketFilter.manageList(type, act, rawVal); renderFilters(); };
+            const span = document.createElement('span');
+            span.textContent = displayVal;
+            span.style.cssText = 'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:85%;font-family:monospace;';
+            d.appendChild(span);
+            const btn = document.createElement('button');
+            btn.textContent = '✕';
+            btn.style.cssText = `color:${cor};background:none;border:none;cursor:pointer;font-weight:bold;padding:0 3px;`;
+            on(btn, 'click', () => { PacketFilter.manageList(type, act, rawVal); renderFilters(); });
+            d.appendChild(btn);
             return d;
-        };
+        }
 
-        const renderFilters = () => {
+        function renderFilters() {
             const lv = el.querySelector('#listV'); lv.innerHTML = '';
             const ld = el.querySelector('#listD'); ld.innerHTML = '';
-            AppState.blIds.forEach(id => lv.appendChild(createTag('VISUAL', 'REMOVE_ID', id, 'ID: ' + id)));
-            AppState.blPayloads.forEach(s => lv.appendChild(createTag('VISUAL', 'REMOVE_STR', s, 'HEX: ' + s)));
-            AppState.dropIds.forEach(id => ld.appendChild(createTag('DROP', 'REMOVE_ID', id, 'ID: ' + id)));
-            AppState.dropPayloads.forEach(s => ld.appendChild(createTag('DROP', 'REMOVE_STR', s, 'HEX: ' + s)));
-        };
+            AppState.blIds.forEach(id => lv.appendChild(createTag('VISUAL', 'REMOVE_ID', id, 'ID ' + id, '#6c63ff')));
+            AppState.blPayloads.forEach(s => lv.appendChild(createTag('VISUAL', 'REMOVE_STR', s, 'HEX ' + s, '#6c63ff')));
+            AppState.dropIds.forEach(id => ld.appendChild(createTag('DROP', 'REMOVE_ID', id, 'ID ' + id, '#ef4444')));
+            AppState.dropPayloads.forEach(s => ld.appendChild(createTag('DROP', 'REMOVE_STR', s, 'HEX ' + s, '#ef4444')));
+
+            if (!AppState.blIds.size && !AppState.blPayloads.length) {
+                const empty = document.createElement('div');
+                empty.style.cssText = 'color:#5a5a6a;font-size:10px;text-align:center;padding:14px;font-style:italic;';
+                empty.textContent = 'Nenhum filtro — tudo aparece no log.';
+                lv.appendChild(empty);
+            }
+            if (!AppState.dropIds.size && !AppState.dropPayloads.length) {
+                const empty = document.createElement('div');
+                empty.style.cssText = 'color:#5a5a6a;font-size:10px;text-align:center;padding:14px;font-style:italic;';
+                empty.textContent = 'Nenhum bloqueio — todo envio passa.';
+                ld.appendChild(empty);
+            }
+        }
         renderFilters();
 
-        el.querySelector('#btnAddVId').onclick = () => { PacketFilter.manageList('VISUAL', 'ADD_ID', el.querySelector('#vId').value); el.querySelector('#vId').value = ''; renderFilters(); };
-        el.querySelector('#btnAddVStr').onclick = () => { PacketFilter.manageList('VISUAL', 'ADD_STR', el.querySelector('#vStr').value); el.querySelector('#vStr').value = ''; renderFilters(); };
-        el.querySelector('#btnClrV').onclick = () => { PacketFilter.manageList('VISUAL', 'CLEAR'); renderFilters(); };
-        el.querySelector('#btnAddDId').onclick = () => { PacketFilter.manageList('DROP', 'ADD_ID', el.querySelector('#dId').value); el.querySelector('#dId').value = ''; renderFilters(); };
-        el.querySelector('#btnAddDStr').onclick = () => { PacketFilter.manageList('DROP', 'ADD_STR', el.querySelector('#dStr').value); el.querySelector('#dStr').value = ''; renderFilters(); };
-        el.querySelector('#btnClrD').onclick = () => { PacketFilter.manageList('DROP', 'CLEAR'); renderFilters(); };
+        on(el.querySelector('#btnAddVId'), 'click', () => { PacketFilter.manageList('VISUAL', 'ADD_ID', el.querySelector('#vId').value); el.querySelector('#vId').value = ''; renderFilters(); });
+        on(el.querySelector('#btnAddVStr'), 'click', () => { PacketFilter.manageList('VISUAL', 'ADD_STR', el.querySelector('#vStr').value); el.querySelector('#vStr').value = ''; renderFilters(); });
+        on(el.querySelector('#btnClrV'), 'click', () => { PacketFilter.manageList('VISUAL', 'CLEAR'); renderFilters(); });
+        on(el.querySelector('#btnAddDId'), 'click', () => { PacketFilter.manageList('DROP', 'ADD_ID', el.querySelector('#dId').value); el.querySelector('#dId').value = ''; renderFilters(); });
+        on(el.querySelector('#btnAddDStr'), 'click', () => { PacketFilter.manageList('DROP', 'ADD_STR', el.querySelector('#dStr').value); el.querySelector('#dStr').value = ''; renderFilters(); });
+        on(el.querySelector('#btnClrD'), 'click', () => { PacketFilter.manageList('DROP', 'CLEAR'); renderFilters(); });
 
-        // Visibility
-        const setVisible = (show) => {
-            el.style.display = show ? 'flex' : 'none';
-            if (show) {
-                // Garante que o painel reaberto ainda está dentro da tela
-                // (útil se a janela do navegador foi redimensionada enquanto fechado)
-                const rect = el.getBoundingClientRect();
-                const clamped = clampToViewport(el, rect.left, rect.top);
-                el.style.left = clamped.x + 'px';
-                el.style.top = clamped.y + 'px';
+        // ─── Filtro em linguagem natural ───
+        const nlInput = el.querySelector('#nlFiltro');
+        const nlBtn = el.querySelector('#btnNlFiltro');
+        const nlResult = el.querySelector('#nlFiltroResultado');
+
+        async function gerarFiltroNL() {
+            const desc = nlInput.value.trim();
+            if (!desc) return;
+            if (!SangAI.disponivel()) {
+                nlResult.innerHTML = '<span style="color:#ef4444;">⚠ Sang AI não configurada. Abra o módulo Sang AI e cole sua chave.</span>';
+                return;
             }
-        };
+            nlBtn.disabled = true;
+            nlBtn.textContent = '⏳';
+            nlResult.innerHTML = '<span style="color:#8a8a9a;">Consultando Sang AI…</span>';
+            try {
+                // Pega amostras recentes pra dar contexto
+                const amostras = AppState.logs.slice(-20).map(l => ({
+                    header: l.packet.header,
+                    byteLength: l.packet.byteLength,
+                    ascii: l.packet.ascii
+                }));
+                const resp = await SangAI.criarFiltroLinguagemNatural(desc, amostras);
+                const limpo = resp.replace(/```json|```/g, '').trim();
+                let dados;
+                try { dados = JSON.parse(limpo); }
+                catch (e) {
+                    nlResult.innerHTML = `<span style="color:#ef4444;">Resposta inválida da IA: ${limpo.slice(0, 200)}</span>`;
+                    return;
+                }
 
-        // [+] Send button
-        const createSendButton = (packet) => {
+                const ids = Array.isArray(dados.ids) ? dados.ids : [];
+                const strings = Array.isArray(dados.strings) ? dados.strings : [];
+                const motivo = dados.motivo || '';
+
+                // Aplica em VISUAL por padrão
+                ids.forEach(id => PacketFilter.manageList('VISUAL', 'ADD_ID', String(id)));
+                strings.forEach(s => PacketFilter.manageList('VISUAL', 'ADD_STR', s));
+                renderFilters();
+
+                nlResult.innerHTML =
+                    `<span style="color:#00d4aa;">✓ Aplicado em OCULTAR DO LOG</span>` +
+                    (motivo ? `<br><span style="color:#8a8a9a;">${motivo}</span>` : '') +
+                    (ids.length ? `<br><span style="color:#6c63ff;">IDs: ${ids.join(', ')}</span>` : '') +
+                    (strings.length ? `<br><span style="color:#6c63ff;">Strings: ${strings.join(', ')}</span>` : '');
+                nlInput.value = '';
+            } catch (e) {
+                nlResult.innerHTML = `<span style="color:#ef4444;">Erro: ${e.message || e}</span>`;
+            } finally {
+                nlBtn.disabled = false;
+                nlBtn.textContent = 'GERAR';
+            }
+        }
+        on(nlBtn, 'click', gerarFiltroNL);
+        on(nlInput, 'keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); gerarFiltroNL(); } });
+
+        // ─── IA Chat ───
+        const iaChat = el.querySelector('#iaChat');
+        const iaInput = el.querySelector('#iaInput');
+        const iaSendBtn = el.querySelector('#iaSend');
+        let iaPronto = false;
+
+        function iaInit() {
+            if (iaPronto) return;
+            iaPronto = true;
+            iaAdd('ia',
+                'Oi! Sou a **Sang AI** aqui no Analyzer. Posso:\n\n' +
+                '• Explicar pacotes individuais (clica no 🧠 de qualquer pacote)\n' +
+                '• Analisar os últimos N pacotes de uma vez\n' +
+                '• Sugerir filtros com base no tráfego\n' +
+                '• Responder perguntas sobre IDs específicos\n\n' +
+                'Pergunta à vontade.'
+            );
+            if (!SangAI.disponivel()) {
+                iaAdd('erro', 'Sang AI não configurada. Abra o módulo Sang AI e cole sua chave da Groq.');
+            }
+        }
+
+        function iaAdd(tipo, texto) {
+            const el_ = document.createElement('div');
+            el_.style.cssText = 'max-width:88%;padding:10px 14px;border-radius:12px;font-size:12px;line-height:1.5;white-space:pre-wrap;word-wrap:break-word;animation:iaMsgIn 0.28s cubic-bezier(0.34,1.56,0.64,1);';
+            if (tipo === 'user') {
+                el_.style.background = 'linear-gradient(135deg,#6c63ff,#a855f7)';
+                el_.style.color = '#fff';
+                el_.style.alignSelf = 'flex-end';
+                el_.style.borderBottomRightRadius = '4px';
+            } else if (tipo === 'ia') {
+                el_.style.background = 'rgba(168,85,247,0.08)';
+                el_.style.border = '1px solid rgba(168,85,247,0.2)';
+                el_.style.color = '#e9d5ff';
+                el_.style.alignSelf = 'flex-start';
+                el_.style.borderBottomLeftRadius = '4px';
+            } else if (tipo === 'erro') {
+                el_.style.background = 'rgba(239,68,68,0.08)';
+                el_.style.border = '1px solid rgba(239,68,68,0.25)';
+                el_.style.color = '#fca5a5';
+                el_.style.alignSelf = 'center';
+                el_.style.fontSize = '11px';
+            } else if (tipo === 'sys') {
+                el_.style.background = 'rgba(255,255,255,0.03)';
+                el_.style.color = '#8a7aa8';
+                el_.style.alignSelf = 'center';
+                el_.style.fontSize = '10.5px';
+                el_.style.fontStyle = 'italic';
+                el_.style.padding = '6px 12px';
+                el_.style.borderRadius = '20px';
+            }
+            // Markdown simples pra negrito
+            el_.innerHTML = texto
+                .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+                .replace(/`([^`]+)`/g, '<code style="background:rgba(168,85,247,0.15);padding:1px 5px;border-radius:4px;font-size:11px;color:#e9d5ff;">$1</code>');
+            iaChat.appendChild(el_);
+            iaChat.scrollTop = iaChat.scrollHeight;
+            return el_;
+        }
+
+        function iaAddLoading() {
+            const el_ = document.createElement('div');
+            el_.style.cssText = 'align-self:flex-start;background:rgba(168,85,247,0.08);border:1px solid rgba(168,85,247,0.2);border-radius:12px;border-bottom-left-radius:4px;padding:12px 16px;display:flex;gap:5px;animation:iaMsgIn 0.28s;';
+            el_.innerHTML = '<span class="ia-dot"></span><span class="ia-dot"></span><span class="ia-dot"></span>';
+            iaChat.appendChild(el_);
+            iaChat.scrollTop = iaChat.scrollHeight;
+            return el_;
+        }
+
+        async function iaEnviar(texto) {
+            if (!texto.trim()) return;
+            if (!SangAI.disponivel()) {
+                iaAdd('erro', 'Sang AI não configurada.');
+                return;
+            }
+            iaAdd('user', texto);
+            iaInput.value = '';
+            iaInput.style.height = 'auto';
+            iaSendBtn.disabled = true;
+            const load = iaAddLoading();
+            try {
+                const amostras = AppState.logs.slice(-15).map(l => ({
+                    dir: l.dir,
+                    header: l.packet.header,
+                    byteLength: l.packet.byteLength,
+                    fullHex: l.packet.fullHex
+                }));
+                const resp = await SangAI.chatLivre(texto, amostras);
+                load.remove();
+                iaAdd('ia', resp);
+            } catch (e) {
+                load.remove();
+                iaAdd('erro', 'Erro: ' + (e.message || e));
+            } finally {
+                iaSendBtn.disabled = false;
+                iaInput.focus();
+            }
+        }
+
+        on(iaSendBtn, 'click', () => iaEnviar(iaInput.value));
+        on(iaInput, 'keydown', (e) => {
+            if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); iaEnviar(iaInput.value); }
+        });
+        on(iaInput, 'input', () => {
+            iaInput.style.height = 'auto';
+            iaInput.style.height = Math.min(100, iaInput.scrollHeight) + 'px';
+        });
+
+        // ─── Quick actions da IA ───
+        el.querySelectorAll('.ia-quick').forEach(btn => {
+            on(btn, 'click', async () => {
+                const txt = btn.textContent.trim();
+                if (txt === 'Últimos 10 pacotes') {
+                    if (AppState.logs.length === 0) { iaAdd('sys', 'Nenhum pacote capturado ainda.'); return; }
+                    const pack = AppState.logs.slice(-10).map(l => ({
+                        dir: l.dir, header: l.packet.header, byteLength: l.packet.byteLength, fullHex: l.packet.fullHex
+                    }));
+                    iaAdd('user', 'Analisa os últimos 10 pacotes.');
+                    iaSendBtn.disabled = true;
+                    const load = iaAddLoading();
+                    try {
+                        const resp = await SangAI.analisarSequencia(pack);
+                        load.remove();
+                        iaAdd('ia', resp);
+                    } catch (e) {
+                        load.remove();
+                        iaAdd('erro', 'Erro: ' + (e.message || e));
+                    } finally {
+                        iaSendBtn.disabled = false;
+                    }
+                } else if (txt === 'Sugerir filtros') {
+                    iaEnviar('Olhando os últimos pacotes, sugere 2-3 filtros úteis pra reduzir ruído no log. Formato: lista curta com o motivo.');
+                } else if (txt === 'Detectar anomalias') {
+                    iaEnviar('Olhando os últimos pacotes, tem algo anormal? Pacotes com tamanho incomum, IDs raros, ou sequências estranhas.');
+                } else if (txt === 'O que é ID 4521?') {
+                    iaEnviar('O que costuma ser o ID 4521 no protocolo Habbo?');
+                }
+            });
+        });
+
+        // ─── Botões nos pacotes ───
+        function createSendButton(packet) {
             const btn = document.createElement('button');
-            btn.textContent = '[+]';
-            btn.title = 'Preencher ID e HEX no Packet Sender';
+            btn.textContent = '↗';
+            btn.title = 'Enviar ID e HEX para o Sender';
             Object.assign(btn.style, {
                 background: '#6c63ff', color: '#fff', border: 'none',
-                cursor: 'pointer', padding: '1px 7px', marginLeft: '6px',
+                cursor: 'pointer', padding: '2px 8px', marginLeft: '4px',
                 fontSize: '11px', fontWeight: 'bold', borderRadius: '4px',
                 transition: 'background 0.15s'
             });
-            btn.addEventListener('mouseenter', () => { btn.style.background = '#7d74ff'; });
-            btn.addEventListener('mouseleave', () => { btn.style.background = '#6c63ff'; });
-            btn.addEventListener('click', (e) => {
+            on(btn, 'mouseenter', () => { btn.style.background = '#7d74ff'; });
+            on(btn, 'mouseleave', () => { btn.style.background = '#6c63ff'; });
+            on(btn, 'click', (e) => {
                 e.stopPropagation();
                 if (SenderRef.fill) SenderRef.fill(packet.header, packet.payloadHex);
             });
             return btn;
-        };
+        }
 
-        // Expandable hex (>10KB)
+        function createAnalyzeButton(packet, container) {
+            if (!SangAI.disponivel()) return null;
+            const btn = document.createElement('button');
+            btn.textContent = '🧠';
+            btn.title = 'Explicar com Sang AI';
+            Object.assign(btn.style, {
+                background: 'linear-gradient(135deg,#a855f7,#6c63ff)', color: '#fff', border: 'none',
+                cursor: 'pointer', padding: '2px 8px', marginLeft: '4px',
+                fontSize: '11px', fontWeight: 'bold', borderRadius: '4px',
+                transition: 'background 0.15s'
+            });
+            on(btn, 'click', async (e) => {
+                e.stopPropagation();
+                btn.textContent = '⏳';
+                btn.disabled = true;
+                try {
+                    const analise = await SangAI.analisarPacote(packet);
+                    const old = container.querySelector('.ai-info');
+                    if (old) old.remove();
+                    if (!analise) return;
+                    const div = document.createElement('div');
+                    div.className = 'ai-info';
+                    div.style.cssText =
+                        'margin-top:8px;padding:9px 12px;background:rgba(168,85,247,0.08);' +
+                        'border-left:3px solid #a855f7;border-radius:0 6px 6px 0;' +
+                        'color:#e9d5ff;font-size:0.9em;line-height:1.55;white-space:pre-wrap;';
+                    div.textContent = analise;
+                    container.appendChild(div);
+                } catch (err) {
+                    // Silencioso — o log já mostra erro de rede
+                } finally {
+                    btn.textContent = '🧠';
+                    btn.disabled = false;
+                }
+            });
+            return btn;
+        }
+
         const MAX_DISPLAY_BYTES = 100;
-        const makeExpandableHex = (fullHex, byteLength) => {
+        function makeExpandableHex(fullHex, byteLength) {
             if (byteLength <= 10000 || fullHex.length <= MAX_DISPLAY_BYTES * 3) {
                 const hexDiv = document.createElement('div');
-                hexDiv.style.cssText = 'word-break:break-all;color:#b0b0c0;letter-spacing:1px;';
+                hexDiv.style.cssText = 'word-break:break-all;color:#b0b0c0;letter-spacing:0.06em;line-height:1.5;font-size:0.95em;';
                 hexDiv.textContent = fullHex;
-                return { element: hexDiv, full: fullHex };
+                return hexDiv;
             }
-
             const truncated = fullHex.substring(0, MAX_DISPLAY_BYTES * 3);
             const hexDiv = document.createElement('div');
-            hexDiv.style.cssText = 'word-break:break-all;color:#b0b0c0;letter-spacing:1px;';
+            hexDiv.style.cssText = 'word-break:break-all;color:#b0b0c0;letter-spacing:0.06em;line-height:1.5;font-size:0.95em;';
             hexDiv.textContent = truncated;
 
-            const dots = document.createElement('span');
-            dots.textContent = ' ... ';
-            dots.style.color = '#8a8a9a';
-
             const expandBtn = document.createElement('button');
-            expandBtn.textContent = `Expandir (${byteLength} bytes)`;
+            expandBtn.textContent = `Mostrar tudo (${byteLength} bytes)`;
             Object.assign(expandBtn.style, {
-                background: '#1a1a2e', color: '#6c63ff', border: '1px solid #6c63ff',
-                cursor: 'pointer', padding: '1px 8px', fontSize: '10px',
-                borderRadius: '4px', fontFamily: 'monospace', transition: 'background 0.15s'
+                background: '#1e1e2e', color: '#6c63ff', border: '1px solid #6c63ff',
+                cursor: 'pointer', padding: '2px 8px', fontSize: '10px',
+                borderRadius: '4px', fontFamily: 'monospace', marginTop: '4px'
             });
-            expandBtn.addEventListener('click', () => {
+            on(expandBtn, 'click', () => {
                 hexDiv.textContent = fullHex;
-                dots.style.display = 'none';
-                expandBtn.style.display = 'none';
+                expandBtn.remove();
             });
 
             const container = document.createElement('div');
             container.appendChild(hexDiv);
-            container.appendChild(dots);
             container.appendChild(expandBtn);
-            return { element: container, full: fullHex };
-        };
+            return container;
+        }
 
-        // Main log function
-        const addLog = (packet, dir, isDropped) => {
+        // ─── Registrar pacote no dicionário ───
+        function atualizarDicionario(packet) {
+            const id = packet.header;
+            const d = AppState.dicionario[id];
+            if (!d) {
+                AppState.dicionario[id] = {
+                    count: 1,
+                    primeiro: Date.now(),
+                    ultimo: Date.now(),
+                    tamanhoMedio: packet.byteLength,
+                    sample: packet.fullHex.slice(0, 200)
+                };
+            } else {
+                d.count++;
+                d.ultimo = Date.now();
+                d.tamanhoMedio = Math.round((d.tamanhoMedio * (d.count - 1) + packet.byteLength) / d.count);
+            }
+            // Persiste a cada 50 pacotes pra não sobrecarregar
+            if (AppState.globalPacketCount % 50 === 0) {
+                Storage.set('dicionario', AppState.dicionario);
+            }
+        }
+
+        // ─── Adicionar log ───
+        function addLog(packet, dir, isDropped) {
             AppState.globalPacketCount++;
             const id = AppState.globalPacketCount;
             const time = new Date().toLocaleTimeString();
-            const dirSym = dir === 'SEND' ? (isDropped ? '\u274C' : '\u27A1\uFE0F') : '\u2B05\uFE0F';
 
-            let headerColor;
-            if (isDropped) headerColor = '#ff4757';
-            else if (dir === 'SEND') headerColor = '#00d4aa';
-            else headerColor = '#6c63ff';
+            atualizarDicionario(packet);
 
-            const rawText = `${time} | Pacote #${id}\n${dirSym} ${dir} ID: ${packet.header} Tamanho: ${packet.byteLength} bytes\n${packet.fullHex}\n${packet.ascii}`;
+            let borderColor, idColor, dirLabel;
+            if (isDropped) {
+                borderColor = '#ef4444'; idColor = '#ef4444'; dirLabel = '❌ DROP';
+            } else if (dir === 'SEND') {
+                borderColor = '#00d4aa'; idColor = '#00d4aa'; dirLabel = '➡ SEND';
+            } else {
+                borderColor = '#6c63ff'; idColor = '#6c63ff'; dirLabel = '⬅ RECV';
+            }
 
-            const el = document.createElement('div');
-            el.style.cssText = 'border-bottom:1px solid #1a1a2e;margin-bottom:6px;padding-bottom:6px;';
+            const rawText = `${time} | Pacote #${id}\n${dirLabel} ID: ${packet.header} | ${packet.byteLength} bytes\n${packet.fullHex}\n${packet.ascii}`;
 
-            // Top line
-            const topLine = document.createElement('div');
-            topLine.style.cssText = 'display:flex;justify-content:space-between;align-items:center;color:#8a8a9a;font-size:0.85em;margin-bottom:4px;';
+            const item = document.createElement('div');
+            item.style.cssText =
+                `border-left:3px solid ${borderColor};` +
+                'background:#13131a;border-radius:0 6px 6px 0;' +
+                'margin-bottom:8px;padding:9px 11px;' +
+                'animation:iaMsgIn 0.22s ease-out;';
 
-            const infoSpan = document.createElement('span');
-            infoSpan.innerHTML = `${time} | Pacote #${id}${isDropped ? ' <strong style="color:#ff4757;">(DROPPED)</strong>' : ''}`;
-            topLine.appendChild(infoSpan);
+            // Topo
+            const top = document.createElement('div');
+            top.style.cssText = 'display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:6px;flex-wrap:wrap;';
 
-            const btnGroup = document.createElement('div');
-            btnGroup.style.cssText = 'display:flex;gap:4px;align-items:center;';
-            if (dir === 'SEND' && !isDropped) btnGroup.appendChild(createSendButton(packet));
+            const left = document.createElement('div');
+            left.style.cssText = 'display:flex;align-items:center;gap:6px;font-size:0.85em;color:#8a8a9a;flex-wrap:wrap;';
+
+            const numBadge = document.createElement('span');
+            numBadge.textContent = '#' + id;
+            numBadge.style.cssText = 'background:#1e1e2e;color:#8a8a9a;padding:1px 6px;border-radius:4px;font-size:0.9em;';
+            left.appendChild(numBadge);
+
+            const timeSpan = document.createElement('span');
+            timeSpan.textContent = time;
+            left.appendChild(timeSpan);
+
+            if (isDropped) {
+                const dropBadge = document.createElement('span');
+                dropBadge.textContent = 'DROPPED';
+                dropBadge.style.cssText = 'background:rgba(239,68,68,0.15);color:#ef4444;padding:1px 6px;border-radius:4px;font-weight:bold;font-size:0.9em;';
+                left.appendChild(dropBadge);
+            }
+
+            top.appendChild(left);
+
+            const right = document.createElement('div');
+            right.style.cssText = 'display:flex;gap:4px;align-items:center;';
+
+            if (dir === 'SEND' && !isDropped) right.appendChild(createSendButton(packet));
 
             const copyBtn = document.createElement('button');
-            copyBtn.textContent = 'Copiar';
+            copyBtn.textContent = '📋';
+            copyBtn.title = 'Copiar pacote';
             Object.assign(copyBtn.style, {
-                background: '#1a1a2e', color: '#8a8a9a', border: '1px solid #1a1a2e',
-                cursor: 'pointer', fontSize: '0.85em', padding: '2px 8px',
+                background: '#1e1e2e', color: '#8a8a9a', border: '1px solid #1e1e2e',
+                cursor: 'pointer', fontSize: '11px', padding: '2px 8px',
                 borderRadius: '4px', fontFamily: 'monospace', transition: 'all 0.15s'
             });
-            copyBtn.addEventListener('mouseenter', () => { copyBtn.style.background = '#2a2a3e'; copyBtn.style.color = '#e1e1e6'; });
-            copyBtn.addEventListener('mouseleave', () => { copyBtn.style.background = '#1a1a2e'; copyBtn.style.color = '#8a8a9a'; });
-            copyBtn.addEventListener('click', () => { navigator.clipboard.writeText(rawText); });
-            btnGroup.appendChild(copyBtn);
-            topLine.appendChild(btnGroup);
-            el.appendChild(topLine);
+            on(copyBtn, 'mouseenter', () => { copyBtn.style.background = '#2a2a3e'; copyBtn.style.color = '#e1e1e6'; });
+            on(copyBtn, 'mouseleave', () => { copyBtn.style.background = '#1e1e2e'; copyBtn.style.color = '#8a8a9a'; });
+            on(copyBtn, 'click', () => { navigator.clipboard.writeText(rawText); });
+            right.appendChild(copyBtn);
 
-            // ID line
+            top.appendChild(right);
+            item.appendChild(top);
+
+            // ID + tamanho + analyze
+            const idWrap = document.createElement('div');
+            idWrap.style.cssText = 'display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;flex-wrap:wrap;gap:6px;';
+
             const idLine = document.createElement('div');
-            idLine.style.cssText = `color:${headerColor};font-weight:bold;margin-bottom:3px;`;
-            idLine.textContent = `${dirSym} ID: ${packet.header} | Tam: ${packet.byteLength} bytes`;
-            el.appendChild(idLine);
+            idLine.style.cssText = `color:${idColor};font-weight:bold;font-size:0.95em;`;
+            idLine.textContent = `${dirLabel} · ID ${packet.header} · ${packet.byteLength} bytes`;
+            idWrap.appendChild(idLine);
 
-            // Hex (with expand for large)
-            const hexResult = makeExpandableHex(packet.fullHex, packet.byteLength);
-            el.appendChild(hexResult.element);
+            const analyzeBtn = createAnalyzeButton(packet, item);
+            if (analyzeBtn) idWrap.appendChild(analyzeBtn);
+
+            item.appendChild(idWrap);
+
+            // Hex
+            const hexWrap = document.createElement('div');
+            hexWrap.style.cssText = 'margin-bottom:4px;';
+            hexWrap.appendChild(makeExpandableHex(packet.fullHex, packet.byteLength));
+            item.appendChild(hexWrap);
 
             // ASCII
             const asciiDiv = document.createElement('div');
-            asciiDiv.style.cssText = 'color:#8a8a9a;margin-top:2px;';
-            asciiDiv.textContent = packet.ascii;
-            el.appendChild(asciiDiv);
+            asciiDiv.style.cssText = 'color:#6a6a7a;font-size:0.9em;font-style:italic;';
+            asciiDiv.textContent = packet.ascii || '(binário)';
+            item.appendChild(asciiDiv);
 
-            // Visibility check
+            // Visibilidade
             const searchString = `${packet.header} ${packet.fullHex} ${packet.ascii}`.toLowerCase();
             const q = searchInp.value.toLowerCase();
             let visible = true;
             if (dir === 'SEND' && !AppState.showSend) visible = false;
             if (dir === 'RECV' && !AppState.showRecv) visible = false;
             if (q && !searchString.includes(q)) visible = false;
-            if (!visible) el.style.display = 'none';
+            if (!visible) item.style.display = 'none';
 
-            logArea.appendChild(el);
+            logArea.appendChild(item);
+            AppState.logs.push({ el: item, dir, searchString, rawText, packet });
 
-            AppState.logs.push({ el, dir, searchString, rawText });
-
-            // Limit logs
             while (AppState.logs.length > AppState.maxLogs) {
                 const old = AppState.logs.shift();
                 if (old.el.parentNode) old.el.parentNode.removeChild(old.el);
             }
 
-            // Auto-scroll
             const isScrolledToBottom = logArea.scrollHeight - logArea.clientHeight <= logArea.scrollTop + 40;
             if (isScrolledToBottom) logArea.scrollTop = logArea.scrollHeight;
-        };
+
+            logCounter.textContent = AppState.logs.length + ' logs';
+        }
+
+        function setVisible(show) {
+            el.style.display = show ? 'flex' : 'none';
+            if (show) {
+                const rect = el.getBoundingClientRect();
+                const clamped = clampToViewport(el, rect.left, rect.top);
+                el.style.left = clamped.x + 'px';
+                el.style.top = clamped.y + 'px';
+            }
+        }
 
         return { element: el, setVisible, addLog };
     })();
 
-    // ==========================================
-    // MÓDULO 8: SENDER UI
-    // ==========================================
+    // ═══════════════════════════════════════════════════════════════
+    // SENDER UI — com geração de JS por linguagem natural
+    // ═══════════════════════════════════════════════════════════════
     const SenderUI = (function() {
         const el = document.createElement('div');
         el.id = 'hl-sender';
         Object.assign(el.style, {
             position: 'fixed', top: '50px', right: '10px',
-            width: '380px', background: '#13131a', color: '#e1e1e6',
-            border: '1px solid #1a1a2e', zIndex: '99999',
+            width: '440px', background: '#0f0f16', color: '#e1e1e6',
+            border: '1px solid #1e1e2e', zIndex: '99999',
             fontFamily: 'monospace', fontSize: '12px',
-            borderRadius: '8px', display: 'none', flexDirection: 'column',
-            boxShadow: '0 8px 32px rgba(0,0,0,0.5)'
+            borderRadius: '10px', display: 'none', flexDirection: 'column',
+            boxShadow: '0 12px 40px rgba(0,0,0,0.6), 0 0 0 1px rgba(108,99,255,0.06)'
         });
 
         el.innerHTML = `
             <div class="drag-header" style="
-                background:#0a0a0f;padding:8px 12px;cursor:move;
-                border-bottom:1px solid #1a1a2e;border-radius:8px 8px 0 0;
+                background:linear-gradient(180deg, #12121c 0%, #0a0a12 100%);
+                padding:11px 14px;cursor:move;
+                border-bottom:1px solid #1e1e2e;border-radius:10px 10px 0 0;
                 font-weight:bold;font-size:12px;color:#e1e1e6;user-select:none;
                 display:flex;justify-content:space-between;align-items:center;
-            "><span>\u26A1 SANG SENDER</span><div id="senderHeaderBtns"></div></div>
+                letter-spacing:0.05em;
+            ">
+                <span style="display:flex;align-items:center;gap:10px;">
+                    <span style="width:8px;height:8px;border-radius:50%;background:#6c63ff;
+                        box-shadow:0 0 8px #6c63ff,0 0 16px rgba(108,99,255,0.5);"></span>
+                    <span style="background:linear-gradient(90deg,#e1e1e6,#8a8a9a);
+                        -webkit-background-clip:text;background-clip:text;color:transparent;">
+                        SANG SENDER
+                    </span>
+                </span>
+                <div id="senderHeaderBtns"></div>
+            </div>
             <div id="sndBody" style="display:flex;flex-direction:column;flex:1;overflow-y:auto;min-height:0;">
-                <div style="padding:8px;display:flex;gap:6px;border-bottom:1px solid #1a1a2e;">
-                    <select id="selProfile" style="flex:1;background:#0a0a0f;color:#e1e1e6;border:1px solid #1a1a2e;padding:5px;border-radius:4px;font-size:11px;"></select>
-                    <button id="btnNewProf" style="background:#1a1a2e;color:#e1e1e6;border:1px solid #1a1a2e;cursor:pointer;padding:5px 10px;border-radius:6px;font-size:11px;font-family:monospace;">+ Novo</button>
+
+                <!-- Perfil -->
+                <div style="padding:10px 12px;display:flex;gap:6px;border-bottom:1px solid #1e1e2e;background:#0a0a12;">
+                    <select id="selProfile" style="flex:1;background:#13131a;color:#e1e1e6;border:1px solid #1e1e2e;padding:7px 10px;border-radius:6px;font-size:11px;font-family:monospace;outline:none;cursor:pointer;"></select>
+                    <button id="btnNewProf" title="Novo perfil" style="background:#1e1e2e;color:#e1e1e6;border:1px solid #1e1e2e;cursor:pointer;padding:7px 12px;border-radius:6px;font-size:11px;font-family:monospace;">+ NOVO</button>
                 </div>
-                <div style="padding:8px;background:#0a0a0f;display:flex;flex-direction:column;gap:8px;">
+
+                <!-- Adicionar pacote -->
+                <div style="padding:10px 12px;background:#0a0a12;display:flex;flex-direction:column;gap:8px;border-bottom:1px solid #1e1e2e;">
                     <div style="display:flex;gap:6px;">
-                        <input id="sndId" type="number" placeholder="ID" style="width:60px;background:#0a0a0f;color:#e1e1e6;border:1px solid #1a1a2e;padding:5px;border-radius:4px;font-size:11px;">
-                        <input id="sndHex" type="text" placeholder="HEX Payload" style="flex:1;background:#0a0a0f;color:#e1e1e6;border:1px solid #1a1a2e;padding:5px;border-radius:4px;font-size:11px;">
-                        <button id="btnAddSnd" style="background:#00d4aa;color:#0a0a0f;border:none;cursor:pointer;padding:5px 12px;border-radius:6px;font-weight:bold;font-size:11px;">ADD</button>
+                        <input id="sndId" type="number" placeholder="ID" style="width:70px;background:#13131a;color:#e1e1e6;border:1px solid #1e1e2e;padding:7px 10px;border-radius:6px;font-size:11px;font-family:monospace;outline:none;box-sizing:border-box;">
+                        <input id="sndHex" type="text" placeholder="Payload em HEX" style="flex:1;background:#13131a;color:#e1e1e6;border:1px solid #1e1e2e;padding:7px 10px;border-radius:6px;font-size:11px;font-family:monospace;outline:none;min-width:0;box-sizing:border-box;">
+                        <button id="btnAddSnd" style="background:#00d4aa;color:#0a0a0f;border:none;cursor:pointer;padding:7px 14px;border-radius:6px;font-weight:bold;font-size:11px;font-family:monospace;">ADD</button>
                     </div>
-                    <div style="display:flex;gap:6px;border-top:1px solid #1a1a2e;padding-top:8px;">
-                        <input id="sndWaitMs" type="number" placeholder="Pausar (ms)" style="flex:1;background:#0a0a0f;color:#e1e1e6;border:1px solid #1a1a2e;padding:5px;border-radius:4px;font-size:11px;">
-                        <button id="btnAddWait" style="background:#1a1a2e;color:#e1e1e6;border:1px solid #1a1a2e;cursor:pointer;padding:5px 12px;border-radius:6px;font-size:11px;">+ WAIT</button>
-                        <button id="btnAddJs" style="background:#1a1a2e;color:#00d4aa;border:1px solid #00d4aa;cursor:pointer;padding:5px 12px;border-radius:6px;font-size:11px;">+ JS</button>
-                    </div>
-                    <div id="sndList" style="max-height:180px;overflow-y:auto;border:1px solid #1a1a2e;padding:3px;min-height:50px;background:#0a0a0f;border-radius:4px;"></div>
-                </div>
-                <div style="padding:8px;background:#0a0a0f;border-top:1px solid #1a1a2e;display:flex;flex-direction:column;gap:6px;">
-                    <div style="color:#6c63ff;font-weight:bold;text-align:center;font-size:11px;">\uD83D\uDCE5 SIMULAR PACOTE RECEBIDO</div>
                     <div style="display:flex;gap:6px;">
-                        <input id="fakeId" type="number" placeholder="ID" style="width:60px;background:#0a0a0f;color:#6c63ff;border:1px solid #6c63ff;padding:5px;border-radius:4px;font-size:11px;">
-                        <input id="fakeHex" type="text" placeholder="HEX Payload" style="flex:1;background:#0a0a0f;color:#6c63ff;border:1px solid #6c63ff;padding:5px;border-radius:4px;font-size:11px;">
-                        <button id="btnFakeRecv" style="background:#6c63ff;color:#fff;border:none;cursor:pointer;padding:5px 10px;border-radius:6px;font-weight:bold;font-size:11px;">SIMULAR</button>
+                        <input id="sndWaitMs" type="number" placeholder="Pausar (ms)" style="flex:1;background:#13131a;color:#e1e1e6;border:1px solid #1e1e2e;padding:7px 10px;border-radius:6px;font-size:11px;font-family:monospace;outline:none;min-width:0;box-sizing:border-box;">
+                        <button id="btnAddWait" title="Adicionar pausa na fila" style="background:#13131a;color:#e1e1e6;border:1px solid #1e1e2e;cursor:pointer;padding:7px 12px;border-radius:6px;font-size:11px;font-family:monospace;">+ WAIT</button>
+                        <button id="btnAddJs" title="Executar JS no meio da fila" style="background:#13131a;color:#00d4aa;border:1px solid #00d4aa;cursor:pointer;padding:7px 12px;border-radius:6px;font-size:11px;font-family:monospace;">+ JS</button>
+                    </div>
+                    <!-- Gerar JS por linguagem natural -->
+                    <div style="display:flex;gap:6px;padding-top:6px;border-top:1px dashed rgba(168,85,247,0.2);">
+                        <input id="nlJs" type="text" placeholder="✨ Descreva a ação — ex: dançar 3x com pausa 500ms"
+                            style="flex:1;background:#0a0a12;color:#e1e1e6;border:1px solid rgba(168,85,247,0.3);padding:7px 10px;border-radius:6px;font-size:11px;font-family:monospace;outline:none;min-width:0;box-sizing:border-box;">
+                        <button id="btnNlJs" style="background:linear-gradient(135deg,#a855f7,#6c63ff);color:#fff;border:none;cursor:pointer;padding:7px 14px;border-radius:6px;font-weight:bold;font-size:11px;font-family:monospace;white-space:nowrap;">GERAR</button>
                     </div>
                 </div>
-                <div style="padding:8px;background:#0a0a0f;display:flex;flex-wrap:wrap;gap:6px;justify-content:space-between;align-items:center;">
-                    <label style="font-size:11px;color:#8a8a9a;">Loop Delay: <input id="sndDelay" type="number" style="width:60px;background:#0a0a0f;color:#e1e1e6;border:1px solid #1a1a2e;padding:3px;border-radius:4px;font-size:11px;"></label>
-                    <label style="font-size:11px;color:#8a8a9a;">Qtd(0=Inf): <input id="sndQtd" type="number" style="width:40px;background:#0a0a0f;color:#e1e1e6;border:1px solid #1a1a2e;padding:3px;border-radius:4px;font-size:11px;"></label>
+
+                <!-- Fila -->
+                <div style="padding:10px 12px;background:#0a0a12;border-bottom:1px solid #1e1e2e;">
+                    <div style="font-size:10px;color:#8a8a9a;margin-bottom:6px;letter-spacing:0.05em;">FILA DE ENVIO</div>
+                    <div id="sndList" style="max-height:220px;overflow-y:auto;border:1px solid #1e1e2e;padding:4px;min-height:70px;background:#13131a;border-radius:6px;"></div>
+                </div>
+
+                <!-- Simular recebimento -->
+                <div style="padding:10px 12px;background:#0a0a12;border-bottom:1px solid #1e1e2e;">
+                    <div style="color:#6c63ff;font-weight:bold;text-align:center;font-size:11px;margin-bottom:6px;letter-spacing:0.04em;">📥 SIMULAR RECEBIMENTO</div>
+                    <div style="display:flex;gap:6px;">
+                        <input id="fakeId" type="number" placeholder="ID" style="width:70px;background:#13131a;color:#6c63ff;border:1px solid #6c63ff;padding:7px 10px;border-radius:6px;font-size:11px;font-family:monospace;outline:none;box-sizing:border-box;">
+                        <input id="fakeHex" type="text" placeholder="Payload em HEX" style="flex:1;background:#13131a;color:#6c63ff;border:1px solid #6c63ff;padding:7px 10px;border-radius:6px;font-size:11px;font-family:monospace;outline:none;min-width:0;box-sizing:border-box;">
+                        <button id="btnFakeRecv" style="background:#6c63ff;color:#fff;border:none;cursor:pointer;padding:7px 12px;border-radius:6px;font-weight:bold;font-size:11px;font-family:monospace;">SIM</button>
+                    </div>
+                </div>
+
+                <!-- Config + Start -->
+                <div style="padding:10px 12px;background:#0a0a12;display:flex;flex-direction:column;gap:8px;">
+                    <div style="display:flex;gap:8px;align-items:center;">
+                        <label style="flex:1;font-size:11px;color:#8a8a9a;">Delay loop (ms)
+                            <input id="sndDelay" type="number" style="width:70px;background:#13131a;color:#e1e1e6;border:1px solid #1e1e2e;padding:5px 7px;border-radius:4px;font-size:11px;font-family:monospace;outline:none;margin-left:6px;box-sizing:border-box;">
+                        </label>
+                        <label style="flex:1;font-size:11px;color:#8a8a9a;">Qtd (0 = ∞)
+                            <input id="sndQtd" type="number" style="width:50px;background:#13131a;color:#e1e1e6;border:1px solid #1e1e2e;padding:5px 7px;border-radius:4px;font-size:11px;font-family:monospace;outline:none;margin-left:6px;box-sizing:border-box;">
+                        </label>
+                    </div>
                     <button id="btnSpamAction" style="
-                        background:#00d4aa;color:#0a0a0f;border:none;cursor:pointer;
-                        padding:10px;font-weight:bold;width:100%;margin-top:5px;
-                        border-radius:6px;font-size:13px;font-family:monospace;transition:all 0.15s;
-                    ">\uD83D\uDE80 START SEQUENCE</button>
+                        background:linear-gradient(135deg,#00d4aa,#00a88a);color:#0a0a0f;border:none;cursor:pointer;
+                        padding:12px;font-weight:bold;width:100%;
+                        border-radius:8px;font-size:13px;font-family:monospace;transition:all 0.15s;
+                        letter-spacing:0.05em;
+                    ">🚀 INICIAR SEQUÊNCIA</button>
                 </div>
             </div>
         `;
 
         makeDraggable(el.querySelector('.drag-header'), el, 'sender');
-        makeResizable(el, { minW: 320, minH: 300, maxW: 700, maxH: 1000, storageKey: 'sender' });
+        makeResizable(el, { minW: 380, minH: 420, maxW: 800, maxH: 1000, storageKey: 'sender' });
 
         const closeBtn = createCloseButton(() => Toolbar.setSenderVisible(false));
         el.querySelector('#senderHeaderBtns').appendChild(closeBtn);
 
         let isSpamming = false;
+        let spamRunId = 0;
         const sleep = ms => new Promise(res => setTimeout(res, ms));
 
-        const saveCurrentProfile = () => {
+        function saveCurrentProfile() {
             Storage.set('profiles', AppState.profiles);
             Storage.set('current_profile', AppState.currentProfileId);
-        };
+        }
 
-        const renderProfiles = () => {
+        function renderProfiles() {
             const sel = el.querySelector('#selProfile');
             sel.innerHTML = '';
             for (const pid in AppState.profiles) {
@@ -904,50 +1367,100 @@
                 if (pid === AppState.currentProfileId) opt.selected = true;
                 sel.appendChild(opt);
             }
-        };
+        }
 
-        const renderPackets = () => {
+        function renderPackets() {
             const prof = AppState.profiles[AppState.currentProfileId];
             const list = el.querySelector('#sndList');
             list.innerHTML = '';
+            if (prof.packets.length === 0) {
+                const empty = document.createElement('div');
+                empty.style.cssText = 'color:#5a5a6a;font-size:11px;text-align:center;padding:16px;font-style:italic;';
+                empty.textContent = 'Fila vazia — adicione pacotes acima.';
+                list.appendChild(empty);
+                return;
+            }
             prof.packets.forEach((pkt, index) => {
                 const item = document.createElement('div');
                 Object.assign(item.style, {
-                    display: 'flex', alignItems: 'center', gap: '5px',
-                    background: '#0a0a0f', padding: '4px', marginBottom: '2px',
-                    border: '1px solid #1a1a2e', borderRadius: '4px', fontSize: '11px'
+                    display: 'flex', alignItems: 'center', gap: '6px',
+                    background: '#0a0a12', padding: '5px 7px', marginBottom: '3px',
+                    border: '1px solid #1e1e2e', borderRadius: '5px', fontSize: '11px'
                 });
+
+                const icon = document.createElement('span');
+                icon.style.cssText = 'width:22px;text-align:center;flex-shrink:0;font-weight:bold;';
+                const content = document.createElement('span');
+                content.style.cssText = 'flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+
                 if (pkt.isDelay) {
-                    item.innerHTML = `<span style="color:#8a8a9a;width:35px;font-weight:bold;text-align:center;">\u23F1\uFE0F</span><span style="flex:1;color:#8a8a9a;font-style:italic;">Aguardar ${pkt.ms}ms</span>`;
+                    icon.textContent = '⏱';
+                    icon.style.color = '#8a8a9a';
+                    content.style.color = '#8a8a9a';
+                    content.style.fontStyle = 'italic';
+                    content.textContent = `Aguardar ${pkt.ms}ms`;
                 } else if (pkt.isJs) {
-                    const preview = pkt.code.length > 40 ? pkt.code.substring(0, 40) + '...' : pkt.code;
-                    item.innerHTML = `<span style="color:#00d4aa;width:35px;font-weight:bold;text-align:center;">\uD83E\uDDE0</span><span style="flex:1;color:#00d4aa;font-style:italic;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;">Exec JS: ${preview}</span>`;
+                    icon.textContent = '🧠';
+                    icon.style.color = '#00d4aa';
+                    content.style.color = '#00d4aa';
+                    content.style.fontStyle = 'italic';
+                    const preview = pkt.code.length > 45 ? pkt.code.substring(0, 45) + '…' : pkt.code;
+                    content.textContent = `JS: ${preview}`;
                 } else {
-                    item.innerHTML = `<span style="color:#e1e1e6;width:35px;font-weight:bold;">${pkt.id}</span><span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#8a8a9a;">${pkt.hex || '(vazio)'}</span>`;
+                    icon.textContent = pkt.id;
+                    icon.style.color = '#e1e1e6';
+                    content.style.color = '#8a8a9a';
+                    content.textContent = pkt.hex || '(vazio)';
                 }
-                const btnGroup = document.createElement('div');
-                btnGroup.style.cssText = 'display:flex;gap:2px;';
-                btnGroup.innerHTML = `
-                    <button class="up" style="background:#1a1a2e;color:#e1e1e6;border:none;cursor:pointer;padding:2px 6px;border-radius:3px;font-size:10px;">\u2191</button>
-                    <button class="down" style="background:#1a1a2e;color:#e1e1e6;border:none;cursor:pointer;padding:2px 6px;border-radius:3px;font-size:10px;">\u2193</button>
-                    <button class="del" style="background:#1a1a2e;color:#ff4757;border:1px solid #ff4757;cursor:pointer;padding:2px 6px;border-radius:3px;font-size:10px;">X</button>
-                `;
-                btnGroup.querySelector('.up').onclick = () => {
-                    if (index > 0) { [prof.packets[index - 1], prof.packets[index]] = [prof.packets[index], prof.packets[index - 1]]; saveCurrentProfile(); renderPackets(); }
+                item.appendChild(icon);
+                item.appendChild(content);
+
+                const btns = document.createElement('div');
+                btns.style.cssText = 'display:flex;gap:2px;flex-shrink:0;';
+
+                const mkBtn = (txt, title, cor) => {
+                    const b = document.createElement('button');
+                    b.textContent = txt;
+                    b.title = title;
+                    b.style.cssText = `background:#1e1e2e;color:${cor};border:none;cursor:pointer;padding:3px 7px;border-radius:4px;font-size:10px;`;
+                    return b;
                 };
-                btnGroup.querySelector('.down').onclick = () => {
-                    if (index < prof.packets.length - 1) { [prof.packets[index + 1], prof.packets[index]] = [prof.packets[index], prof.packets[index + 1]]; saveCurrentProfile(); renderPackets(); }
-                };
-                btnGroup.querySelector('.del').onclick = () => { prof.packets.splice(index, 1); saveCurrentProfile(); renderPackets(); };
-                item.appendChild(btnGroup);
+
+                const btnUp = mkBtn('↑', 'Mover para cima', '#e1e1e6');
+                on(btnUp, 'click', () => {
+                    if (index > 0) {
+                        [prof.packets[index - 1], prof.packets[index]] = [prof.packets[index], prof.packets[index - 1]];
+                        saveCurrentProfile(); renderPackets();
+                    }
+                });
+
+                const btnDown = mkBtn('↓', 'Mover para baixo', '#e1e1e6');
+                on(btnDown, 'click', () => {
+                    if (index < prof.packets.length - 1) {
+                        [prof.packets[index + 1], prof.packets[index]] = [prof.packets[index], prof.packets[index + 1]];
+                        saveCurrentProfile(); renderPackets();
+                    }
+                });
+
+                const btnDel = mkBtn('✕', 'Remover', '#ef4444');
+                btnDel.style.border = '1px solid #ef4444';
+                on(btnDel, 'click', () => {
+                    prof.packets.splice(index, 1);
+                    saveCurrentProfile(); renderPackets();
+                });
+
+                btns.appendChild(btnUp);
+                btns.appendChild(btnDown);
+                btns.appendChild(btnDel);
+                item.appendChild(btns);
+
                 list.appendChild(item);
             });
             el.querySelector('#sndDelay').value = prof.spamInterval;
             el.querySelector('#sndQtd').value = prof.spamQtd;
-        };
+        }
 
-        // Event bindings
-        el.querySelector('#btnAddSnd').onclick = () => {
+        on(el.querySelector('#btnAddSnd'), 'click', () => {
             const idVal = el.querySelector('#sndId').value;
             const hexVal = el.querySelector('#sndHex').value || '';
             if (idVal !== '' && !isNaN(Number(idVal))) {
@@ -956,24 +1469,64 @@
                 el.querySelector('#sndHex').value = '';
                 saveCurrentProfile(); renderPackets();
             }
-        };
-        el.querySelector('#btnAddWait').onclick = () => {
+        });
+
+        on(el.querySelector('#btnAddWait'), 'click', () => {
             const ms = parseInt(el.querySelector('#sndWaitMs').value);
             if (!isNaN(ms) && ms > 0) {
                 AppState.profiles[AppState.currentProfileId].packets.push({ isDelay: true, ms });
                 el.querySelector('#sndWaitMs').value = '';
                 saveCurrentProfile(); renderPackets();
             }
-        };
-        el.querySelector('#btnAddJs').onclick = () => {
+        });
+
+        on(el.querySelector('#btnAddJs'), 'click', () => {
             const jsCode = prompt('Insira o código JavaScript a ser executado na fila:');
             if (jsCode && jsCode.trim() !== '') {
                 AppState.profiles[AppState.currentProfileId].packets.push({ isJs: true, code: jsCode.trim() });
                 saveCurrentProfile(); renderPackets();
             }
-        };
-        el.querySelector('#btnFakeRecv').onclick = () => {
-            if (!window.gameWS) return alert('Conecte-se ao jogo primeiro.');
+        });
+
+        // ─── Gerar JS via IA ───
+        const nlJs = el.querySelector('#nlJs');
+        const btnNlJs = el.querySelector('#btnNlJs');
+
+        async function gerarJsNL() {
+            const desc = nlJs.value.trim();
+            if (!desc) return;
+            if (!SangAI.disponivel()) {
+                alert('Sang AI não configurada. Abra o módulo Sang AI e cole sua chave.');
+                return;
+            }
+            btnNlJs.disabled = true;
+            btnNlJs.textContent = '⏳';
+            try {
+                const ctx = `Perfil atual "${AppState.profiles[AppState.currentProfileId].name}" com ${AppState.profiles[AppState.currentProfileId].packets.length} itens na fila.`;
+                const codigo = await SangAI.gerarJs(desc, ctx);
+                const limpo = codigo.replace(/```js|```javascript|```/g, '').trim();
+                if (!limpo) {
+                    alert('A IA não retornou código.');
+                    return;
+                }
+                const confirma = confirm(`Código gerado:\n\n${limpo}\n\nAdicionar à fila?`);
+                if (confirma) {
+                    AppState.profiles[AppState.currentProfileId].packets.push({ isJs: true, code: limpo });
+                    saveCurrentProfile(); renderPackets();
+                    nlJs.value = '';
+                }
+            } catch (e) {
+                alert('Erro: ' + (e.message || e));
+            } finally {
+                btnNlJs.disabled = false;
+                btnNlJs.textContent = 'GERAR';
+            }
+        }
+        on(btnNlJs, 'click', gerarJsNL);
+        on(nlJs, 'keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); gerarJsNL(); } });
+
+        on(el.querySelector('#btnFakeRecv'), 'click', () => {
+            if (!window.gameWS) return;
             const idVal = el.querySelector('#fakeId').value;
             const hexVal = el.querySelector('#fakeHex').value || '';
             if (idVal !== '' && !isNaN(Number(idVal))) {
@@ -982,57 +1535,84 @@
                 el.querySelector('#fakeId').value = '';
                 el.querySelector('#fakeHex').value = '';
             }
-        };
-        el.querySelector('#btnNewProf').onclick = () => {
+        });
+
+        on(el.querySelector('#btnNewProf'), 'click', () => {
             const name = prompt('Nome do novo perfil:');
-            if (name) {
+            if (name && name.trim()) {
                 const id = 'prof_' + Date.now();
-                AppState.profiles[id] = { name, packets: [], spamInterval: 300, spamQtd: 1 };
+                AppState.profiles[id] = { name: name.trim(), packets: [], spamInterval: 300, spamQtd: 1 };
                 AppState.currentProfileId = id;
                 saveCurrentProfile(); renderProfiles(); renderPackets();
             }
-        };
-        el.querySelector('#selProfile').onchange = (e) => { AppState.currentProfileId = e.target.value; saveCurrentProfile(); renderPackets(); };
-        el.querySelector('#sndDelay').onchange = (e) => { AppState.profiles[AppState.currentProfileId].spamInterval = Number(e.target.value); saveCurrentProfile(); };
-        el.querySelector('#sndQtd').onchange = (e) => { AppState.profiles[AppState.currentProfileId].spamQtd = Number(e.target.value); saveCurrentProfile(); };
+        });
 
-        // Spam engine
-        el.querySelector('#btnSpamAction').onclick = async function() {
-            if (!window.gameWS) return alert('Conecte-se ao jogo primeiro.');
+        on(el.querySelector('#selProfile'), 'change', (e) => {
+            AppState.currentProfileId = e.target.value;
+            saveCurrentProfile(); renderPackets();
+        });
+        on(el.querySelector('#sndDelay'), 'change', (e) => {
+            AppState.profiles[AppState.currentProfileId].spamInterval = Number(e.target.value) || 300;
+            saveCurrentProfile();
+        });
+        on(el.querySelector('#sndQtd'), 'change', (e) => {
+            AppState.profiles[AppState.currentProfileId].spamQtd = Number(e.target.value) || 0;
+            saveCurrentProfile();
+        });
+
+        // ─── Motor de spam ───
+        on(el.querySelector('#btnSpamAction'), 'click', async function() {
+            if (!window.gameWS) return;
             const btn = el.querySelector('#btnSpamAction');
             const prof = AppState.profiles[AppState.currentProfileId];
+
             if (isSpamming) {
                 isSpamming = false;
-                btn.textContent = '\uD83D\uDE80 START SEQUENCE';
-                btn.style.background = '#00d4aa'; btn.style.color = '#0a0a0f';
+                spamRunId++;
+                btn.textContent = '🚀 INICIAR SEQUÊNCIA';
+                btn.style.background = 'linear-gradient(135deg,#00d4aa,#00a88a)';
+                btn.style.color = '#0a0a0f';
                 return;
             }
-            if (prof.packets.length === 0) return alert('Fila vazia.');
+            if (prof.packets.length === 0) return;
+
             isSpamming = true;
-            btn.textContent = '\u23F9 STOP SEQUENCE';
-            btn.style.background = '#ff4757'; btn.style.color = '#fff';
+            const myRunId = ++spamRunId;
+            btn.textContent = '⏹ PARAR SEQUÊNCIA';
+            btn.style.background = 'linear-gradient(135deg,#ef4444,#b91c1c)';
+            btn.style.color = '#fff';
+
             let loops = 0;
             const inf = (prof.spamQtd === 0);
-            while (isSpamming && (inf || loops < prof.spamQtd)) {
+
+            while (isSpamming && myRunId === spamRunId && (inf || loops < prof.spamQtd)) {
                 for (const item of prof.packets) {
-                    if (!isSpamming) break;
-                    if (item.isDelay) { await sleep(item.ms); }
-                    else if (item.isJs) {
+                    if (!isSpamming || myRunId !== spamRunId) break;
+                    if (item.isDelay) {
+                        await sleep(item.ms);
+                    } else if (item.isJs) {
                         try { eval(item.code); } catch (e) { console.error('[JS_ACTION] Erro:', e); }
                     } else {
+                        if (!window.gameWS) break;
                         const buffer = Utils.buildPacket(item.id, item.hex);
                         window.gameWS.send(buffer);
                     }
                 }
                 loops++;
-                if (isSpamming && (inf || loops < prof.spamQtd)) await sleep(prof.spamInterval);
+                if (isSpamming && myRunId === spamRunId && (inf || loops < prof.spamQtd)) {
+                    await sleep(prof.spamInterval);
+                }
             }
-            isSpamming = false;
-            btn.textContent = '\uD83D\uDE80 START SEQUENCE';
-            btn.style.background = '#00d4aa'; btn.style.color = '#0a0a0f';
-        };
 
-        const setVisible = (show) => {
+            if (myRunId === spamRunId) {
+                isSpamming = false;
+                btn.textContent = '🚀 INICIAR SEQUÊNCIA';
+                btn.style.background = 'linear-gradient(135deg,#00d4aa,#00a88a)';
+                btn.style.color = '#0a0a0f';
+            }
+        });
+
+        function setVisible(show) {
             el.style.display = show ? 'flex' : 'none';
             if (show) {
                 const rect = el.getBoundingClientRect();
@@ -1040,17 +1620,15 @@
                 el.style.left = clamped.x + 'px';
                 el.style.top = clamped.y + 'px';
             }
-        };
+        }
 
-        const fillFields = (headerId, hexPayload) => {
+        function fillFields(headerId, hexPayload) {
             el.querySelector('#sndId').value = headerId;
             el.querySelector('#sndHex').value = hexPayload;
-            // Visual feedback: pisca o botão ADD
             const addBtn = el.querySelector('#btnAddSnd');
             addBtn.style.background = '#fff';
-            addBtn.style.color = '#0a0a0f';
-            setTimeout(() => { addBtn.style.background = '#00d4aa'; addBtn.style.color = '#0a0a0f'; }, 200);
-        };
+            setTimeout(() => { addBtn.style.background = '#00d4aa'; }, 200);
+        }
 
         renderProfiles();
         renderPackets();
@@ -1059,50 +1637,67 @@
         return { element: el, setVisible };
     })();
 
-    // ==========================================
-    // MÓDULO 9: INICIALIZAÇÃO
-    // ==========================================
+    // ─── Estilos globais ───
     const styleEl = document.createElement('style');
     styleEl.textContent = `
+        @keyframes iaMsgIn {
+            0% { opacity: 0; transform: translateY(6px); }
+            100% { opacity: 1; transform: translateY(0); }
+        }
+        @keyframes iaDot {
+            0%, 60%, 100% { opacity: 0.3; transform: translateY(0); }
+            30% { opacity: 1; transform: translateY(-4px); }
+        }
+        .ia-dot {
+            width: 6px; height: 6px; border-radius: 50%; background: #a855f7;
+            display: inline-block; animation: iaDot 1.2s ease-in-out infinite;
+        }
+        .ia-dot:nth-child(2) { animation-delay: 0.15s; }
+        .ia-dot:nth-child(3) { animation-delay: 0.3s; }
+
         #hl-analyzer::-webkit-scrollbar,
         #hl-sender::-webkit-scrollbar,
         #hl-analyzer *::-webkit-scrollbar,
-        #hl-sender *::-webkit-scrollbar {
-            width: 5px;
-            height: 5px;
-        }
+        #hl-sender *::-webkit-scrollbar { width: 6px; height: 6px; }
+
         #hl-analyzer::-webkit-scrollbar-track,
         #hl-sender::-webkit-scrollbar-track,
         #hl-analyzer *::-webkit-scrollbar-track,
-        #hl-sender *::-webkit-scrollbar-track {
-            background: #0a0a0f;
-        }
+        #hl-sender *::-webkit-scrollbar-track { background: #0a0a12; }
+
         #hl-analyzer::-webkit-scrollbar-thumb,
         #hl-sender::-webkit-scrollbar-thumb,
         #hl-analyzer *::-webkit-scrollbar-thumb,
-        #hl-sender *::-webkit-scrollbar-thumb {
-            background: #1a1a2e;
-            border-radius: 3px;
-        }
+        #hl-sender *::-webkit-scrollbar-thumb { background: #1e1e2e; border-radius: 3px; }
+
         #hl-analyzer::-webkit-scrollbar-thumb:hover,
         #hl-sender::-webkit-scrollbar-thumb:hover,
         #hl-analyzer *::-webkit-scrollbar-thumb:hover,
-        #hl-sender *::-webkit-scrollbar-thumb:hover {
-            background: #2a2a3e;
+        #hl-sender *::-webkit-scrollbar-thumb:hover { background: #2a2a3e; }
+
+        #hl-analyzer input:focus,
+        #hl-sender input:focus,
+        #hl-analyzer textarea:focus,
+        #hl-sender textarea:focus,
+        #hl-analyzer select:focus,
+        #hl-sender select:focus {
+            border-color: #6c63ff !important;
+            box-shadow: 0 0 0 2px rgba(108,99,255,0.15);
         }
-        #hl-analyzer, #hl-sender { transition: opacity 0.12s ease; }
+        #hl-analyzer button:disabled,
+        #hl-sender button:disabled { opacity: 0.5; cursor: not-allowed; }
     `;
     document.head.appendChild(styleEl);
+    cleanup.push(() => { try { styleEl.remove(); } catch(e) {} });
 
+    // ─── Anexar ao DOM ───
     const fragment = document.createDocumentFragment();
     fragment.appendChild(Toolbar.element);
     fragment.appendChild(AnalyzerUI.element);
     fragment.appendChild(SenderUI.element);
     document.body.appendChild(fragment);
 
-    // Reposiciona os painéis se a janela do navegador for redimensionada
-    // enquanto eles estão abertos, pra nunca ficarem presos fora da tela.
-    window.addEventListener('resize', () => {
+    on(window, 'resize', () => {
         [AnalyzerUI.element, SenderUI.element].forEach((panel) => {
             if (panel.style.display === 'none') return;
             const rect = panel.getBoundingClientRect();
@@ -1112,42 +1707,43 @@
         });
     });
 
-    // ==========================================
-    // MÓDULO 10: TRÁFEGO WEBSOCKET (via Hub)
-    // ==========================================
+    // ─── WebSocket via Hub ───
     if (!window._hubSocket) {
         console.error('[Analyzer] window._hubSocket não encontrado. Carregue via Sang Hub.');
+        while (cleanup.length) { const fn = cleanup.pop(); try { fn(); } catch(e) {} }
         return;
     }
 
     const _recentPackets = new Map();
 
-    const fastBufferHash = (buffer) => {
+    function fastBufferHash(buffer) {
         const u8 = new Uint8Array(buffer);
         let hash = 0;
-        const len = Math.min(u8.length, 64);
-        for (let i = 0; i < len; i++) {
+        const len = u8.length;
+        const step = len <= 256 ? 1 : Math.max(1, Math.floor(len / 64));
+        for (let i = 0; i < len; i += step) {
             hash = ((hash << 5) - hash) + u8[i];
             hash |= 0;
         }
-        return `${buffer.byteLength}_${hash}`;
-    };
+        return `${len}_${hash}`;
+    }
 
-    const isDuplicate = (data) => {
+    function isDuplicate(data) {
         if (!(data instanceof ArrayBuffer)) return false;
         const key = fastBufferHash(data);
         const now = Date.now();
         if (_recentPackets.has(key) && now - _recentPackets.get(key) < 50) return true;
         _recentPackets.set(key, now);
-        if (_recentPackets.size > 100) {
+        if (_recentPackets.size > 200) {
             for (const [k, t] of _recentPackets) {
                 if (now - t > 200) _recentPackets.delete(k);
             }
         }
         return false;
-    };
+    }
 
-    const handleTraffic = (data, dir, isDropped) => {
+    function handleTraffic(data, dir, isDropped) {
+        if (!_alive) return;
         if (AppState.isPaused) return;
         if (dir === 'RECV' && isDuplicate(data)) return;
         const packet = Utils.parseData(data);
@@ -1155,14 +1751,15 @@
         if (!PacketFilter.isVisualBlocked(packet)) {
             AnalyzerUI.addLog(packet, dir, !!isDropped);
         }
-    };
+    }
 
-    // Envio: intercepta via wrapper em ws.send (chamado pelo SenderUI)
     function wrapSend(ws) {
-        if (ws._analyzerSendWrapped) return;
+        if (!ws || ws._analyzerSendWrapped) return;
         ws._analyzerSendWrapped = true;
         const originalSend = ws.send.bind(ws);
+        ws._analyzerOriginalSend = originalSend;
         ws.send = function(data) {
+            if (!_alive) return originalSend(data);
             if (AppState.killSwitchActive) return;
             const packet = Utils.parseData(data);
             if (packet && PacketFilter.isNetworkDropped(packet)) {
@@ -1174,31 +1771,60 @@
         };
     }
 
-    // Recebimento: processa cada frame vindo do socket ativo
     async function handleInbound(event) {
+        if (!_alive) return;
         let data = event.data;
         if (data instanceof Blob) {
-            data = await data.arrayBuffer();
+            try { data = await data.arrayBuffer(); } catch(e) { return; }
         }
         const modifiedData = InboundTransformer.transform(data);
         handleTraffic(modifiedData, 'RECV');
     }
 
-    // Bootstrap: se já existe conexão ativa (caso comum — Analyzer aberto manualmente
-    // após o jogo já ter conectado), usa ela direto
     window.gameWS = window._hubSocket.getActive();
     if (window.gameWS) wrapSend(window.gameWS);
 
-    // Cobre reconexões futuras
     window._hubSocket.onConnect((ws) => {
+        if (!_alive) return;
         window.gameWS = ws;
         wrapSend(ws);
-        console.log('[Analyzer] Conectado ao WebSocket via Hub');
     });
 
     window._hubSocket.onMessage((event, ws) => {
+        if (!_alive) return;
         if (ws !== window.gameWS) return;
         handleInbound(event);
     });
 
+    // ─── API pública ───
+    function kill() {
+        _alive = false;
+        try { delete window[UID]; } catch(e) {}
+
+        // Restaura send original
+        try {
+            if (window.gameWS && window.gameWS._analyzerSendWrapped) {
+                if (window.gameWS._analyzerOriginalSend) {
+                    window.gameWS.send = window.gameWS._analyzerOriginalSend;
+                }
+                delete window.gameWS._analyzerSendWrapped;
+                delete window.gameWS._analyzerOriginalSend;
+            }
+        } catch(e) {}
+
+        // Persiste dicionário final
+        try { Storage.set('dicionario', AppState.dicionario); } catch(e) {}
+
+        // Remove listeners
+        while (cleanup.length) { const fn = cleanup.pop(); try { fn(); } catch(e) {} }
+
+        // Remove DOM
+        try {
+            [Toolbar.element, AnalyzerUI.element, SenderUI.element].forEach(el => {
+                if (el && el.parentNode) el.parentNode.removeChild(el);
+            });
+        } catch(e) {}
+    }
+
+    window[UID] = { kill };
 })();
