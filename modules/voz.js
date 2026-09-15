@@ -876,30 +876,76 @@
             try {
                 const r = await window._apis.groq({
                     mensagens: [
-                        {
-                            role: 'system',
-                            content:
-                                'Você é um corretor humano de transcrições em português brasileiro. ' +
-                                'Corrija o texto do usuário como se fosse um revisor revisando o próprio ' +
-                                'pensamento: adicione pontuação (vírgulas em pausas naturais, pontos no fim ' +
-                                'de frase, interrogações/exclamações quando o tom pedir) e corrija palavras ' +
-                                'escritas erradas.\n\n' +
-                                'Regras:\n' +
-                                '1) Se uma palavra parecer errada pelo contexto, corrija para a palavra ' +
-                                'mais provável (ex: "caza" → "casa", "agora eu vou" pode virar "agora, eu vou"). ' +
-                                'Homófonos comuns (mais/mas, há/a, si/se) devem ser corrigidos pelo sentido. ' +
-                                '2) Mantenha gírias, nomes próprios e o tom informal exatamente como estão. ' +
-                                '3) Não resuma, não expanda, não troque a ordem das ideias. ' +
-                                '4) Responda SOMENTE com o texto corrigido, sem aspas, sem markdown, sem ' +
-                                'comentários.\n\n' +
-                                'Exemplo:\n' +
-                                'Entrada: eu tava indo pra casa mais ai eu vi ele na rua e resolvi para pra conversar\n' +
-                                'Saída: Eu tava indo pra casa, mas aí eu vi ele na rua e resolvi parar pra conversar.'
-                        },
-                        { role: 'user', content: texto }
-                    ],
-                    maxTokens: 800,
-                    temperature: 0.35
+    {
+        role: 'system',
+        content: `
+Você é um formatador inteligente de transcrições de áudio em português brasileiro, semelhante à formatação de mensagens de voz de um assistente conversacional.
+
+Sua tarefa é transformar a transcrição bruta em uma mensagem natural, clara e bem pontuada, preservando fielmente o que a pessoa quis dizer.
+
+Identifique corretamente:
+- Perguntas;
+- Afirmações;
+- Dúvidas;
+- Pedidos;
+- Ordens;
+- Sugestões;
+- Desabafos;
+- Exclamações;
+- Falas informais.
+
+Regras:
+1. Responda SOMENTE com o texto formatado.
+2. Não responda ao conteúdo da fala.
+3. Não explique nada.
+4. Não resuma, expanda, invente ou altere o sentido.
+5. Preserve o tom informal e as gírias.
+6. Preserve nomes próprios, nomes de projetos, jogos, empresas e termos técnicos.
+7. Corrija apenas erros claros de transcrição.
+8. Use ponto de interrogação quando a fala for uma pergunta.
+9. Use exclamação somente quando houver entusiasmo, surpresa ou ênfase evidente.
+10. Use vírgulas em pausas naturais, sem exagerar.
+11. Separe ideias diferentes em frases distintas.
+12. Não transforme uma fala informal em texto formal demais.
+13. Preserve expressões como "tá", "tô", "pra", "pro", "mano", "tipo", "né", "kkkk", "véi" e "pô".
+14. Se uma palavra parecer um nome próprio, comando ou termo técnico, mantenha-a.
+15. Retorne somente a versão final da transcrição, sem aspas, markdown ou comentários.
+
+Exemplos:
+
+Entrada:
+qual é o melhor jeito de fazer um botão no javascript
+
+Saída:
+Qual é o melhor jeito de fazer um botão no JavaScript?
+
+Entrada:
+mano que interface bonita
+
+Saída:
+Mano, que interface bonita!
+
+Entrada:
+tipo assim eu queria saber se você consegue me ajudar
+
+Saída:
+Tipo assim, eu queria saber se você consegue me ajudar.
+
+Entrada:
+eu tava indo pra casa mais aí eu vi ele
+
+Saída:
+Eu tava indo pra casa, mas aí eu vi ele.
+`,
+    },
+    {
+        role: 'user',
+        content: texto
+    }
+],
+                    maxTokens: 600,
+                    temperature: 0.15,
+                    topP: 0.9
                 }, { signal: ctrl.signal, forceRefresh: true });
                 const limpo = String(r || '').trim()
                     .replace(/^["'`]+|["'`]+$/g, '')
