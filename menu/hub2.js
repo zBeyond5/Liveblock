@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Sang Hub
 // @namespace    http://tampermonkey.net/
-// @version      1.0.1
+// @version      1.1.0
 // @description  Gerenciador de módulos
 // @author       Sang
 // @match        *://*.habblive.in/bigclient*
@@ -17,7 +17,7 @@
 (function() {
     'use strict';
 
-    // Página 
+    // Página
     if (/\/me(\/|$|\?)/.test(location.pathname)) {
         function buildHeadshotUrl(walkgifUrl) {
             try {
@@ -55,7 +55,7 @@
         return;
     }
 
-    const HUB_VERSION = "1.0.1";
+    const HUB_VERSION = "1.1.0";
     const HUB_UPDATE_URL = "https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/menu/hub2.js";
     const MANIFEST_URL = "https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/menu/manifest.json";
 
@@ -73,6 +73,28 @@
     const CLOCK_TICK_MS = 1000;
 
     const PLAYER_CACHE_KEY = 'sanghub_player_cache';
+
+    // ─── VOZ ───
+    const VOICE_KEY = 'sanghub_voice_enabled';
+    const VOICE_COOLDOWN_MS = 1200;
+    const SpeechRecognitionAPI = window.SpeechRecognition || window.webkitSpeechRecognition;
+
+    const VOICE_OPEN  = ['abra', 'abre', 'abrir', 'ativa', 'ativar', 'liga', 'ligar', 'inicia', 'iniciar'];
+    const VOICE_CLOSE = ['feche', 'fecha', 'fechar', 'desativa', 'desativar', 'desliga', 'desligar', 'para', 'parar'];
+
+    const VOICE_ALIASES = {
+        packetlive:  ['packet', 'packet manager', 'analisador', 'analyzer'],
+        blocklive:   ['liveblock', 'adblock', 'bloqueador'],
+        boosterlive: ['booster', 'booster fps'],
+        gameslive:   ['jogos', 'games', 'gameslive'],
+        photolive:   ['photoswap', 'fotoswap', 'foto'],
+        yt:          ['youtube'],
+        iptv:        ['iptv', 'tv'],
+        prozilla:    ['prozilla'],
+        galeria:     ['galeria']
+    };
+
+    const normalize = s => s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
 
     const STATUS = { UNLOADED: 'unloaded', LOADING: 'loading', LOADED: 'loaded', ERROR: 'error' };
 
@@ -104,6 +126,8 @@
     let toastFn = null;
     let uiRoot = null;
     let uiPill = null;
+    let showPanelFn = null;
+    let showPillFn = null;
 
     function escapeHtml(str) {
         return String(str ?? '').replace(/[&<>"']/g, c => ({
@@ -469,6 +493,45 @@
         activateModule(mod);
     }
 
+    // ─── VOZ: matcher + dispatcher ───
+    function matchModule(transcript) {
+        const words = transcript.split(/\s+/);
+        let best = null, bestScore = 0;
+        state.manifest.modules.forEach(mod => {
+            if (mod.secret || mod.enabled === false) return;
+            const aliasWords = (VOICE_ALIASES[mod.id] || []).flatMap(a => normalize(a).split(/\s+/));
+            const nameWords = normalize(mod.name).split(/\s+/);
+            const candidates = [...new Set([...nameWords, ...aliasWords])].filter(w => w.length > 2);
+            const score = candidates.filter(w => words.includes(w)).length;
+            if (score > bestScore) { bestScore = score; best = mod; }
+        });
+        return best;
+    }
+
+    function handleVoiceCommand(raw) {
+        const transcript = normalize(raw);
+        if (!transcript) return;
+
+        if (transcript.includes('menu')) {
+            if (VOICE_CLOSE.some(w => transcript.includes(w))) { showPillFn?.(); return; }
+            if (VOICE_OPEN.some(w => transcript.includes(w)))  { showPanelFn?.(); return; }
+        }
+
+        const mod = matchModule(transcript);
+        if (!mod) return; // não bateu com nada -> ignora em silêncio (mic sempre ligado gera muito ruído)
+
+        const status = state.moduleStates[mod.id] || STATUS.UNLOADED;
+        if (VOICE_CLOSE.some(w => transcript.includes(w))) {
+            if (status === STATUS.LOADED) deactivateModule(mod);
+            return;
+        }
+        if (VOICE_OPEN.some(w => transcript.includes(w))) {
+            if (status !== STATUS.LOADED) activateModule(mod);
+            return;
+        }
+        handleModuleClick(mod); // só o nome/apelido, sem verbo -> alterna
+    }
+
     function setupGifIcon(item, canvas, liveImg, originalUrl) {
         const ctx = canvas.getContext('2d');
         const probe = new Image();
@@ -582,6 +645,8 @@
         #${UID} .hub-hbtn:hover{color:#0b0b10;background:var(--hub-grad);border-color:transparent;box-shadow:0 0 14px rgba(34,211,238,0.35);transform:translateY(-1px)}
         #${UID} .hub-hbtn:focus-visible,#${UID} .hub-item:focus-visible,#${UID}pill:focus-visible,#${UID} .hub-tab:focus-visible{outline:2px solid var(--hub-cyan);outline-offset:2px}
         #${UID} .hub-hbtn.spin svg{animation:hubSpin .6s linear infinite}
+        #${UID} .hub-hbtn.listening{color:#0b0b10;background:var(--hub-grad);border-color:transparent;box-shadow:0 0 10px rgba(34,211,238,.5)}
+        #${UID} .hub-hbtn.hearing{animation:hubPulse .35s ease-in-out}
 
         #${UID} .hub-tabs{display:flex;gap:4px;padding:0 12px;flex-shrink:0;border-bottom:1px solid rgba(255,255,255,0.06)}
         #${UID} .hub-tab{flex:1;text-align:center;padding:9px 6px 10px;font-size:10.5px;font-weight:800;letter-spacing:.05em;
@@ -716,6 +781,7 @@
         const MAIN_ICON_SM = `<img src="https://raw.githubusercontent.com/zBeyond5/Liveblock/main/assets/PNG/menu.png" style="width:16px; height:16px; object-fit:contain;" />`;
         const REFRESH_SVG = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 12a8 8 0 1 1-2.34-5.66M20 4v5h-5"/></svg>`;
         const UPDATE_SVG = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>`;
+        const MIC_SVG = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>`;
 
         const tabsHtml = TABS.map(t =>
             `<button class="hub-tab${t.id === state.activeTab ? ' active' : ''}" data-tab="${t.id}" role="button" tabindex="0" aria-pressed="${t.id === state.activeTab}">${escapeHtml(t.label)}</button>`
@@ -735,6 +801,7 @@
                 </div>
             </div>
             <div class="hub-actions">
+                <div class="hub-hbtn" id="${UID}voice" title="Ativar controle por voz" role="button" tabindex="0" aria-label="Ativar controle por voz">${MIC_SVG}</div>
                 <div class="hub-hbtn" id="${UID}update" title="Auto-update" role="button" tabindex="0" aria-label="Verificar atualizações">${UPDATE_SVG}</div>
                 <div class="hub-hbtn" id="${UID}refresh" title="Recarregar manifesto" role="button" tabindex="0" aria-label="Recarregar manifesto">${REFRESH_SVG}</div>
                 <div class="hub-hbtn" id="${UID}min" title="Minimizar" role="button" tabindex="0" aria-label="Minimizar painel">−</div>
@@ -753,7 +820,7 @@
         document.body.appendChild(root);
         uiRoot = root;
 
-        // Card 
+        // Card
         const pill = document.createElement('div');
         pill.id = UID + 'pill';
         pill.setAttribute('data-hub', '1');
@@ -809,6 +876,9 @@
             }, 220);
         }
         function hideAll() { root.classList.add('hidden'); pill.classList.add('hidden'); }
+
+        showPanelFn = showPanel;
+        showPillFn = showPill;
 
         function onKeyActivate(handler) {
             return (e) => {
@@ -872,6 +942,7 @@
         const btnCls = root.querySelector('#' + UID + 'cls');
         const btnRefresh = root.querySelector('#' + UID + 'refresh');
         const btnUpdate = root.querySelector('#' + UID + 'update');
+        const btnVoice = root.querySelector('#' + UID + 'voice');
 
         btnMin.addEventListener('click', showPill, { signal: ac.signal });
         btnMin.addEventListener('keydown', onKeyActivate(showPill), { signal: ac.signal });
@@ -882,6 +953,58 @@
         const onUpdateClick = () => { toastFn('Verificando atualizações…', 'info'); autoUpdateLoop(); };
         btnUpdate.addEventListener('click', onUpdateClick, { signal: ac.signal });
         btnUpdate.addEventListener('keydown', onKeyActivate(onUpdateClick), { signal: ac.signal });
+
+        // ─── VOZ: reconhecimento contínuo ───
+        let recognition = null, voiceActive = false, lastVoiceAt = 0;
+
+        function updateVoiceBtn() {
+            btnVoice.classList.toggle('listening', voiceActive);
+            btnVoice.title = voiceActive ? 'Escutando… (clique para desativar)' : 'Ativar controle por voz';
+        }
+
+        function ensureRecognition() {
+            if (recognition) return recognition;
+            recognition = new SpeechRecognitionAPI();
+            recognition.lang = 'pt-BR';
+            recognition.continuous = true;
+            recognition.interimResults = false;
+            recognition.onresult = e => {
+                const now = Date.now();
+                if (now - lastVoiceAt < VOICE_COOLDOWN_MS) return;
+                lastVoiceAt = now;
+                btnVoice.classList.add('hearing');
+                setTimeout(() => btnVoice.classList.remove('hearing'), 400);
+                handleVoiceCommand(e.results[e.results.length - 1][0].transcript);
+            };
+            recognition.onerror = e => {
+                HWARN('Voz:', e.error);
+                if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
+                    voiceActive = false; updateVoiceBtn();
+                    try { localStorage.setItem(VOICE_KEY, '0'); } catch(e2) {}
+                    toastFn('Permissão de microfone negada', 'error');
+                }
+            };
+            recognition.onend = () => { if (voiceActive) { try { recognition.start(); } catch(e) {} } };
+            return recognition;
+        }
+
+        function setVoiceActive(on) {
+            voiceActive = on;
+            updateVoiceBtn();
+            try { localStorage.setItem(VOICE_KEY, on ? '1' : '0'); } catch(e) {}
+            const rec = ensureRecognition();
+            try { on ? rec.start() : rec.stop(); } catch(e) {}
+        }
+
+        if (!SpeechRecognitionAPI) {
+            btnVoice.style.display = 'none';
+        } else {
+            const toggleVoice = () => setVoiceActive(!voiceActive);
+            btnVoice.addEventListener('click', toggleVoice, { signal: ac.signal });
+            btnVoice.addEventListener('keydown', onKeyActivate(toggleVoice), { signal: ac.signal });
+
+            if (localStorage.getItem(VOICE_KEY) === '1') setVoiceActive(true);
+        }
 
         const tabsEl = root.querySelector('#' + UID + 'tabs');
         function setActiveTab(tabId) {
@@ -1009,6 +1132,8 @@
 
         function kill() {
             state.killFlag = true;
+            voiceActive = false;
+            if (recognition) { try { recognition.stop(); } catch(e) {} }
             flushPlaytime();
             if (state.updateTimer) clearTimeout(state.updateTimer);
             if (state.heartbeatTimer) clearInterval(state.heartbeatTimer);
