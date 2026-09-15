@@ -158,7 +158,19 @@
     "secret": false,
     "misc": true,   
     "instanceKey": "_voz",
-    "url": "https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/modules/voz.js",
+    "url": "https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/modules/voz.js"
+    },
+    {
+      "id": "groq",
+      "name": "Groq Chat",
+      "description": "Chat via Groq",
+      "icon": "https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/assets/GIF/groq.gif",
+      "enabled": true,
+      "autoload": false,
+      "secret": false,
+      "misc": true,
+      "instanceKey": "_groq",
+      "url": "https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/modules/groq.js"
     }
   ]
 }
