@@ -705,7 +705,7 @@
             if (!pausado) return;
             pausado = false;
             fab.classList.remove('pausado');
-            if (habilitado) _iniciarCaptapa();
+            if (habilitado) _iniciarCaptura();
         }
 
         function verificarFoco() {
