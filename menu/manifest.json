@@ -161,7 +161,7 @@
     },
     {
     "id": "voz",
-    "name": "VoiceToChat",
+    "name": "VoiceChat",
     "description": "Transforma voz em texto",
     "icon": "https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/assets/GIF/voz.gif",
     "enabled": true,
@@ -173,8 +173,8 @@
     },
     {
       "id": "groq",
-      "name": "Groq Chat",
-      "description": "Chat via Groq",
+      "name": "Sang AI",
+      "description": "Chatbot IA",
       "icon": "https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/assets/GIF/groq.gif",
       "enabled": true,
       "autoload": false,
