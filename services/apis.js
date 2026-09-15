@@ -377,7 +377,45 @@
             throw new ApiError('speech', 'nao-implementado', 'Speech ainda não implementado');
         }
     });
+registrar({
+    id: 'groq',
+    nome: 'Groq',
+    chave: 'groq',
+    cota: { rpm: 30, rpd: 1000 },
+    cacheTtl: 0, // chat nunca deve cachear
+    requerUI: true,
+    chamar: async (params, ctx) => {
+        const key = getKey('groq');
+        const modelo = params.modelo || 'llama-3.3-70b-versatile';
+        const mensagens = params.mensagens || [{ role: 'user', content: params.prompt || '' }];
 
+        const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': 'Bearer ' + key
+            },
+            body: JSON.stringify({
+                model: modelo,
+                messages: mensagens,
+                temperature: params.temperature ?? 0.7,
+                max_completion_tokens: params.maxTokens ?? 2048
+            }),
+            signal: ctx.signal
+        });
+
+        if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            const msg = res.status === 401 ? 'API key inválida'
+                      : res.status === 429 ? 'Cota esgotada'
+                      : (err.error?.message || 'HTTP ' + res.status);
+            throw new ApiError('groq', 'http', msg);
+        }
+
+        const data = await res.json();
+        return data.choices?.[0]?.message?.content || '';
+    }
+});
     // ============================================================
     // ATALHOS DIRETOS 
     // ============================================================
