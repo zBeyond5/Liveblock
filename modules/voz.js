@@ -25,7 +25,7 @@
         delayEntreBlocos: 320
     };
 
-    const MIN_INTERVALO_STREAM = 250;  // ms entre envios contínuos
+    const MIN_INTERVALO_STREAM = 350;  // ms entre envios contínuos
 
     // ─── Persistência ───
     const loadConfig = () => {
@@ -1241,3 +1241,4 @@ Eu tava indo pra casa, mas aí eu vi ele.
     else new MutationObserver((_, o) => {
         if (document.body) { o.disconnect(); init(); }
     }).observe(document.documentElement, { childList: true });
+})();
