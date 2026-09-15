@@ -3,8 +3,313 @@
     const UID = '_analyzer';
     if (window[UID]) { try { window[UID].kill(); } catch(e) {} }
 
-    // ─── Constante do modelo ───
+    // ─── Modelo fixo (único confirmado) ───
     const MODELO_SANGMAX = 'openai/gpt-oss-120b';
+
+    // ═══════════════════════════════════════════════════════════════
+    // DICIONÁRIO DO PROTOCOLO
+    // OUT = cliente envia | IN = servidor envia
+    // ═══════════════════════════════════════════════════════════════
+    const PacketNames = {
+        OUT: {
+            5:'ROOM_AMBASSADOR_ALERT',9:'ROOM_COMPETITION_INIT',20:'UNIT_CHAT_SHOUT',25:'USER_FURNITURE',
+            28:'SET_RELATIONSHIP_STATUS',36:'CLIENT_VARIABLES',49:'START_CAMPAIGN',71:'FIND_NEW_FRIENDS',
+            84:'GROUP_FAVORITE',114:'MESSENGER_RELATIONSHIPS',146:'POLL_ANSWER',147:'ACCEPT_QUEST',
+            149:'CALL_FOR_HELP_FROM_PHOTO',150:'FURNITURE_POSTIT_PLACE',164:'TOGGLE_PET_BREEDING',
+            195:'ITEM_CLOTHING_REDEEM',197:'PICK_ISSUES',199:'HARVEST_PET',206:'FORWARD_TO_A_COMPETITION_ROOM',
+            220:'USER_UNIGNORE',230:'USER_HOME_ROOM',239:'PET_CONFIRM_BREEDING',242:'GET_INTERSTITIAL',
+            277:'SAVE_WARDROBE_OUTFIT',302:'RENTABLE_SPACE_RENT',324:'GET_CFH_STATUS',337:'PURCHASE_ROOM_AD',
+            343:'GAMES_LIST',350:'ITEM_COLOR_WHEEL_CLICK',351:'TRADE_CONFIRM',362:'EMAIL_CHANGE',
+            379:'HELPER_TALENT_TRACK',381:'GET_ROOM_AD_PURCHASE_INFO',390:'ROOM_AD_PURCHASE_INITIATED',
+            394:'ROOM_MUTE',395:'ROOM_MODEL_SAVE',396:'GET_DAILY_QUEST',399:'ROOM_TONER_APPLY',
+            405:'GUIDE_SESSION_ON_DUTY_UPDATE',415:'MYSTERYBOXWAITINGCANCELEDMESSAGE',427:'TRY_PHONE_NUMBER',
+            446:'MARKETPLACE_SELL_ITEM',448:'GET_CATALOG_PAGE',450:'GROUP_MEMBERS',452:'CLIENT_LATENCY_MEASURE',
+            471:'GET_CONCURRENT_USERS_GOAL_PROGRESS',477:'USER_IGNORE_ID',485:'DECLINE_FRIEND',
+            499:'GET_PRODUCT_OFFER',520:'MY_ROOM_HISTORY_SEARCH',543:'PET_SUPPLEMENT',
+            565:'USER_PROFILE',575:'GET_SEASONAL_CALENDAR_DAILY_OFFER',597:'GET_FORUM_MESSAGES',
+            598:'GET_OCCUPIED_TILES',608:'GROUP_PARTS',609:'USER_BADGES_CURRENT',612:'ONE_WAY_DOOR_CLICK',
+            613:'GROUP_UNFAVORITE',615:'SHOP_TARGETED_OFFER_VIEWED',626:'GET_IS_USER_PART_OF_COMPETITION',
+            628:'GET_FORUMS_LIST',645:'MARKETPLACE_REQUEST_OWN_ITEMS',668:'USER_PROFILE_BY_NAME',
+            678:'REMOVE_FRIEND',679:'GET_CRAFTING_RECIPE',680:'GUIDE_SESSION_CREATE',681:'USER_PETS',
+            684:'PET_CANCEL_BREEDING',698:'GUIDE_SESSION_IS_TYPING',699:'TRADE_ITEM',
+            703:'GROUP_DELETE',722:'UNSEEN_RESET_ITEMS',730:'GROUP_SAVE_BADGE',738:'GROUP_ADMIN_ADD',
+            745:'USER_MOTTO',747:'ITEM_STACK_HELPER',752:'ROOM_CREATE',779:'GET_YOUTUBE_DISPLAY_STATUS',
+            789:'USER_CLASSIFICATION',801:'TRADE',810:'UPDATE_FORUM_READ_MARKER',826:'MESSENGER_INIT',
+            839:'TRADE_CLOSE',840:'MARKETPLACE_CONFIG',851:'SCR_GET_KICKBACK_INFO',857:'ITEM_DICE_CLOSE',
+            880:'PET_SELECTED',882:'POLL_REJECT',885:'PET_PLACE',891:'GROUP_REQUEST_DECLINE',
+            895:'SECURITY_MACHINE',898:'ROOM_DELETE',899:'UNIT_ACTION',902:'FORUM_MODERATE_MESSAGE',
+            904:'ROOM_MUTE_USER',928:'FURNITURE_GROUP_INFO',929:'VERIFY_CODE',956:'USER_BOTS',
+            959:'CHAT_REVIEW_GUIDE_DETACHED',966:'GROUP_SAVE_INFORMATION',973:'GET_NOW_PLAYING',
+            986:'WELCOME_GIFT_CHANGE_EMAIL',993:'MODTOOL_REQUEST_USER_CHATLOG',1003:'ROOM_RIGHTS_GIVE',
+            1010:'MODTOOL_ROOM_ALERT',1017:'GET_OFFICIAL_ROOMS',1019:'ROOMS_WHERE_MY_FRIENDS_ARE',
+            1020:'BOT_CONFIGURATION',1029:'MARKETPLACE_BUY_OFFER',1043:'USER_SETTINGS_CHAT_STYLE',
+            1051:'ITEM_DIMMER_TOGGLE',1053:'GUIDE_SESSION_GUIDE_DECIDES',1089:'CALL_FOR_HELP_FROM_IM',
+            1100:'HANDSHAKE_COMPLETE_DIFFIE',1109:'FORWARD_TO_RANDOM_COMPETITION_ROOM',1110:'FURNITURE_RANDOMSTATE',
+            1111:'GET_PROMO_ARTICLES',1116:'NAVIGATOR_SEARCH_CLOSE',1129:'ACHIEVEMENT_LIST',
+            1150:'UNIT_TYPING_STOP',1152:'MOD_TOOL_USER_INFO',1157:'CLIENT_LATENCY',1181:'FORUM_MODERATE_THREAD',
+            1187:'ROOM_BAN_GIVE',1189:'ROOM_DIRECTORY_ROOM_NETWORK_OPEN_CONNECTION',1195:'GET_OFFICIAL_SONG_ID',
+            1198:'GUIDE_SESSION_REPORT',1214:'USER_RESPECT',1221:'MARKETPLACE_BUY_TOKENS',
+            1225:'GAME2GETACCOUNTGAMESTATUSMESSAGE',1271:'PET_OPEN_PACKAGE',1275:'MODTOOL_REQUEST_ROOM_INFO',
+            1279:'RESET_PHONE_NUMBER_STATE',1281:'WIRED_OPEN',1283:'GROUP_UNBLOCK_MEMBER',
+            1305:'PET_MOUNT',1312:'UNIT_TYPING',1313:'REQUEST_FRIEND',1315:'CHAT_REVIEW_SESSION_CREATE',
+            1324:'UNIT_CHAT_WHISPER',1327:'USER_IGNORED',1337:'EMAIL_GET_STATUS',1338:'FURNITURE_POSTIT_SAVE_STICKY_POLE',
+            1351:'ROOM_FAVORITE',1355:'MY_FRIENDS_ROOM_SEARCH',1360:'FURNITURE_PICKUP',
+            1365:'WIRED_TRIGGER_SAVE',1372:'BUILDERS_CLUB_PLACE_WALL_ITEM',1390:'USER_FIGURE',
+            1392:'REQUEST_CAMERA_CONFIGURATION',1403:'GET_COMMUNITY_GOAL_HALL_OF_FAME',1409:'CALL_FOR_HELP_FROM_FORUM_MESSAGE',
+            1411:'CRAFT_SECRET',1412:'GET_CFH_CHATLOG',1438:'REQUESTABADGE',1444:'GET_CRAFTING_RECIPES_AVAILABLE',
+            1461:'VISIT_USER',1477:'NAVIGATOR_DELETE_SAVED_SEARCH',1479:'REJECT_QUEST',
+            1482:'GET_HABBO_CLUB_EXTEND_OFFER',1518:'GET_GUIDE_REPORTING_STATUS',1533:'REQUEST_MARKETPLACE_ITEM_STATS',
+            1541:'GET_GIFT_WRAPPING_CONFIG',1548:'CALL_FOR_HELP',1551:'GROUP_SAVE_COLORS',
+            1555:'RENDER_ROOM',1596:'MARKETPLACE_TAKE_BACK_ITEM',1611:'GROUP_REQUEST',
+            1613:'CRAFT',1614:'GET_CLUB_OFFERS',1624:'FORUM_UPDATE_THREAD',1625:'MODTOOL_SANCTION_BAN',
+            1629:'REMOVE_JUKEBOX_DISK',1642:'DESKTOP_VIEW',1647:'FRIEND_LIST_UPDATE',1648:'TRADE_CANCEL',
+            1678:'UNIT_CHAT',1711:'CALL_FOR_HELP_FROM_FORUM_THREAD',1719:'MESSENGER_CHAT',
+            1723:'GROUP_REQUEST_ACCEPT',1730:'WIRED_ACTION_SAVE',1737:'NAVIGATOR_SEARCH_OPEN',
+            1745:'MODTOOL_PREFERENCES',1755:'FURNITURE_MULTISTATE',1763:'UPDATE_FORUM_SETTINGS',
+            1772:'GROUP_BUY',1784:'TALENT_TRACK_GET_LEVEL',1814:'RENTABLE_SPACE_STATUS',
+            1818:'DEFAULT_SANCTION',1835:'NAVIGATOR_SEARCH',1839:'USER_EFFECT_ACTIVATE',
+            1864:'CATALOG_REDEEM_VOUCHER',1876:'ROOM_LIKE',1891:'FRIEND_FURNI_CONFIRM_LOCK',
+            1894:'ROOM_BAN_REMOVE',1896:'PETS_BREED',1903:'GROUP_CREATE_OPTIONS',1907:'ROOMS_WITH_HIGHEST_SCORE_SEARCH',
+            1913:'USER_SUBSCRIPTION',1918:'NEW_USER_EXPERIENCE_SCRIPT_PROCEED',1922:'GUIDE_SESSION_INVITE_REQUESTER',
+            1925:'ROOM_RIGHTS_REMOVE',1933:'ROOM_AD_SEARCH',1935:'GROUP_SETTINGS',
+            1937:'GO_TO_FLAT',1947:'CONVERT_GLOBAL_ROOM_ID',1948:'ITEM_DICE_CLICK',
+            1953:'GET_FORUM_THREAD',1959:'ROOM_KICK',1961:'GAME2GETWEEKLYLEADERBOARD',
+            1978:'ROOM_FILTER_WORDS',1979:'LEAVEQUEUEMESSAGE',1981:'TOGGLE_PET_RIDING',
+            1995:'ROOM_FAVORITE_REMOVE',2011:'FOLLOW_FRIEND',2019:'USER_CURRENCY',
+            2031:'ROOM_ENTER',2060:'GET_CATALOG_INDEX',2075:'ROOM_RIGHTS_REMOVE_OWN',
+            2078:'BUILDERS_CLUB_QUERY_FURNI_COUNT',2081:'MODTOOL_SANCTION_TRADELOCK',
+            2086:'SET_CLOTHING_CHANGE_DATA',2110:'GROUP_MEMBERSHIPS',2113:'GET_SECONDS_UNTIL',
+            2120:'PHOTO_COMPETITION',2123:'GUIDE_SESSION_GET_REQUESTER_ROOM',2125:'SUBMIT_ROOM_TO_COMPETITION',
+            2135:'NEW_USER_EXPERIENCE_GET_GIFTS',2141:'CLOSE_ISSUES',2143:'DISCONNECT',
+            2151:'GET_BONUS_RARE_INFO',2157:'DELETE_PENDING_CALLS_FOR_HELP',2162:'VOTE_FOR_ROOM',
+            2170:'MODTOOL_REQUEST_USER_ROOMS',2177:'ROOM_TEXT_SEARCH',2179:'CLIENT_TOOLBAR_TOGGLE',
+            2202:'UNIT_DROP_HAND_ITEM',2223:'USER_EFFECT_ENABLE',2225:'USER_INFO',
+            2236:'ITEM_PAINT',2243:'MODTOOL_SANCTION_ALERT',2253:'GET_FORUM_STATS',
+            2255:'GET_QUIZ_QUESTIONS',2270:'GROUP_MEMBER_REMOVE',2287:'GET_POPULAR_ROOM_TAGS',
+            2288:'USER_TAGS',2297:'GROUP_BADGES',2303:'PET_INFO',2322:'CLOSE_ISSUE_DEFAULT_ACTION',
+            2328:'GET_ITEM_DATA',2334:'GETWEEKLYGAMEREWARDWINNERS',2335:'MESSENGER_FRIENDS',
+            2342:'GET_FRIEND_REQUESTS',2345:'BOT_PICKUP',2351:'MARKETPLACE_REQUEST_OFFERS',
+            2367:'GET_PET_TRAINING_PANEL',2376:'CATALOG_SELECT_VIP_GIFT',2381:'CHAT_REVIEW_GUIDE_VOTE',
+            2400:'REQUEST_SELL_ITEM',2401:'HABBO_SEARCH',2414:'ROOM_SETTINGS_SAVE',
+            2465:'ADD_JUKEBOX_DISK',2472:'USER_SETTINGS_INVITES',2476:'USE_PET_PRODUCT',
+            2477:'GAMES_INIT',2478:'FURNITURE_ALIASES',2484:'GET_USER_EVENT_CATS',
+            2487:'TRADE_ACCEPT',2488:'REQUESTFURNIINVENTORYWHENNOTINROOM',2519:'RENTABLE_EXTEND_RENT_OR_BUYOUT_FURNI',
+            2522:'GROUP_ADMIN_REMOVE',2539:'USER_BADGES_CURRENT_UPDATE',2547:'GROUP_MEMBER_REMOVE_CONFIRM',
+            2553:'ROOM_MODEL',2564:'GET_GUEST_ROOM',2567:'RECYCLER_STATUS',2569:'CALL_FOR_HELP_FROM_SELFIE',
+            2594:'ROOM_FILTER_WORDS_MODIFY',2602:'HANDSHAKE_INIT_DIFFIE',2618:'USER_SETTINGS_OLD_CHAT',
+            2652:'ITEM_WALL_UPDATE',2657:'USER_SETTINGS_VOLUME',2658:'CHECK_USERNAME',
+            2661:'GET_USER_FLAT_CATS',2668:'GET_SONG_INFO',2669:'CHANGE_QUEUE',2686:'PRESENT_OPEN_PRESENT',
+            2692:'RECYCLER_PRIZES',2699:'APPROVE_NAME',2710:'ROOM_SETTINGS_UPDATE_ROOM_CATEGORY_AND_TRADE',
+            2714:'GETGAMESTATUSMESSAGE',2720:'CATALOG_PURCHASE_GIFT',2728:'UNIT_LOOK',
+            2734:'NAVIGATOR_CATEGORY_LIST_MODE',2741:'MODTOOL_ALERTEVENT',2743:'CANCEL_ROOM_EVENT',
+            2750:'PUBLISH_PHOTO',2751:'ROOM_RIGHTS_REMOVE_ALL',2761:'FURNITURE_PLACE',
+            2765:'GUIDE_SESSION_REQUESTER_CANCELS',2766:'MARKETPLACE_REDEEM_CREDITS',2769:'COMPETITION_ROOM_SEARCH',
+            2793:'MY_GUILD_BASES_SEARCH',2824:'SET_YOUTUBE_DISPLAY_PLAYLIST',2831:'CAN_CREATE_ROOM',
+            2832:'UNSEEN_RESET_CATEGORY',2835:'APPROVE_ALL_MEMBERSHIP_REQUESTS',2855:'BUILDERS_CLUB_PLACE_ROOM_ITEM',
+            2865:'UNIT_DANCE',2888:'MANNEQUIN_SAVE_LOOK',2902:'SECURITY_TICKET',
+            2908:'MY_ROOM_RIGHTS_SEARCH',2918:'GAMEUNLOADEDMESSAGE',2921:'CONTROL_YOUTUBE_DISPLAY_PLAYBACK',
+            2924:'POPULAR_ROOMS_SEARCH',2926:'GET_USER_SONG_DISKS',2969:'GET_SOUND_MACHINE_PLAYLIST',
+            2985:'MY_ROOMS_SEARCH',2989:'GET_WARDROBE',2992:'REMOVE_PET_SADDLE',
+            2999:'RENTABLE_EXTEND_RENT_OR_BUYOUT_STRIP_ITEM',3007:'RELEASE_ISSUES',3013:'SEND_ROOM_INVITE',
+            3014:'FURNITURE_FLOOR_UPDATE',3044:'BOT_SKILL_SAVE',3047:'REMOVE_WALL_ITEM',
+            3053:'UNIT_GIVE_HANDITEM',3074:'PURCHASE_TARGETED_OFFER',3085:'POLL_CONTENTS',
+            3110:'FRIEND_REQUEST_QUEST_COMPLETE',3118:'ITEM_WALL_CLICK',3124:'PURCHASE_VIP_MEMBERSHIP_EXTENSION',
+            3125:'GET_CRAFTABLE_PRODUCTS',3127:'MANNEQUIN_SAVE_NAME',3147:'JOINQUEUEMESSAGE',
+            3207:'MARK_CATALOG_NEW_ADDITIONS_PAGE_OPENED',3214:'ROOM_STAFF_PICK',3236:'NAVIGATOR_SEARCH_SAVE',
+            3241:'ROOM_RIGHTS_LIST',3242:'USER_BADGES',3245:'GET_CURRENT_TIMING_CODE',
+            3265:'PEER_USERS_CLASSIFICATION',3270:'RENTABLE_GET_RENT_OR_BUYOUT_OFFER',
+            3287:'ROOM_SETTINGS',3301:'GROUP_INFO',3306:'SET_PHONE_NUMBER_VERIFICATION_STATUS',
+            3310:'GET_CATALOG_PAGE_WITH_EARLIEST_EXP',3318:'COMMUNITY_GOAL_VOTE_COMPOSER',
+            3320:'GET_UNREAD_FORUMS_COUNT',3321:'MODTOOL_SANCTION',3324:'FORWARD_TO_RANDOM_PROMOTED_ROOM',
+            3332:'TRADE_ITEMS',3342:'USER_IGNORE',3357:'OPEN_CAMPAIGN_CALENDAR_DOOR',
+            3361:'GET_IS_OFFER_GIFTABLE',3365:'SET_OBJECT_DATA',3382:'WIRED_APPLY_SNAPSHOT',
+            3386:'ACCEPT_FRIEND',3393:'GROUP_SAVE_PREFERENCES',3397:'PURCHASE_PHOTO',
+            3405:'GUILD_BASE_SEARCH',3409:'TRACKING_LAG_WARNING_REPORT',3417:'GET_QUESTS',
+            3419:'GET_FORUM_THREADS',3427:'SET_ROOM_SESSION_TAGS',3429:'ROOM_DOORBELL',
+            3442:'FORWARD_TO_A_SUBMITTABLE_ROOM',3443:'GET_SEASONAL_QUESTS_ONLY',3456:'UNIT_POSTURE',
+            3469:'UNIT_GIVE_HANDITEM_PET',3473:'ROOM_BAN_LIST',3478:'PET_PICKUP',
+            3498:'TRADE_UNACCEPT',3505:'EDIT_ROOM_EVENT',3539:'RECYCLER_ITEMS',
+            3552:'POST_QUIZ_ANSWERS',3561:'ROOM_AD_EVENT_TAB_CLICKED',3563:'GET_JUKEBOX_PLAYLIST',
+            3564:'OPEN_CAMPAIGN_CALENDAR_DOOR_STAFF',3570:'ACHIEVEMENT_RESOLUTION_OPEN',
+            3574:'RENDER_ROOM_THUMBNAIL',3585:'RENTABLE_SPACE_CANCEL_RENT',3603:'POLL_START',
+            3609:'ITEM_DIMMER_SETTINGS',3633:'GET_TARGETED_OFFER',3635:'ITEM_DIMMER_SAVE',
+            3639:'NAVIGATOR_INIT',3655:'CATALOG_PURCHASE',3657:'MODTOOL_SANCTION_MUTE',
+            3661:'SET_TARGETTED_OFFER_STATE',3663:'MODTOOL_CHANGE_ROOM_SETTINGS',3677:'CANCEL_QUEST',
+            3687:'CHAT_REVIEW_GUIDE_DECIDES',3705:'WIRED_CONDITION_SAVE',3710:'ACTIVATE_QUEST',
+            3732:'CHANGE_USERNAME',3750:'GET_COMMUNITY_GOAL_PROGRESS',3762:'GUIDE_SESSION_FEEDBACK',
+            3769:'INTERSTITIAL_SHOWN',3783:'GET_SOUND_SETTINGS',3793:'CATALOG_REQUESET_PET_BREEDS',
+            3794:'NAVIGATOR_SETTINGS_SAVE',3802:'SET_ITEM_DATA',3804:'ITEM_EXCHANGE_REDEEM',
+            3865:'GET_PENDING_CALLS_FOR_HELP',3879:'USER_SETTINGS_CAMERA',3886:'GET_LIMITED_OFFER_APPEARING_NEXT',
+            3888:'GET_CONCURRENT_USERS_REWARD',3904:'EVENT_TRACKER',3905:'GETGAMEACHIEVEMENTSMESSAGE',
+            3924:'UNIT_SIGN',3926:'TRADE_ITEM_REMOVE',3942:'FORWARD_TO_SOME_ROOM',
+            3950:'GET_ROOM_ENTRY_TILE',3951:'OPEN_QUEST_TRACKER',3953:'FORUM_POST_MESSAGE',
+            3964:'MY_FAVOURITE_ROOMS_SEARCH',3966:'PURCHASE_BASIC_MEMBERSHIP_EXTENSION',
+            3968:'GET_BADGE_POINTS_LIMITS',3976:'BOT_PLACE',3977:'MODTOOL_SANCTION_KICK',
+            3981:'GETISBADGEREQUESTFULFILLED',3989:'WELCOME_OPEN_GIFT',3998:'GET_BUNDLE_DISCOUNT_RULESET',
+            4000:'RELEASE_VERSION',6003:'SET_AREA_HIDE_DATA',6004:'UNIT_CHAT_REACTION',
+            6005:'WIRED_ADDON_SAVE',6006:'WIRED_SELECTOR_SAVE',6007:'WIRED_VARIABLES_SAVE',
+            6008:'FURNI_APPLY_COLOURS',10001:'CLICK_FURNI',10003:'FURNITURE_PICKUP_ALL',
+            10004:'DELETE_ITEM',10005:'USER_BACKGROUND_CURRENT'
+        },
+        IN: {
+            4:'DISCONNECT_REASON',10:'NAVIGATOR_METADATA',22:'PET_FIGURE_UPDATE',
+            25:'UNIT_CHAT_SHOUT',26:'FLOOD_CONTROL',66:'NEW_USER_EXPERIENCE_GIFT_OFFER',
+            73:'LOVELOCK_FURNI_START',95:'TRADE_ACCEPTED',101:'INFO_FEED_ENABLE',
+            104:'REDEEM_VOUCHER_OK',121:'ROOM_SETTINGS_SAVE',122:'ROOM_SETTINGS',
+            140:'ROOM_BAN_LIST',143:'BONUS_RARE_INFO',148:'GROUP_MEMBER',149:'PET_STATUS',
+            151:'NAVIGATOR_OPEN_ROOM_CREATOR',156:'DESKTOP_VIEW',162:'USER_PET_ADD',
+            176:'WEEKLY_GAME_REWARD',185:'COMMUNITY_GOAL_PROGRESS',194:'PET_INFO',
+            200:'ROOM_MODEL_DOOR',202:'GENERIC_ERROR',203:'FURNITURE_STATE',205:'GAME_CENTER_GAME_LIST',
+            225:'WIRED_CONDITION',242:'GUIDE_TICKET_RESOLUTION',248:'NOT_ENOUGH_BALANCE',
+            263:'CLUB_GIFT_INFO',266:'CAMERA_PUBLISH_STATUS',289:'BADGE_REQUEST_FULFILLED',
+            295:'BOT_FORCE_OPEN_CONTEXT_MENU',299:'GOTMYSTERYBOXPRIZEMESSAGE',313:'PET_LEVEL_UPDATE',
+            316:'QUEST_CANCELLED',320:'ROOM_MODEL',321:'HOTEL_CLOSES_AND_OPENS_AT',
+            332:'ACHIEVEMENT_PROGRESSED',341:'ITEM_WALL_REMOVE',347:'ACCOUNT_SAFETY_LOCK_STATUS_CHANGE',
+            352:'USER_PERMISSIONS',363:'GROUP_FORUM_DATA',369:'CHAT_REVIEW_SESSION_OFFERED_TO_GUIDE',
+            372:'ROOM_INFO_OWNER',390:'GENERIC_ALERT',407:'YOUTUBE_DISPLAY_PLAYLISTS',
+            414:'MESSENGER_MESSAGE_ERROR',416:'GROUP_BADGE_PARTS',418:'GUIDE_SESSION_ERROR',
+            427:'REMAINING_MUTE',428:'USER_SUBSCRIPTION',430:'COMPETITION_ROOMS_DATA',
+            438:'TRADE_CLOSED',450:'GROUP_FORUM_LIST',458:'CHAT_REVIEW_SESSION_VOTING_STATUS',
+            462:'CHAT_REVIEW_SESSION_STARTED',463:'GROUP_FORUM_POST_THREAD',468:'CANCELMYSTERYBOXWAITMESSAGE',
+            471:'GUIDE_SESSION_INVITED_TO_GUIDE_ROOM',478:'NAVIGATOR_EVENT_CATEGORIES',486:'CONNECTION_ERROR',
+            501:'MARKETPLACE_ITEMS_SEARCHED',532:'GUIDE_SESSION_ATTACHED',566:'PHONE_COLLECTION_STATE',
+            600:'HOTEL_WILL_CLOSE_MINUTES',602:'ROOM_DOORBELL',615:'FURNITURE_FLOOR_REMOVE',
+            623:'USER_FURNITURE',627:'FURNITURE_ALIASES',634:'USER_FAVORITE_ROOM_COUNT',
+            641:'WEEKLY_COMPETITIVE_FRIENDS_LEADERBOARD',655:'COMMUNITY_GOAL_HALL_OF_FAME',
+            660:'GAMESTATUSMESSAGE',665:'GUIDE_SESSION_REQUESTER_ROOM',668:'ACHIEVEMENTRESOLUTIONPROGRESS',
+            677:'COMPETITION_STATUS',681:'MESSENGER_REQUESTS',691:'MODTOOL_ROOM_INFO',
+            700:'CLUB_OFFERS',707:'RECYCLER_STATUS',728:'ROOM_RIGHTS_LIST_ADD',
+            731:'GET_USER_TAGS',733:'UNIT_INFO',750:'ISSUE_CLOSE_NOTIFICATION',752:'USER_PROFILE',
+            757:'ROOM_RIGHTS',780:'NOTIFICATION_ELEMENT_POINTER',787:'ROOM_RIGHTS_CLEAR',
+            792:'HANDSHAKE_INIT_DIFFIE',803:'MESSENGER_REQUEST',805:'CUSTOM_USER_NOTIFICATION',
+            810:'MESSENGER_RELATIONSHIPS',812:'USER_OUTFITS',814:'QUIZ_DATA',
+            846:'CAMPAIGN_CALENDAR_DATA',860:'ROOM_DOORBELL_REJECTED',865:'MESSENGER_MINIMAIL_NEW',
+            876:'SECURITY_MACHINE',888:'NAVIGATOR_LIFTED',890:'UNIT_CHAT_WHISPER',
+            923:'CONVERTED_ROOM_ID',931:'USER_CURRENCY',933:'MARKETPLACE_CONFIG',
+            938:'TALENT_TRACK_LEVEL',943:'OFFICIAL_SONG_ID',963:'MODERATOR_ACTION_RESULT',
+            969:'NAVIGATOR_SEARCHES',971:'PET_CONFIRM_BREEDING_RESULT',981:'PET_PLACING_ERROR',
+            982:'PET_TRAINING_PANEL',989:'GROUP_FORUM_UPDATE_THREAD',1007:'ADD_BOT_TO_INVENTORY',
+            1021:'MODTOOL_ROOM_CHATLOG',1031:'ROOM_DOORBELL_ACCEPTED',1038:'MESSENGER_CHAT',
+            1039:'USER_BADGES',1053:'GUIDE_SESSION_GUIDE_DECIDES',1063:'MOTD_MESSAGES',
+            1073:'ROOM_QUEUE_STATUS',1095:'CATALOG_PUBLISHED',1099:'WIRED_OPEN',
+            1102:'LOADGAME',1105:'GIFT_WRAPPER_CONFIG',1106:'CATEGORIES_WITH_VISITOR_COUNT',
+            1123:'GUILD_EDIT_FAILED',1133:'CRAFTING_RESULT',1137:'ROOM_THICKNESS',
+            1146:'UNIT_CHAT',1147:'MESSENGER_INVITE',1162:'NOTIFICATION_LIST',
+            1173:'UNIT_NUMBER',1176:'ROOM_SPECTATOR',1183:'NOOBNESS_LEVEL',
+            1184:'GROUP_DEACTIVATE',1196:'CONCURRENT_USERS_GOAL_PROGRESS',1200:'FURNITURE_POSTIT_STICKY_POLE_OPEN',
+            1205:'QUEST_DAILY',1234:'GROUP_MEMBER_REMOVE_CONFIRM',1237:'UNIT_EXPRESSION',
+            1238:'MARKETPLACE_CANCEL_SALE',1242:'PET_NEST_BREEDING_SUCCESS',1243:'ROOM_RIGHTS_LIST',
+            1271:'USER_SONG_DISKS_INVENTORY',1283:'MESSENGER_FRIENDS',1296:'ROOM_SCORE',
+            1297:'ISSUE_INFO',1322:'USER_SETTINGS',1323:'CATALOG_RECEIVE_PET_BREEDS',
+            1348:'GROUP_FORUM_THREAD_MESSAGES',1349:'WELCOME_GIFT_STATUS',1354:'USER_RESPECT',
+            1362:'FURNITURE_FLOOR_ADD',1366:'ITEM_WALL_UPDATE',1410:'MESSENGER_FRIEND_NOTIFICATION',
+            1413:'MESSENGER_UPDATE',1414:'GROUP_MEMBERS_REFRESH',1417:'USER_FURNITURE_REMOVE',
+            1423:'ROOM_CREATED',1434:'SEASONAL_CALENDAR_OFFER',1450:'USER_CHANGE_NAME',
+            1472:'WIRED_TRIGGER',1473:'GROUP_SETTINGS',1486:'PET_SUPPLEMENT',
+            1487:'NAVIGATOR_COLLAPSED',1491:'ROOM_MUTED',1507:'GROUP_PURCHASED',
+            1516:'UNIT_REMOVE',1519:'GIFT_RECEIVER_NOT_FOUND',1521:'TRADE_YOU_NOT_ALLOWED',
+            1537:'CATALOG_PAGE',1541:'LOAD_GAME_URL',1548:'FURNITURE_DATA',
+            1554:'SEASONAL_QUESTS',1556:'NOW_PLAYING',1561:'ITEM_DIMMER_SETTINGS',
+            1563:'BOT_COMMAND_CONFIGURATION',1577:'ROOM_SETTINGS_CHAT',1579:'ROOM_INFO_UPDATED',
+            1603:'ITEM_WALL_ADD',1610:'GROUP_LIST',1627:'ROOM_ROLLING',1663:'MODERATION_TOOL',
+            1670:'MYSTERY_BOX_KEYS',1692:'USER_BADGES_ADD',1702:'AVAILABILITY_STATUS',
+            1714:'ITEM_STACK_HELPER',1727:'GUIDE_SESSION_ENDED',1731:'HOTEL_CLOSED_AND_OPENS',
+            1747:'GUIDE_TICKET_CREATION_RESULT',1759:'TRADE_COMPLETED',1762:'NAVIGATOR_SETTINGS',
+            1770:'TRADE_CONFIRMATION',1773:'HOTEL_MAINTENANCE',1776:'CLIENT_PING',
+            1806:'CLUB_GIFT_NOTIFICATION',1818:'LOVELOCK_FURNI_FINISHED',1825:'PET_RECEIVED',
+            1835:'CLIENT_LATENCY',1853:'INTERSTITIAL_MESSAGE',1860:'COMPETITION_USER_PART_OF',
+            1866:'CRAFTING_RECIPES_AVAILABLE',1880:'COMPETITION_VOTING_INFO',1910:'CLUB_GIFT_SELECTED',
+            1933:'USER_HOME_ROOM',1935:'ROOM_MODEL_NAME',1936:'ROOM_RIGHTS_OWNER',
+            1943:'MESSENGER_INIT',1958:'QUESTION_FINISHED',1962:'PET_OPEN_PACKAGE_REQUESTED',
+            1974:'TRADE_LIST_ITEM',1981:'TOGGLE_PET_RIDING',1993:'QUIZ_RESULTS',
+            1997:'USER_EFFECT_LIST',2013:'MODERATOR_MESSAGE',2015:'USER_EFFECT_LIST_REMOVE',
+            2016:'CHANGE_EMAIL_RESULT',2032:'ACHIEVEMENT_NOTIFICATION',2045:'GROUP_CREATE_OPTIONS',
+            2061:'USER_FURNITURE_POSTIT_PLACED',2064:'USER_BANNED',2068:'TRADE_NOT_OPEN',
+            2078:'HANDSHAKE_IDENTITY_ACCOUNT',2079:'CAN_CREATE_ROOM',2087:'CFH_SANCTION_STATUS',
+            2091:'CHAT_REVIEW_SESSION_RESULTS',2104:'ISSUE_DELETED',2106:'PET_BREEDING_RESULT',
+            2113:'USER_ACHIEVEMENT_SCORE',2121:'ROOM_MUTED',2129:'CATALOG_PURCHASE_ERROR',
+            2139:'MODTOOL_VISITED_ROOMS_USER',2153:'TARGET_OFFER_NOT_FOUND',2175:'MARKETPLACE_OWN_ITEMS',
+            2176:'PLAYLIST',2178:'OBJECTS_DATA_UPDATE',2181:'GAMEACHIEVEMENTS',
+            2193:'USER_BOTS',2199:'IN_CLIENT_LINK',2224:'MODERATION_USER_INFO',
+            2233:'GUIDE_SESSION_STARTED',2242:'ROOM_SPECIAL_EFFECT',2248:'FIRST_LOGIN_OF_DAY',
+            2249:'ROOM_MESSAGE_NOTIFICATION',2253:'PET_BREEDING',2254:'GUIDE_SESSION_PARTNER_IS_TYPING',
+            2277:'COMPETITION_ENTRY_SUBMIT',2292:'ROOM_HEIGHT_MAP',2294:'MESSENGER_MINIMAIL_COUNT',
+            2301:'GROUP_FORUM_UNREAD_COUNT',2327:'HELPER_TALENT_TRACK',2332:'ROOM_HEIGHT_MAP_UPDATE',
+            2340:'BUILDERS_CLUB_EXPIRED',2361:'ROOM_ENTER_ERROR',2363:'REDEEM_VOUCHER_ERROR',
+            2364:'THUMBNAIL_STATUS',2366:'WIRED_REWARD',2367:'USER_PET_REMOVE',
+            2368:'MOTD_MESSAGES',2371:'UNSEEN_ITEMS',2372:'CFH_REPLY',
+            2385:'CFH_PENDING_CALLS_DELETED',2399:'JUKEBOX_SONG_DISKS',2405:'ROOM_POPULAR_TAGS_RESULT',
+            2407:'ROOM_ENTER',2422:'PHONE_TRY_VERIFICATION_CODE_RESULT',2425:'GET_CLUB_GIFT_INFO',
+            2427:'WELCOME_GIFT_CHANGE_EMAIL_RESULT',2429:'CATALOG_PAGE_LIST',2431:'ROOM_RIGHTS_LIST_REMOVE',
+            2434:'TALENT_TRACK_LEVEL_UP',2437:'POLL_ERROR',2447:'UNIT_CHANGE_NAME',
+            2449:'TRADE_OTHER_NOT_ALLOWED',2454:'WEEKLY_GAME_REWARD_WINNERS',2458:'MESSENGER_FOLLOW_FAILED',
+            2464:'ROOM_EVENT_CANCEL',2482:'PET_LEVEL_NOTIFICATION',2488:'QUEST_COMPLETED',
+            2491:'GUIDE_ON_DUTY_STATUS',2492:'ACHIEVEMENTRESOLUTIONS',2498:'LOVELOCK_FURNI_FRIEND_COMFIRMED',
+            2501:'HANDSHAKE_COMPLETE_DIFFIE',2505:'QUESTION_ANSWERED',2506:'NAVIGATOR_CATEGORIES',
+            2512:'MARKETPLACE_SELL_ITEM',2534:'MESSENGER_FIND_FRIENDS',2546:'BUNDLE_DISCOUNT_RULESET',
+            2552:'UNLOADGAME',2553:'JUKEBOX_PLAYLIST_FULL',2557:'EPIC_POPUP',
+            2563:'ACHIEVEMENT_LIST',2566:'CFH_DISABLED_NOTIFY',2583:'USER_INFO',
+            2584:'BOT_ERROR',2589:'GROUP_FORUM_THREADS',2595:'REMOVE_BOT_FROM_INVENTORY',
+            2611:'RENTABLE_SPACE_RENT_FAILED',2613:'SCR_SEND_KICKBACK_INFO',2636:'FURNITURE_ITEMDATA',
+            2639:'RENTABLE_FURNI_RENT_OR_BUYOUT_OFFER',2645:'SHOWMYSTERYBOXWAITMESSAGE',
+            2670:'QUESTION',2684:'USER_EFFECT_ACTIVATE',2705:'CATALOG_PURCHASE_OK',
+            2712:'HAND_ITEM_RECEIVED',2719:'NO_SUCH_FLAT',2726:'GIFT_OPENED',
+            2739:'ITEM_WALL',2741:'ROOM_EVENT',2764:'RENTABLE_SPACE_RENT_OK',
+            2768:'ACHIEVEMENTRESOLUTIONCOMPLETED',2773:'USER_FIGURE',2793:'PET_OPEN_PACKAGE_RESULT',
+            2812:'USER_BADGES_CURRENT',2844:'GROUP_FORUM_UPDATE_MESSAGE',2850:'LIMITED_SOLD_OUT',
+            2852:'TARGET_OFFER',2863:'CATALOG_PURCHASE_NOT_ALLOWED',2868:'LEFTQUEUE',
+            2914:'CRAFTABLE_PRODUCTS',2918:'CFH_RESULT_MESSAGE',2925:'USER_FURNITURE_REFRESH',
+            2929:'FURNITURE_FLOOR_UPDATE',2945:'GROUP_FORUM_POST',2950:'CATALOG_APPROVE_NAME_RESULT',
+            2952:'USER_FAVORITE_ROOM',2953:'COMPETITION_SECONDS_UNTIL',2986:'USER_PERKS',
+            3004:'COMMUNITY_GOAL_VOTE_EVENT',3019:'UNIT_IDLE',3031:'CAMPAIGN_CALENDAR_DOOR_OPENED',
+            3050:'GUILD_MEMBER_MGMT_FAILED',3058:'ROOM_AD_ERROR',3064:'FAVORITE_GROUP_UDPATE',
+            3067:'UNIT_HAND_ITEM',3071:'INIT_CAMERA',3074:'POLL_OFFER',
+            3081:'USER_CREDITS',3084:'BOT_SKILL_LIST_UPDATE',3085:'POLL_CONTENTS',
+            3099:'PET_SCRATCH_FAILED',3111:'UNIT',3115:'WEEKLY_COMPETITIVE_LEADERBOARD',
+            3123:'PET_EXPERIENCE',3163:'ROOM_INFO',3164:'MARKETPLACE_ITEM_STATS',
+            3171:'ISSUE_PICK_FAILED',3173:'GUIDE_REPORTING_STATUS',3186:'GROUP_INFO',
+            3194:'COMPETITION_TIMING_CODE',3200:'CFH_TOPICS',3203:'ROOM_GET_FILTER_WORDS',
+            3211:'MESSENGER_INSTANCE_MESSAGE_ERROR',3214:'CFH_CHATLOG',3221:'GROUP_MEMBERS',
+            3224:'UNIT_DANCE',3250:'GAMEINVITE',3259:'GROUP_BADGES',
+            3260:'AUTHENTICATED',3267:'SHOW_ENFORCE_ROOM_CATEGORY',3269:'QUEST',
+            3296:'MODERATION_CAUTION',3300:'AVATAR_EFFECT_SELECTED',3301:'CATALOG_EARLIEST_EXPIRY',
+            3304:'GUEST_ROOM_SEARCH_RESULT',3312:'USER_CLASSIFICATION',3325:'CAN_CREATE_ROOM_EVENT',
+            3350:'TRADE_OPEN',3356:'USER_CLOTHING',3366:'PET_RESPECTED',
+            3371:'ROOM_BAN_REMOVE',3378:'CLUB_EXTENDED_OFFER',3386:'FURNITURE_STATE_2',
+            3390:'ROOM_SETTINGS_SAVE_ERROR',3397:'YOUTUBE_CONTROL_VIDEO',3398:'PET_GO_TO_BREEDING_NEST_FAILURE',
+            3400:'GUIDE_SESSION_MESSAGE',3408:'NAVIGATOR_SEARCH',3417:'GET_QUESTS',
+            3425:'MARKETPLACE_AFTER_ORDER_STATUS',3447:'MODERATOR_TOOL_PREFERENCES',3454:'LIMITED_OFFER_APPEARING_NEXT',
+            3468:'PURCHASE_TARGETED_OFFER',3497:'FURNITURE_GROUP_CONTEXT_MENU_INFO',
+            3498:'CFH_SANCTION',3515:'ROOM_FORWARD',3523:'HOTEL_CLOSES_AND_OPENS_AT',
+            3531:'JOINEDQUEUEMESSAGE',3548:'BUILDERS_CLUB_FURNI_COUNT',3555:'EXTENDED_PROFILE_CHANGED',
+            3599:'GAME_CENTER_ACHIEVEMENTS',3604:'UNIT_STATUS',3617:'CHAT_REVIEW_SESSION_DETACHED',
+            3619:'EMAIL_STATUS',3634:'USER_PROFILE_BY_NAME_RESULT',3654:'MESSENGER_INVITE_ERROR',
+            3662:'UNIT_TYPING',3668:'MODTOOL_USER_CHATLOG',3681:'RECYCLER_FINISHED',
+            3694:'MESSENGER_SEARCH',3705:'ROOM_SETTINGS_ERROR',3729:'WIRED_ACTION',
+            3736:'USER_FURNITURE_ADD',3754:'CRAFTING_RECIPE',3756:'CHECK_USER_NAME',
+            3763:'PLAYING_GAME',3772:'PET_CONFIRM_BREEDING_REQUEST',3780:'GUIDE_SESSION_DETACHED',
+            3804:'PHONE_TRY_NUMBER_RESULT',3806:'ROOM_AD_PURCHASE',3832:'GROUP_MEMBERSHIP_REQUESTED',
+            3852:'WIRED_ERROR',3856:'GAME_CENTER_STATUS',3865:'USER_EFFECT_LIST_ADD',
+            3881:'USER_IGNORED',3885:'GROUP_HABBO_JOIN_FAILED',3893:'FURNITURE_FLOOR',
+            3895:'USER_IGNORED_RESULT',3902:'CAMERA_PURCHASE_OK',3905:'CFH_PENDING_CALLS',
+            3909:'PROMO_ARTICLES',3912:'YOUTUBE_DISPLAY_VIDEO',3917:'USER_PETS',
+            3936:'BADGE_POINT_LIMITS',3942:'GROUP_DETAILS_CHANGED',3946:'PRODUCT_OFFER',
+            3972:'ACTIVITY_POINT_NOTIFICATION',3980:'RECYCLER_PRIZES',3981:'MESSENGER_ACCEPT_FRIENDS',
+            3990:'TRAX_SONG_INFO',4000:'DISCONNECT_REASON',5100:'NOTIFICATION_SIMPLE_ALERT',
+            6003:'FURNITURE_OPACITY_DATA',6004:'WIRED_ADDON',6005:'UNIT_CHAT_REACTION',
+            6006:'WIRED_MOVEMENTS',6007:'AREA_HIDE',6008:'WIRED_SELECTORS',
+            6009:'HANDITEM_CONFIGURATION',20002:'USER_BACKGROUND_CURRENT'
+        },
+        nome(id, dir) {
+            if (id == null) return null;
+            const m = dir === 'SEND' ? this.OUT : this.IN;
+            return m[id] || null;
+        },
+        rotulo(id, dir) {
+            const n = this.nome(id, dir);
+            return n ? `${dir === 'SEND' ? 'OUT' : 'IN'}.${n}` : `${dir === 'SEND' ? 'OUT' : 'IN'}.${id}`;
+        }
+    };
 
     // ─── Cleanup global ───
     const cleanup = [];
@@ -95,9 +400,7 @@
             if (AppState.blIds.has(packet.header)) return true;
             const cleanPacketHex = packet.fullHex.replace(/\s/g, '').toUpperCase();
             for (const rule of AppState.blPayloads) {
-                if (cleanPacketHex.includes(rule.replace(/\s/g, '').toUpperCase()) || packet.ascii.includes(rule)) {
-                    return true;
-                }
+                if (cleanPacketHex.includes(rule.replace(/\s/g, '').toUpperCase()) || packet.ascii.includes(rule)) return true;
             }
             return false;
         },
@@ -105,9 +408,7 @@
             if (AppState.dropIds.has(packet.header)) return true;
             const cleanPacketHex = packet.fullHex.replace(/\s/g, '').toUpperCase();
             for (const rule of AppState.dropPayloads) {
-                if (cleanPacketHex.includes(rule.replace(/\s/g, '').toUpperCase()) || packet.ascii.includes(rule)) {
-                    return true;
-                }
+                if (cleanPacketHex.includes(rule.replace(/\s/g, '').toUpperCase()) || packet.ascii.includes(rule)) return true;
             }
             return false;
         },
@@ -131,9 +432,7 @@
     const InboundTransformer = { rules: {}, transform(data) { return data; } };
 
     // ═══════════════════════════════════════════════════════════════
-    // SANG AI SERVICE
-    // Todas as chamadas usam modelo SangMax (gpt-oss-120b) explicitamente.
-    // Parse de JSON robusto com fallback regex. Timeouts generosos.
+    // SANG AI SERVICE — prompts orientados a pesquisa de exploit
     // ═══════════════════════════════════════════════════════════════
     const SangAI = {
         _busy: false,
@@ -160,11 +459,9 @@
 
         async _chamar(systemPrompt, userContent, opts = {}) {
             if (!this.disponivel()) throw new Error('Sang AI não configurada. Abra o módulo Sang AI e cole sua chave.');
-
             const ctrl = new AbortController();
-            const timeoutMs = opts.timeout || 20000;
+            const timeoutMs = opts.timeout || 25000;
             const timer = setTimeout(() => ctrl.abort(), timeoutMs);
-
             try {
                 const resposta = await window._apis.groq({
                     mensagens: [
@@ -172,157 +469,160 @@
                         { role: 'user', content: userContent }
                     ],
                     modelo: MODELO_SANGMAX,
-                    maxTokens: opts.maxTokens || 600,
-                    temperature: opts.temperature ?? 0.3
+                    maxTokens: opts.maxTokens || 800,
+                    temperature: opts.temperature ?? 0.4
                 }, { signal: ctrl.signal, forceRefresh: true });
-
-                if (!resposta || !String(resposta).trim()) {
-                    throw new Error('Sang AI respondeu vazio. Tente de novo.');
-                }
+                if (!resposta || !String(resposta).trim()) throw new Error('Sang AI respondeu vazio. Tente de novo.');
                 return this._limpar(resposta);
             } catch (e) {
-                if (e.name === 'AbortError') throw new Error('Timeout — resposta demorou mais de ' + Math.round(timeoutMs/1000) + 's.');
+                if (e.name === 'AbortError') throw new Error('Timeout — demorou mais de ' + Math.round(timeoutMs/1000) + 's.');
                 if (e.codigo === 'cota-local') throw new Error('Limite local do Groq atingido. Aguarde 1 minuto.');
                 if (e.codigo === 'sem-chave') throw new Error('Chave do Groq não configurada.');
                 if (e.message && e.message.includes('429')) throw new Error('Rate limit da Groq. Aguarde alguns segundos.');
                 throw e;
-            } finally {
-                clearTimeout(timer);
-            }
+            } finally { clearTimeout(timer); }
         },
 
-        // ─── Análise de pacote individual ───
+        _contextoBase() {
+            return (
+                'Você é Sang AI, pesquisadora de segurança de protocolo numa sessão de jogo online ' +
+                'estilo Habbo Hotel (cliente Habblive/Habblet). Você está analisando o tráfego WebSocket ' +
+                'do próprio usuário — sessão legítima dele.\n\n' +
+                'CONTEXTO TÉCNICO DO PROTOCOLO:\n' +
+                'Formato do pacote: 4 bytes big-endian com tamanho total, 2 bytes big-endian com ID do ' +
+                'pacote, depois o payload (restante). Sem criptografia.\n\n' +
+                'VOCABULÁRIO (ID → nome semântico):\n' +
+                '  OUT.xxx = cliente envia pro servidor\n' +
+                '  IN.xxx  = servidor responde\n' +
+                'IDs com potencial de exploit: UNIT_WALK, UNIT_DANCE, UNIT_CHAT, TRADE_*, FURNITURE_PLACE, ' +
+                'FURNITURE_PICKUP, FURNITURE_PICKUP_ALL, ROOM_RIGHTS_*, ROOM_MODEL_SAVE, CATALOG_PURCHASE, ' +
+                'MARKETPLACE_*, WIRED_*, ROOM_ENTER, ROOM_CREATE, GROUP_*, DELETE_ITEM.\n\n' +
+                'MISSÃO:\n' +
+                'Ajudar o usuário a entender os pacotes e identificar oportunidades de manipulação: ' +
+                'campos sem validação server-side, ações em que o servidor confia no cliente, ordens ' +
+                'de pacote reordenáveis, IDs enviáveis fora de contexto, estados inconsistentes que ' +
+                'geram dupe/glitch. Pense como pesquisador de bug bounty.\n\n' +
+                'REGRAS:\n' +
+                '- Português brasileiro, direto, específica.\n' +
+                '- Sem introdução, sem "claro", sem "vamos lá".\n' +
+                '- Nunca invente certeza. Se não souber, diga "provavelmente" ou "possivelmente".\n' +
+                '- Mencione IDs e nomes de pacote concretos.\n' +
+                '- Se detectar ângulo explorável, diga: "teste assim: ...".'
+            );
+        },
+
         async analisarPacote(packet) {
+            const nome = PacketNames.nome(packet.header, 'SEND')
+                      || PacketNames.nome(packet.header, 'RECV')
+                      || '?';
             const payloadHexLimitado = packet.payloadHex.length > 800
                 ? packet.payloadHex.slice(0, 800) + '…'
                 : packet.payloadHex;
 
             return this._chamar(
-                'Você analisa pacotes binários de um jogo online estilo Habbo Hotel. ' +
-                'Formato do protocolo: 4 bytes de tamanho total, 2 bytes de ID do pacote, ' +
-                'depois o payload (restante).\n\n' +
-                'Responda em português brasileiro, direto, sem introdução. Máximo 4 frases. ' +
-                'Siga esta estrutura:\n' +
-                '• O que o pacote provavelmente faz\n' +
-                '• O que os bytes do payload representam\n' +
-                '• Se é normal ou suspeito\n\n' +
-                'Se não souber, use "provavelmente" ou "possivelmente". Nunca invente certeza.',
-                `Pacote a analisar:\n\n` +
-                `ID: ${packet.header}\n` +
-                `Tamanho total: ${packet.byteLength} bytes\n` +
-                `Tamanho do payload: ${packet.payloadLength} bytes\n` +
+                this._contextoBase() +
+                '\n\nESTRUTURA DA RESPOSTA (máx 5 frases):\n' +
+                '1. Propósito provável do pacote\n' +
+                '2. O que cada campo do payload representa\n' +
+                '3. Se é candidato a exploit — e qual ângulo testar',
+                `Analise este pacote:\n\n` +
+                `ID: ${packet.header} (nome conhecido: ${nome})\n` +
+                `Tamanho total: ${packet.byteLength} bytes | payload: ${packet.payloadLength} bytes\n` +
                 `Hex do payload: ${payloadHexLimitado}\n` +
-                `ASCII do payload: ${packet.ascii || '(binário, sem texto legível)'}`,
-                { maxTokens: 400, temperature: 0.3 }
+                `ASCII: ${packet.ascii || '(binário)'}`,
+                { maxTokens: 500 }
             );
         },
 
-        // ─── Análise de sequência ───
         async analisarSequencia(packets) {
             if (!packets.length) throw new Error('Sem pacotes capturados ainda.');
-
-            const lista = packets.slice(0, 20).map((p, i) =>
-                `${i + 1}. [${p.dir}] ID ${p.header} | ${p.byteLength}b | payload: ${p.payloadHex.slice(0, 100) || '(vazio)'}`
-            ).join('\n');
+            const lista = packets.slice(0, 20).map((p, i) => {
+                const nome = PacketNames.rotulo(p.header, p.dir);
+                return `${i + 1}. [${p.dir}] ${nome} | ${p.byteLength}b | ${p.payloadHex.slice(0, 100) || '(vazio)'}`;
+            }).join('\n');
 
             return this._chamar(
-                'Você analisa sequências de pacotes binários de um jogo online estilo Habbo Hotel. ' +
-                'Responda em português brasileiro, direto. Máximo 5 frases. ' +
-                'Conte a "história" do que está acontecendo: quem está pedindo o quê ao servidor. ' +
-                'Mencione IDs específicos quando fizer sentido. Sem introdução, sem bullet points.',
-                `Sequência de ${packets.length} pacotes capturados:\n\n${lista}`,
-                { maxTokens: 600 }
+                this._contextoBase() +
+                '\n\nTAREFA: analisar uma SEQUÊNCIA. Conte a história do fluxo entre cliente e servidor. ' +
+                'Se houver padrão suspeito (repetição, reordenação, IDs fora de contexto, resposta ausente ' +
+                'a um request esperado), aponte. Máximo 6 frases.',
+                `Sequência de ${packets.length} pacotes:\n\n${lista}`,
+                { maxTokens: 700 }
             );
         },
 
-        // ─── Filtro em linguagem natural ───
         async criarFiltroLinguagemNatural(descricao, amostras) {
             const amostrasTxt = amostras.length
-                ? amostras.slice(0, 15).map(p =>
-                    `ID ${p.header} (${p.byteLength}b) — ASCII: "${p.ascii.slice(0, 50) || '(binário)'}"`
+                ? amostras.slice(0, 20).map(p =>
+                    `ID ${p.header} (${PacketNames.rotulo(p.header, p.dir === 'SEND' ? 'SEND' : 'RECV')}) | ${p.byteLength}b | ASCII: "${p.ascii.slice(0, 40) || '(binário)'}"`
                   ).join('\n')
-                : '(nenhuma amostra capturada ainda)';
+                : '(nenhuma amostra ainda)';
 
             const resp = await this._chamar(
-                'Você converte pedidos em português em regras de filtro para um analisador de pacotes binários de jogo.\n\n' +
-                'Responda SOMENTE com JSON válido, nada mais. Sem markdown, sem crases, sem texto antes ou depois.\n\n' +
+                'Você converte pedidos em português em regras de filtro para um analisador de pacotes.\n' +
+                'Responda SOMENTE com JSON válido, sem markdown.\n\n' +
                 'Formato EXATO:\n' +
                 '{"ids":[123,456],"strings":["ABC"],"motivo":"explicação curta"}\n\n' +
-                'Regras dos campos:\n' +
-                '- "ids": array de inteiros. Ex: [4521, 1080]. Vazio [] se não aplicável.\n' +
-                '- "strings": array de strings hex/ascii. Ex: ["48 65 6C", "chat"]. Vazio [] se não aplicável.\n' +
-                '- "motivo": frase curta explicando por que essa regra filtra o pedido.\n\n' +
-                'Se o pedido for vago, use as amostras pra inferir IDs e strings concretos.',
-                `Pedido: "${descricao}"\n\nAmostras recentes:\n${amostrasTxt}`,
+                '- "ids": array de inteiros. Vazio se não aplicável.\n' +
+                '- "strings": array de strings hex/ascii. Vazio se não aplicável.\n' +
+                '- "motivo": frase curta.\n\n' +
+                'Amostras recentes:\n' + amostrasTxt,
+                `Pedido: "${descricao}"`,
                 { maxTokens: 400, temperature: 0.1 }
             );
 
             const dados = this._parseJson(resp);
             if (!dados) throw new Error('A IA respondeu em formato inválido.');
-
             return {
-                ids: Array.isArray(dados.ids)
-                    ? dados.ids.map(n => Number(n)).filter(n => Number.isFinite(n) && n > 0)
-                    : [],
-                strings: Array.isArray(dados.strings)
-                    ? dados.strings.map(s => String(s).trim()).filter(Boolean)
-                    : [],
+                ids: Array.isArray(dados.ids) ? dados.ids.map(n => Number(n)).filter(n => Number.isFinite(n) && n > 0) : [],
+                strings: Array.isArray(dados.strings) ? dados.strings.map(s => String(s).trim()).filter(Boolean) : [],
                 motivo: typeof dados.motivo === 'string' ? dados.motivo : ''
             };
         },
 
-        // ─── Geração de JS ───
         async gerarJs(descricao, contexto) {
             const codigo = await this._chamar(
-                'Você gera código JavaScript puro para uma fila de ações em um analisador de pacotes de jogo online.\n\n' +
-                'O código é executado com eval() dentro de uma função async. Funções disponíveis:\n' +
-                '  window.gameWS.send(ArrayBuffer) — envia um pacote\n' +
-                '  Utils.buildPacket(id, "HEX string") — constrói um ArrayBuffer a partir de ID + payload hex\n' +
-                '  sleep(ms) — pausa assíncrona (retorna Promise)\n\n' +
-                'Regras:\n' +
-                '1. Responda SOMENTE com o código. Sem ```js, sem ```, sem explicação.\n' +
-                '2. Pode usar await, loops, condicionais.\n' +
-                '3. Para enviar: window.gameWS.send(Utils.buildPacket(123, "AA BB"))\n' +
-                '4. Para pausar: await sleep(500)\n' +
-                '5. Se mencionar repetição, use for loop.\n' +
-                '6. Máximo 15 linhas.\n' +
-                '7. Exemplo pra "dançar 3x com pausa 500ms":\n' +
-                '   for (let i = 0; i < 3; i++) { window.gameWS.send(Utils.buildPacket(2000, "")); await sleep(500); }',
+                this._contextoBase() +
+                '\n\nTAREFA: gerar CÓDIGO JAVASCRIPT puro pra fila de ações do Sender.\n\n' +
+                'AMBIENTE (novo Function com esses args):\n' +
+                '  window.gameWS.send(ArrayBuffer) — envia pacote\n' +
+                '  Utils.buildPacket(id, "HEX string") — monta ArrayBuffer\n' +
+                '  sleep(ms) — aguarda\n' +
+                '  Pode usar await.\n\n' +
+                'REGRAS:\n' +
+                '1. Responda SOMENTE com o código. Sem ```js, sem ```.\n' +
+                '2. Máximo 15 linhas.\n' +
+                '3. Use IDs conhecidos quando fizer sentido: UNIT_DANCE=2865, UNIT_WALK=2450, ' +
+                'UNIT_CHAT=1678, TRADE_CONFIRM=351, FURNITURE_PLACE=2761, FURNITURE_PICKUP=1360, ' +
+                'ROOM_ENTER=2031, ROOM_MODEL_SAVE=395, ROOM_RIGHTS_GIVE=1003, CATALOG_PURCHASE=3655.\n' +
+                '4. Exemplo "dançar 3x com pausa 500ms":\n' +
+                '   for (let i = 0; i < 3; i++) { window.gameWS.send(Utils.buildPacket(2865, "")); await sleep(500); }\n' +
+                '5. Nunca inclua try/catch.',
                 `Pedido: "${descricao}"\nContexto: ${contexto || 'nenhum'}`,
                 { maxTokens: 500, temperature: 0.1 }
             );
             return codigo.replace(/```js|```javascript|```/g, '').trim();
         },
 
-        // ─── Chat livre ───
         async chatLivre(mensagem, contextoPacotes) {
-            const totalDicionario = Object.keys(AppState.dicionario).length;
-
-            const contexto = contextoPacotes && contextoPacotes.length
-                ? `\n\n--- Contexto do analisador ---\n` +
-                  `Pacotes no log agora: ${contextoPacotes.length}\n` +
-                  `IDs únicos no dicionário: ${totalDicionario}\n\n` +
-                  `Últimos pacotes capturados:\n` +
-                  contextoPacotes.slice(0, 10).map(p =>
-                      `[${p.dir}] ID ${p.header} | ${p.byteLength}b | ${p.payloadHex.slice(0, 80) || '(vazio)'}`
-                  ).join('\n')
-                : `\n\n--- Contexto do analisador ---\n(sem pacotes capturados no momento)`;
+            const totalDict = Object.keys(AppState.dicionario).length;
+            let ctx = '\n\n--- Estado atual ---\n';
+            if (contextoPacotes && contextoPacotes.length) {
+                ctx += `Pacotes no log: ${contextoPacotes.length}\n`;
+                ctx += `IDs únicos no dicionário: ${totalDict}\n\n`;
+                ctx += `Últimos pacotes:\n`;
+                ctx += contextoPacotes.slice(0, 12).map(p => {
+                    const nome = PacketNames.rotulo(p.header, p.dir);
+                    return `[${p.dir}] ${nome} | ${p.byteLength}b | ${p.payloadHex.slice(0, 80) || '(vazio)'}`;
+                }).join('\n');
+            } else {
+                ctx += '(sem pacotes capturados no momento)\n';
+            }
 
             return this._chamar(
-                'Você é Sang AI, assistente técnica embutida num analisador de pacotes de rede de ' +
-                'jogo online estilo Habbo Hotel.\n\n' +
-                'Você entende o protocolo: pacote binário com 4 bytes de tamanho, 2 bytes de ID, ' +
-                'e o resto de payload. Você tem acesso ao contexto dos pacotes capturados.\n\n' +
-                'Responda em português brasileiro, direto e específica. Você pode:\n' +
-                '• Explicar IDs e payloads\n' +
-                '• Sugerir filtros com base no tráfego capturado\n' +
-                '• Identificar padrões anômalos\n' +
-                '• Ajudar a construir sequências\n' +
-                '• Responder dúvidas sobre o protocolo Habbo\n\n' +
-                'Se não souber algo, diga "não sei com certeza, mas…" e dê a melhor hipótese. ' +
-                'Nunca invente detalhes específicos. Seja concisa.',
-                mensagem + contexto,
-                { maxTokens: 800 }
+                this._contextoBase() + ctx,
+                mensagem,
+                { maxTokens: 900 }
             );
         }
     };
@@ -400,7 +700,6 @@
         on(grip, 'mouseenter', () => { grip.style.opacity = '1'; });
         on(grip, 'mouseleave', () => { grip.style.opacity = '0.4'; });
         targetEl.appendChild(grip);
-
         let resizing = false, startX, startY, startW, startH;
         on(grip, 'mousedown', (e) => {
             e.preventDefault(); e.stopPropagation();
@@ -453,31 +752,26 @@
             fontFamily: 'monospace', fontSize: '12px', userSelect: 'none',
             backdropFilter: 'blur(8px)'
         });
-
         const btnBase = {
             background: '#13131a', color: '#e1e1e6', border: '1px solid #1a1a2e',
             cursor: 'pointer', padding: '5px 12px', fontSize: '11px',
             fontFamily: 'monospace', borderRadius: '6px', transition: 'all 0.15s ease',
             whiteSpace: 'nowrap', outline: 'none'
         };
-
         const btnAnalyzer = document.createElement('button');
         btnAnalyzer.textContent = '\uD83D\uDD0D Analyzer';
         btnAnalyzer.title = 'Atalho: Ctrl+Alt+A';
         Object.assign(btnAnalyzer.style, btnBase);
-
         const btnSender = document.createElement('button');
         btnSender.textContent = '\u26A1 Sender';
         btnSender.title = 'Atalho: Ctrl+Alt+S';
         Object.assign(btnSender.style, btnBase);
-
         const btnEye = document.createElement('button');
         btnEye.textContent = '\uD83D\uDC41\uFE0F';
         Object.assign(btnEye.style, btnBase, { padding: '5px 10px', fontSize: '13px' });
         btnEye.title = 'Mostrar/Ocultar tudo (Ctrl+Alt+Q)';
 
         let analyzerVisible = false, senderVisible = false;
-
         function highlight(btn, on_) {
             if (on_) {
                 btn.style.background = 'linear-gradient(135deg, #6c63ff, #a855f7)';
@@ -504,11 +798,7 @@
         on(btnAnalyzer, 'click', toggleAnalyzer);
         on(btnSender, 'click', toggleSender);
         on(btnEye, 'click', toggleBoth);
-
-        el.appendChild(btnAnalyzer);
-        el.appendChild(btnSender);
-        el.appendChild(btnEye);
-
+        el.appendChild(btnAnalyzer); el.appendChild(btnSender); el.appendChild(btnEye);
         makeDraggable(el, el, 'toolbar');
 
         on(document, 'keydown', (e) => {
@@ -526,14 +816,14 @@
     const SenderRef = { fill: null };
 
     // ═══════════════════════════════════════════════════════════════
-    // ANALYZER UI (tabs: LOG | FILTROS | IA)
+    // ANALYZER UI
     // ═══════════════════════════════════════════════════════════════
     const AnalyzerUI = (function() {
         const el = document.createElement('div');
         el.id = 'hl-analyzer';
         Object.assign(el.style, {
             position: 'fixed', top: '50px', left: '10px',
-            width: '720px', height: '640px',
+            width: '740px', height: '660px',
             maxHeight: 'calc(100vh - 70px)',
             background: '#0f0f16', color: '#e1e1e6',
             border: '1px solid #1e1e2e', zIndex: '99998',
@@ -570,7 +860,6 @@
                 <button class="az-tab" data-tab="ia" style="background:transparent;color:#8a8a9a;border:none;cursor:pointer;padding:10px 16px;font-size:11px;font-family:monospace;letter-spacing:0.05em;position:relative;transition:color 0.15s;outline:none;">✨ SANG AI</button>
             </div>
 
-            <!-- LOG -->
             <div id="paneLog" style="display:flex;flex-direction:column;flex:1;overflow:hidden;min-height:0;">
                 <div style="padding:8px 12px;display:flex;gap:12px;align-items:center;background:#0a0a12;border-bottom:1px solid #1e1e2e;">
                     <label style="display:flex;align-items:center;gap:5px;cursor:pointer;font-size:11px;color:#00d4aa;font-weight:600;">
@@ -580,7 +869,7 @@
                         <input type="checkbox" id="chkRecv" checked style="accent-color:#6c63ff;cursor:pointer;"> RECEBIDOS
                     </label>
                     <div style="flex:1;min-width:0;">
-                        <input id="logSearch" type="text" placeholder="🔍 Filtrar por ID, hex, texto…"
+                        <input id="logSearch" type="text" placeholder="🔍 ID, nome do pacote, hex, texto…"
                             style="width:100%;background:#13131a;color:#e1e1e6;border:1px solid #1e1e2e;
                             padding:6px 10px;font-size:11px;border-radius:6px;font-family:monospace;outline:none;box-sizing:border-box;">
                     </div>
@@ -597,22 +886,19 @@
                 <div id="logArea" style="flex:1;overflow-y:auto;padding:10px;min-height:80px;"></div>
             </div>
 
-            <!-- FILTROS -->
             <div id="paneFiltros" style="display:none;flex-direction:column;flex:1;overflow:hidden;min-height:0;padding:14px;gap:14px;">
                 <div style="display:flex;gap:14px;flex:1;min-height:0;">
                     <div style="flex:1;display:flex;flex-direction:column;min-width:0;background:#13131a;border:1px solid #1e1e2e;border-radius:8px;padding:12px;">
                         <div style="color:#6c63ff;font-weight:bold;margin-bottom:10px;font-size:11px;letter-spacing:0.05em;display:flex;align-items:center;gap:6px;">
                             <span style="width:6px;height:6px;border-radius:50%;background:#6c63ff;"></span> OCULTAR DO LOG
                         </div>
-                        <div style="font-size:10px;color:#6a6a7a;margin-bottom:8px;line-height:1.5;">
-                            Some da visualização — o pacote ainda trafega.
-                        </div>
+                        <div style="font-size:10px;color:#6a6a7a;margin-bottom:8px;line-height:1.5;">Some da visualização — o pacote ainda trafega.</div>
                         <div style="display:flex;gap:4px;margin-bottom:6px;">
                             <input id="vId" type="number" placeholder="ID" style="width:70px;background:#0a0a12;color:#e1e1e6;border:1px solid #1e1e2e;padding:6px 8px;font-size:11px;border-radius:5px;outline:none;box-sizing:border-box;font-family:monospace;">
                             <button id="btnAddVId" style="background:#13131a;color:#6c63ff;border:1px solid #6c63ff;cursor:pointer;padding:6px 12px;border-radius:5px;font-size:11px;font-weight:bold;">+</button>
                         </div>
                         <div style="display:flex;gap:4px;margin-bottom:8px;">
-                            <input id="vStr" type="text" placeholder="HEX ou texto no payload" style="flex:1;background:#0a0a12;color:#e1e1e6;border:1px solid #1e1e2e;padding:6px 8px;font-size:11px;border-radius:5px;outline:none;min-width:0;box-sizing:border-box;font-family:monospace;">
+                            <input id="vStr" type="text" placeholder="HEX ou texto" style="flex:1;background:#0a0a12;color:#e1e1e6;border:1px solid #1e1e2e;padding:6px 8px;font-size:11px;border-radius:5px;outline:none;min-width:0;box-sizing:border-box;font-family:monospace;">
                             <button id="btnAddVStr" style="background:#13131a;color:#6c63ff;border:1px solid #6c63ff;cursor:pointer;padding:6px 12px;border-radius:5px;font-size:11px;font-weight:bold;">+</button>
                         </div>
                         <div id="listV" style="flex:1;overflow-y:auto;margin-bottom:8px;font-size:10px;"></div>
@@ -622,15 +908,13 @@
                         <div style="color:#ef4444;font-weight:bold;margin-bottom:10px;font-size:11px;letter-spacing:0.05em;display:flex;align-items:center;gap:6px;">
                             <span style="width:6px;height:6px;border-radius:50%;background:#ef4444;"></span> BLOQUEAR ENVIO
                         </div>
-                        <div style="font-size:10px;color:#6a6a7a;margin-bottom:8px;line-height:1.5;">
-                            Impede o pacote de sair — o servidor nunca recebe.
-                        </div>
+                        <div style="font-size:10px;color:#6a6a7a;margin-bottom:8px;line-height:1.5;">Impede o pacote de sair — o servidor nunca recebe.</div>
                         <div style="display:flex;gap:4px;margin-bottom:6px;">
                             <input id="dId" type="number" placeholder="ID" style="width:70px;background:#0a0a12;color:#e1e1e6;border:1px solid #1e1e2e;padding:6px 8px;font-size:11px;border-radius:5px;outline:none;box-sizing:border-box;font-family:monospace;">
                             <button id="btnAddDId" style="background:#13131a;color:#ef4444;border:1px solid #ef4444;cursor:pointer;padding:6px 12px;border-radius:5px;font-size:11px;font-weight:bold;">+</button>
                         </div>
                         <div style="display:flex;gap:4px;margin-bottom:8px;">
-                            <input id="dStr" type="text" placeholder="HEX ou texto no payload" style="flex:1;background:#0a0a12;color:#e1e1e6;border:1px solid #1e1e2e;padding:6px 8px;font-size:11px;border-radius:5px;outline:none;min-width:0;box-sizing:border-box;font-family:monospace;">
+                            <input id="dStr" type="text" placeholder="HEX ou texto" style="flex:1;background:#0a0a12;color:#e1e1e6;border:1px solid #1e1e2e;padding:6px 8px;font-size:11px;border-radius:5px;outline:none;min-width:0;box-sizing:border-box;font-family:monospace;">
                             <button id="btnAddDStr" style="background:#13131a;color:#ef4444;border:1px solid #ef4444;cursor:pointer;padding:6px 12px;border-radius:5px;font-size:11px;font-weight:bold;">+</button>
                         </div>
                         <div id="listD" style="flex:1;overflow-y:auto;margin-bottom:8px;font-size:10px;"></div>
@@ -644,7 +928,7 @@
                         ✨ FILTRO EM LINGUAGEM NATURAL
                     </div>
                     <div style="display:flex;gap:6px;">
-                        <input id="nlFiltro" type="text" placeholder="Ex: esconde pacotes de movimento, bloqueia chat…"
+                        <input id="nlFiltro" type="text" placeholder="Ex: esconde pacotes de movimento, oculta chats próximos…"
                             style="flex:1;background:#0a0a12;color:#e1e1e6;border:1px solid rgba(168,85,247,0.3);
                             padding:8px 10px;font-size:11px;border-radius:6px;outline:none;
                             font-family:monospace;box-sizing:border-box;min-width:0;">
@@ -657,13 +941,12 @@
                 </div>
             </div>
 
-            <!-- IA -->
             <div id="paneIA" style="display:none;flex-direction:column;flex:1;overflow:hidden;min-height:0;">
                 <div id="iaChat" style="flex:1;overflow-y:auto;padding:14px;display:flex;flex-direction:column;gap:10px;min-height:0;"></div>
                 <div style="padding:8px 12px;background:#0a0a12;border-top:1px solid #1e1e2e;display:flex;gap:6px;flex-wrap:wrap;">
-                    <button class="ia-quick" data-q="seq10" style="background:#13131a;color:#c4b5fd;border:1px solid rgba(168,85,247,0.3);cursor:pointer;padding:5px 10px;border-radius:5px;font-size:10px;font-family:monospace;">Últimos 10 pacotes</button>
-                    <button class="ia-quick" data-q="filtros" style="background:#13131a;color:#c4b5fd;border:1px solid rgba(168,85,247,0.3);cursor:pointer;padding:5px 10px;border-radius:5px;font-size:10px;font-family:monospace;">Sugerir filtros</button>
-                    <button class="ia-quick" data-q="anomalias" style="background:#13131a;color:#c4b5fd;border:1px solid rgba(168,85,247,0.3);cursor:pointer;padding:5px 10px;border-radius:5px;font-size:10px;font-family:monospace;">Detectar anomalias</button>
+                    <button class="ia-quick" data-q="seq10" style="background:#13131a;color:#c4b5fd;border:1px solid rgba(168,85,247,0.3);cursor:pointer;padding:5px 10px;border-radius:5px;font-size:10px;font-family:monospace;">Últimos 10</button>
+                    <button class="ia-quick" data-q="exploit" style="background:#13131a;color:#ffb3b3;border:1px solid rgba(239,68,68,0.35);cursor:pointer;padding:5px 10px;border-radius:5px;font-size:10px;font-family:monospace;">Candidatos a exploit</button>
+                    <button class="ia-quick" data-q="anomalias" style="background:#13131a;color:#c4b5fd;border:1px solid rgba(168,85,247,0.3);cursor:pointer;padding:5px 10px;border-radius:5px;font-size:10px;font-family:monospace;">Anomalias</button>
                     <button class="ia-quick" data-q="resumo" style="background:#13131a;color:#c4b5fd;border:1px solid rgba(168,85,247,0.3);cursor:pointer;padding:5px 10px;border-radius:5px;font-size:10px;font-family:monospace;">Resumir tráfego</button>
                 </div>
                 <div style="padding:10px 12px;background:#0a0a12;border-top:1px solid #1e1e2e;display:flex;gap:6px;align-items:flex-end;">
@@ -681,7 +964,7 @@
         `;
 
         makeDraggable(el.querySelector('.drag-header'), el, 'analyzer');
-        makeResizable(el, { minW: 520, minH: 420, maxW: 1300, maxH: 1000, storageKey: 'analyzer' });
+        makeResizable(el, { minW: 540, minH: 440, maxW: 1300, maxH: 1000, storageKey: 'analyzer' });
 
         const closeBtn = createCloseButton(() => Toolbar.setAnalyzerVisible(false));
         el.querySelector('#analyzerHeaderBtns').appendChild(closeBtn);
@@ -693,7 +976,7 @@
         const chkSend = el.querySelector('#chkSend');
         const chkRecv = el.querySelector('#chkRecv');
 
-        // ─── Tabs ───
+        // Tabs
         const tabs = el.querySelectorAll('.az-tab');
         const panes = {
             log: el.querySelector('#paneLog'),
@@ -701,34 +984,21 @@
             ia: el.querySelector('#paneIA')
         };
         const tabUnderlineCss = 'position:absolute;left:0;right:0;bottom:-1px;height:2px;background:linear-gradient(90deg,#a855f7,#6c63ff);border-radius:2px;';
-
         function setActiveTab(name) {
             tabs.forEach(t => {
                 const isActive = t.dataset.tab === name;
-                t.classList.toggle('active', isActive);
                 t.style.color = isActive ? '#e1e1e6' : '#8a8a9a';
-                let underline = t.querySelector('.az-underline');
-                if (isActive && !underline) {
-                    underline = document.createElement('span');
-                    underline.className = 'az-underline';
-                    underline.style.cssText = tabUnderlineCss;
-                    t.appendChild(underline);
-                } else if (!isActive && underline) {
-                    underline.remove();
-                }
+                let u = t.querySelector('.az-underline');
+                if (isActive && !u) { u = document.createElement('span'); u.className = 'az-underline'; u.style.cssText = tabUnderlineCss; t.appendChild(u); }
+                else if (!isActive && u) u.remove();
             });
-            Object.keys(panes).forEach(k => {
-                panes[k].style.display = (k === name) ? 'flex' : 'none';
-            });
-            if (name === 'ia' && !panes.ia.dataset.iniciado) {
-                panes.ia.dataset.iniciado = '1';
-                iaInit();
-            }
+            Object.keys(panes).forEach(k => { panes[k].style.display = (k === name) ? 'flex' : 'none'; });
+            if (name === 'ia' && !panes.ia.dataset.iniciado) { panes.ia.dataset.iniciado = '1'; iaInit(); }
         }
         tabs.forEach(t => on(t, 'click', () => setActiveTab(t.dataset.tab)));
         setTimeout(() => setActiveTab('log'), 0);
 
-        // ─── Fonte ───
+        // Fonte
         on(el.querySelector('#btnFontPlus'), 'click', () => {
             AppState.fontSize = Math.min(24, AppState.fontSize + 1);
             logArea.style.fontSize = AppState.fontSize + 'px';
@@ -740,7 +1010,7 @@
             Storage.set('font_size', AppState.fontSize);
         });
 
-        // ─── Kill switch ───
+        // Kill switch
         const btnKill = el.querySelector('#btnKillSwitch');
         on(btnKill, 'click', () => {
             AppState.killSwitchActive = !AppState.killSwitchActive;
@@ -753,7 +1023,7 @@
             }
         });
 
-        // ─── Pause ───
+        // Pause
         const btnPause = el.querySelector('#btnPauseLogs');
         on(btnPause, 'click', () => {
             AppState.isPaused = !AppState.isPaused;
@@ -768,37 +1038,32 @@
             }
         });
 
-        // ─── Clear / Copy ───
         on(el.querySelector('#btnClearLogs'), 'click', () => {
-            logArea.innerHTML = '';
-            AppState.logs = [];
-            logCounter.textContent = '0 logs';
+            logArea.innerHTML = ''; AppState.logs = []; logCounter.textContent = '0 logs';
         });
         on(el.querySelector('#btnCopyAll'), 'click', () => {
             if (AppState.logs.length === 0) return;
-            const allText = AppState.logs.map(l => l.rawText).join('\n\n-----------------\n\n');
-            navigator.clipboard.writeText(allText);
+            navigator.clipboard.writeText(AppState.logs.map(l => l.rawText).join('\n\n-----------------\n\n'));
         });
 
-        // ─── Visibilidade ───
         function refreshVisibility() {
             const q = searchInp.value.toLowerCase();
-            let visibleCount = 0;
+            let v = 0;
             for (const item of AppState.logs) {
                 let visible = true;
                 if (item.dir === 'SEND' && !AppState.showSend) visible = false;
                 if (item.dir === 'RECV' && !AppState.showRecv) visible = false;
                 if (q && !item.searchString.includes(q)) visible = false;
                 item.el.style.display = visible ? 'block' : 'none';
-                if (visible) visibleCount++;
+                if (visible) v++;
             }
-            logCounter.textContent = visibleCount + ' de ' + AppState.logs.length;
+            logCounter.textContent = v + ' de ' + AppState.logs.length;
         }
         on(chkSend, 'change', () => { AppState.showSend = chkSend.checked; refreshVisibility(); });
         on(chkRecv, 'change', () => { AppState.showRecv = chkRecv.checked; refreshVisibility(); });
         on(searchInp, 'input', refreshVisibility);
 
-        // ─── Tags de filtro ───
+        // Tags de filtro
         function createTag(type, act, rawVal, displayVal, cor) {
             const d = document.createElement('div');
             Object.assign(d.style, {
@@ -825,18 +1090,15 @@
             AppState.blPayloads.forEach(s => lv.appendChild(createTag('VISUAL', 'REMOVE_STR', s, 'HEX ' + s, '#6c63ff')));
             AppState.dropIds.forEach(id => ld.appendChild(createTag('DROP', 'REMOVE_ID', id, 'ID ' + id, '#ef4444')));
             AppState.dropPayloads.forEach(s => ld.appendChild(createTag('DROP', 'REMOVE_STR', s, 'HEX ' + s, '#ef4444')));
-
             if (!AppState.blIds.size && !AppState.blPayloads.length) {
-                const empty = document.createElement('div');
-                empty.style.cssText = 'color:#5a5a6a;font-size:10px;text-align:center;padding:14px;font-style:italic;';
-                empty.textContent = 'Nenhum filtro — tudo aparece no log.';
-                lv.appendChild(empty);
+                const e = document.createElement('div');
+                e.style.cssText = 'color:#5a5a6a;font-size:10px;text-align:center;padding:14px;font-style:italic;';
+                e.textContent = 'Nenhum filtro — tudo aparece.'; lv.appendChild(e);
             }
             if (!AppState.dropIds.size && !AppState.dropPayloads.length) {
-                const empty = document.createElement('div');
-                empty.style.cssText = 'color:#5a5a6a;font-size:10px;text-align:center;padding:14px;font-style:italic;';
-                empty.textContent = 'Nenhum bloqueio — todo envio passa.';
-                ld.appendChild(empty);
+                const e = document.createElement('div');
+                e.style.cssText = 'color:#5a5a6a;font-size:10px;text-align:center;padding:14px;font-style:italic;';
+                e.textContent = 'Nenhum bloqueio — todo envio passa.'; ld.appendChild(e);
             }
         }
         renderFilters();
@@ -848,38 +1110,28 @@
         on(el.querySelector('#btnAddDStr'), 'click', () => { PacketFilter.manageList('DROP', 'ADD_STR', el.querySelector('#dStr').value); el.querySelector('#dStr').value = ''; renderFilters(); });
         on(el.querySelector('#btnClrD'), 'click', () => { PacketFilter.manageList('DROP', 'CLEAR'); renderFilters(); });
 
-        // ─── Filtro em linguagem natural ───
+        // Filtro NL
         const nlInput = el.querySelector('#nlFiltro');
         const nlBtn = el.querySelector('#btnNlFiltro');
         const nlResult = el.querySelector('#nlFiltroResultado');
-
         async function gerarFiltroNL() {
             const desc = nlInput.value.trim();
             if (!desc) return;
-            if (!SangAI.disponivel()) {
-                nlResult.innerHTML = '<span style="color:#ef4444;">⚠ Sang AI não configurada. Abra o módulo Sang AI e cole sua chave.</span>';
-                return;
-            }
+            if (!SangAI.disponivel()) { nlResult.innerHTML = '<span style="color:#ef4444;">⚠ Sang AI não configurada.</span>'; return; }
             if (SangAI._busy) return;
             SangAI._busy = true;
-            nlBtn.disabled = true;
-            nlBtn.textContent = '⏳';
+            nlBtn.disabled = true; nlBtn.textContent = '⏳';
             nlResult.innerHTML = '<span style="color:#8a8a9a;">Consultando SangMax…</span>';
             try {
                 const amostras = AppState.logs.slice(-15).map(l => l.packet);
                 const r = await SangAI.criarFiltroLinguagemNatural(desc, amostras);
-
                 if (!r.ids.length && !r.strings.length) {
-                    nlResult.innerHTML =
-                        '<span style="color:#f5b942;">⚠ A IA não conseguiu extrair filtros concretos do pedido.</span>' +
-                        (r.motivo ? `<br><span style="color:#8a8a9a;">${r.motivo}</span>` : '');
+                    nlResult.innerHTML = '<span style="color:#f5b942;">⚠ Não consegui extrair filtros concretos.</span>' + (r.motivo ? `<br><span style="color:#8a8a9a;">${r.motivo}</span>` : '');
                     return;
                 }
-
                 r.ids.forEach(id => PacketFilter.manageList('VISUAL', 'ADD_ID', String(id)));
                 r.strings.forEach(s => PacketFilter.manageList('VISUAL', 'ADD_STR', s));
                 renderFilters();
-
                 nlResult.innerHTML =
                     `<span style="color:#00d4aa;">✓ Aplicado em OCULTAR DO LOG</span>` +
                     (r.motivo ? `<br><span style="color:#8a8a9a;">${r.motivo}</span>` : '') +
@@ -889,15 +1141,13 @@
             } catch (e) {
                 nlResult.innerHTML = `<span style="color:#ef4444;">Erro: ${e.message || e}</span>`;
             } finally {
-                SangAI._busy = false;
-                nlBtn.disabled = false;
-                nlBtn.textContent = 'GERAR';
+                SangAI._busy = false; nlBtn.disabled = false; nlBtn.textContent = 'GERAR';
             }
         }
         on(nlBtn, 'click', gerarFiltroNL);
         on(nlInput, 'keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); gerarFiltroNL(); } });
 
-        // ─── Chat da IA ───
+        // IA chat
         const iaChat = el.querySelector('#iaChat');
         const iaInput = el.querySelector('#iaInput');
         const iaSendBtn = el.querySelector('#iaSend');
@@ -907,13 +1157,14 @@
             if (iaPronto) return;
             iaPronto = true;
             iaAdd('ia',
-                'Oi! Sou a Sang AI aqui no Analyzer. Posso:\n\n' +
-                '• **Explicar um pacote específico** — clica no 🧠 em qualquer item do log\n' +
-                '• **Analisar os últimos N pacotes** — botão "Últimos 10 pacotes" abaixo\n' +
+                'Sang AI online. Contexto carregado: **dicionário do protocolo Habbo** com ~400 IDs mapeados.\n\n' +
+                'Posso:\n' +
+                '• **Analisar um pacote específico** — clica no 🧠 em qualquer item do log\n' +
+                '• **Analisar os últimos N pacotes** — botão "Últimos 10"\n' +
+                '• **Apontar candidatos a exploit** — botão "Candidatos a exploit"\n' +
                 '• **Sugerir filtros** com base no tráfego\n' +
-                '• **Detectar anomalias** no fluxo\n' +
-                '• **Responder perguntas** sobre IDs, padrões e protocolo\n\n' +
-                'Digite ou use os atalhos abaixo.'
+                '• **Responder perguntas** sobre IDs, campos e padrões do protocolo\n\n' +
+                'Pergunta à vontade.'
             );
             if (!SangAI.disponivel()) {
                 iaAdd('erro', '⚠ Sang AI não configurada. Abra o módulo **Sang AI** e cole sua chave da Groq (console.groq.com/keys).');
@@ -949,7 +1200,6 @@
                 div.style.padding = '6px 12px';
                 div.style.borderRadius = '20px';
             }
-            // Markdown simples
             const html = String(texto)
                 .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
                 .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
@@ -971,12 +1221,8 @@
 
         async function iaEnviar(texto, labelLoading) {
             if (!texto.trim()) return;
-            if (!SangAI.disponivel()) {
-                iaAdd('erro', 'Sang AI não configurada. Cole sua chave da Groq no módulo Sang AI.');
-                return;
-            }
+            if (!SangAI.disponivel()) { iaAdd('erro', 'Sang AI não configurada.'); return; }
             if (SangAI._busy) return;
-
             SangAI._busy = true;
             iaAdd('user', texto);
             iaInput.value = '';
@@ -1007,7 +1253,7 @@
             iaInput.style.height = Math.min(100, iaInput.scrollHeight) + 'px';
         });
 
-        // ─── Quick actions ───
+        // Quick actions
         el.querySelectorAll('.ia-quick').forEach(btn => {
             on(btn, 'click', async () => {
                 const q = btn.dataset.q;
@@ -1030,66 +1276,60 @@
                         SangAI._busy = false;
                         iaSendBtn.disabled = false;
                     }
-                } else if (q === 'filtros') {
-                    iaEnviar('Olhando os últimos pacotes, sugere 2 ou 3 filtros úteis pra reduzir ruído no log. Lista curta, com o motivo de cada um.');
+                } else if (q === 'exploit') {
+                    iaEnviar(
+                        'Olhando os últimos pacotes capturados, quais são candidatos a exploit? ' +
+                        'Procura por: campos que o cliente controla e o servidor não valida, ' +
+                        'IDs que faz sentido reenviar fora de ordem, ações em que a validação pode ' +
+                        'estar no cliente em vez do servidor, sequências onde resposta demora (o que ' +
+                        'indica possível race condition). Lista curta com ângulo de teste concreto ' +
+                        'de cada um.'
+                    );
                 } else if (q === 'anomalias') {
-                    iaEnviar('Olhando os últimos pacotes, tem algo anormal? Pacotes com tamanho incomum, IDs raros, ou sequências estranhas.');
+                    iaEnviar('Olhando os últimos pacotes, tem algo anormal? Tamanho incomum, IDs raros, sequências estranhas, respostas ausentes.');
                 } else if (q === 'resumo') {
-                    iaEnviar('Faz um resumo do que o tráfego capturado está mostrando agora. O que o cliente e o servidor estão trocando.');
+                    iaEnviar('Resumo do tráfego capturado: o que o cliente e o servidor estão trocando.');
                 }
             });
         });
 
-        // ─── Botões em pacotes ───
+        // Botões em pacotes
         function createSendButton(packet) {
             const btn = document.createElement('button');
-            btn.textContent = '↗';
-            btn.title = 'Enviar ID e HEX para o Sender';
+            btn.textContent = '↗'; btn.title = 'Enviar pro Sender';
             Object.assign(btn.style, {
                 background: '#6c63ff', color: '#fff', border: 'none',
                 cursor: 'pointer', padding: '2px 8px', marginLeft: '4px',
-                fontSize: '11px', fontWeight: 'bold', borderRadius: '4px',
-                transition: 'background 0.15s'
+                fontSize: '11px', fontWeight: 'bold', borderRadius: '4px', transition: 'background 0.15s'
             });
             on(btn, 'mouseenter', () => { btn.style.background = '#7d74ff'; });
             on(btn, 'mouseleave', () => { btn.style.background = '#6c63ff'; });
-            on(btn, 'click', (e) => {
-                e.stopPropagation();
-                if (SenderRef.fill) SenderRef.fill(packet.header, packet.payloadHex);
-            });
+            on(btn, 'click', (e) => { e.stopPropagation(); if (SenderRef.fill) SenderRef.fill(packet.header, packet.payloadHex); });
             return btn;
         }
 
         function createAnalyzeButton(packet, container) {
             if (!SangAI.disponivel()) return null;
             const btn = document.createElement('button');
-            btn.textContent = '🧠';
-            btn.title = 'Explicar com Sang AI';
+            btn.textContent = '🧠'; btn.title = 'Explicar com Sang AI';
             Object.assign(btn.style, {
                 background: 'linear-gradient(135deg,#a855f7,#6c63ff)', color: '#fff', border: 'none',
                 cursor: 'pointer', padding: '2px 8px', marginLeft: '4px',
-                fontSize: '11px', fontWeight: 'bold', borderRadius: '4px',
-                transition: 'background 0.15s'
+                fontSize: '11px', fontWeight: 'bold', borderRadius: '4px'
             });
             on(btn, 'click', async (e) => {
                 e.stopPropagation();
                 if (SangAI._busy) return;
                 SangAI._busy = true;
-                const originalText = btn.textContent;
-                btn.textContent = '⏳';
-                btn.disabled = true;
-
+                const original = btn.textContent;
+                btn.textContent = '⏳'; btn.disabled = true;
                 let info = container.querySelector('.ai-info');
                 if (info) info.remove();
                 info = document.createElement('div');
                 info.className = 'ai-info';
-                info.style.cssText =
-                    'margin-top:8px;padding:9px 12px;background:rgba(168,85,247,0.08);' +
-                    'border-left:3px solid #a855f7;border-radius:0 6px 6px 0;' +
-                    'color:#c4b5fd;font-size:0.9em;line-height:1.55;font-style:italic;';
-                info.textContent = 'Sang AI analisando pacote…';
+                info.style.cssText = 'margin-top:8px;padding:9px 12px;background:rgba(168,85,247,0.08);border-left:3px solid #a855f7;border-radius:0 6px 6px 0;color:#c4b5fd;font-size:0.9em;line-height:1.55;font-style:italic;';
+                info.textContent = 'Sang AI analisando…';
                 container.appendChild(info);
-
                 try {
                     const analise = await SangAI.analisarPacote(packet);
                     info.style.fontStyle = 'normal';
@@ -1102,8 +1342,7 @@
                     info.textContent = '⚠ ' + (err.message || err);
                 } finally {
                     SangAI._busy = false;
-                    btn.textContent = originalText;
-                    btn.disabled = false;
+                    btn.textContent = original; btn.disabled = false;
                 }
             });
             return btn;
@@ -1112,16 +1351,14 @@
         const MAX_DISPLAY_BYTES = 100;
         function makeExpandableHex(fullHex, byteLength) {
             if (byteLength <= 10000 || fullHex.length <= MAX_DISPLAY_BYTES * 3) {
-                const hexDiv = document.createElement('div');
-                hexDiv.style.cssText = 'word-break:break-all;color:#b0b0c0;letter-spacing:0.06em;line-height:1.5;font-size:0.95em;';
-                hexDiv.textContent = fullHex;
-                return hexDiv;
+                const d = document.createElement('div');
+                d.style.cssText = 'word-break:break-all;color:#b0b0c0;letter-spacing:0.06em;line-height:1.5;font-size:0.95em;';
+                d.textContent = fullHex; return d;
             }
             const truncated = fullHex.substring(0, MAX_DISPLAY_BYTES * 3);
             const hexDiv = document.createElement('div');
             hexDiv.style.cssText = 'word-break:break-all;color:#b0b0c0;letter-spacing:0.06em;line-height:1.5;font-size:0.95em;';
             hexDiv.textContent = truncated;
-
             const expandBtn = document.createElement('button');
             expandBtn.textContent = `Mostrar tudo (${byteLength} bytes)`;
             Object.assign(expandBtn.style, {
@@ -1129,36 +1366,21 @@
                 cursor: 'pointer', padding: '2px 8px', fontSize: '10px',
                 borderRadius: '4px', fontFamily: 'monospace', marginTop: '4px'
             });
-            on(expandBtn, 'click', () => {
-                hexDiv.textContent = fullHex;
-                expandBtn.remove();
-            });
-
-            const container = document.createElement('div');
-            container.appendChild(hexDiv);
-            container.appendChild(expandBtn);
-            return container;
+            on(expandBtn, 'click', () => { hexDiv.textContent = fullHex; expandBtn.remove(); });
+            const c = document.createElement('div');
+            c.appendChild(hexDiv); c.appendChild(expandBtn); return c;
         }
 
         function atualizarDicionario(packet) {
             const id = packet.header;
             const d = AppState.dicionario[id];
             if (!d) {
-                AppState.dicionario[id] = {
-                    count: 1,
-                    primeiro: Date.now(),
-                    ultimo: Date.now(),
-                    tamanhoMedio: packet.byteLength,
-                    sample: packet.fullHex.slice(0, 200)
-                };
+                AppState.dicionario[id] = { count: 1, primeiro: Date.now(), ultimo: Date.now(), tamanhoMedio: packet.byteLength, sample: packet.fullHex.slice(0, 200) };
             } else {
-                d.count++;
-                d.ultimo = Date.now();
+                d.count++; d.ultimo = Date.now();
                 d.tamanhoMedio = Math.round((d.tamanhoMedio * (d.count - 1) + packet.byteLength) / d.count);
             }
-            if (AppState.globalPacketCount % 50 === 0) {
-                Storage.set('dicionario', AppState.dicionario);
-            }
+            if (AppState.globalPacketCount % 50 === 0) Storage.set('dicionario', AppState.dicionario);
         }
 
         function addLog(packet, dir, isDropped) {
@@ -1168,51 +1390,40 @@
             atualizarDicionario(packet);
 
             let borderColor, idColor, dirLabel;
-            if (isDropped) {
-                borderColor = '#ef4444'; idColor = '#ef4444'; dirLabel = '❌ DROP';
-            } else if (dir === 'SEND') {
-                borderColor = '#00d4aa'; idColor = '#00d4aa'; dirLabel = '➡ SEND';
-            } else {
-                borderColor = '#6c63ff'; idColor = '#6c63ff'; dirLabel = '⬅ RECV';
-            }
+            if (isDropped) { borderColor = '#ef4444'; idColor = '#ef4444'; dirLabel = '❌ DROP'; }
+            else if (dir === 'SEND') { borderColor = '#00d4aa'; idColor = '#00d4aa'; dirLabel = '➡ SEND'; }
+            else { borderColor = '#6c63ff'; idColor = '#6c63ff'; dirLabel = '⬅ RECV'; }
 
-            const rawText = `${time} | Pacote #${id}\n${dirLabel} ID: ${packet.header} | ${packet.byteLength} bytes\n${packet.fullHex}\n${packet.ascii}`;
+            const nomePktRaw = PacketNames.nome(packet.header, dir);
+            const rawText = `${time} | Pacote #${id}\n${dirLabel} ID: ${packet.header}${nomePktRaw ? ' (' + nomePktRaw + ')' : ''} | ${packet.byteLength} bytes\n${packet.fullHex}\n${packet.ascii}`;
 
             const item = document.createElement('div');
             item.style.cssText = `border-left:3px solid ${borderColor};background:#13131a;border-radius:0 6px 6px 0;margin-bottom:8px;padding:9px 11px;animation:iaMsgIn 0.22s ease-out;`;
 
             const top = document.createElement('div');
             top.style.cssText = 'display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:6px;flex-wrap:wrap;';
-
             const left = document.createElement('div');
             left.style.cssText = 'display:flex;align-items:center;gap:6px;font-size:0.85em;color:#8a8a9a;flex-wrap:wrap;';
-
             const numBadge = document.createElement('span');
             numBadge.textContent = '#' + id;
             numBadge.style.cssText = 'background:#1e1e2e;color:#8a8a9a;padding:1px 6px;border-radius:4px;font-size:0.9em;';
             left.appendChild(numBadge);
-
             const timeSpan = document.createElement('span');
             timeSpan.textContent = time;
             left.appendChild(timeSpan);
-
             if (isDropped) {
-                const dropBadge = document.createElement('span');
-                dropBadge.textContent = 'DROPPED';
-                dropBadge.style.cssText = 'background:rgba(239,68,68,0.15);color:#ef4444;padding:1px 6px;border-radius:4px;font-weight:bold;font-size:0.9em;';
-                left.appendChild(dropBadge);
+                const db = document.createElement('span');
+                db.textContent = 'DROPPED';
+                db.style.cssText = 'background:rgba(239,68,68,0.15);color:#ef4444;padding:1px 6px;border-radius:4px;font-weight:bold;font-size:0.9em;';
+                left.appendChild(db);
             }
-
             top.appendChild(left);
 
             const right = document.createElement('div');
             right.style.cssText = 'display:flex;gap:4px;align-items:center;';
-
             if (dir === 'SEND' && !isDropped) right.appendChild(createSendButton(packet));
-
             const copyBtn = document.createElement('button');
-            copyBtn.textContent = '📋';
-            copyBtn.title = 'Copiar pacote';
+            copyBtn.textContent = '📋'; copyBtn.title = 'Copiar';
             Object.assign(copyBtn.style, {
                 background: '#1e1e2e', color: '#8a8a9a', border: '1px solid #1e1e2e',
                 cursor: 'pointer', fontSize: '11px', padding: '2px 8px',
@@ -1222,21 +1433,19 @@
             on(copyBtn, 'mouseleave', () => { copyBtn.style.background = '#1e1e2e'; copyBtn.style.color = '#8a8a9a'; });
             on(copyBtn, 'click', () => { navigator.clipboard.writeText(rawText); });
             right.appendChild(copyBtn);
-
             top.appendChild(right);
             item.appendChild(top);
 
             const idWrap = document.createElement('div');
             idWrap.style.cssText = 'display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;flex-wrap:wrap;gap:6px;';
-
             const idLine = document.createElement('div');
             idLine.style.cssText = `color:${idColor};font-weight:bold;font-size:0.95em;`;
-            idLine.textContent = `${dirLabel} · ID ${packet.header} · ${packet.byteLength} bytes`;
+            idLine.innerHTML = `${dirLabel} · ID ${packet.header}` +
+                (nomePktRaw ? ` <span style="color:#8a8a9a;font-weight:normal;font-size:0.9em;">(${nomePktRaw})</span>` : '') +
+                ` · ${packet.byteLength} bytes`;
             idWrap.appendChild(idLine);
-
             const analyzeBtn = createAnalyzeButton(packet, item);
             if (analyzeBtn) idWrap.appendChild(analyzeBtn);
-
             item.appendChild(idWrap);
 
             const hexWrap = document.createElement('div');
@@ -1249,7 +1458,7 @@
             asciiDiv.textContent = packet.ascii || '(binário)';
             item.appendChild(asciiDiv);
 
-            const searchString = `${packet.header} ${packet.fullHex} ${packet.ascii}`.toLowerCase();
+            const searchString = `${packet.header} ${nomePktRaw || ''} ${packet.fullHex} ${packet.ascii}`.toLowerCase();
             const q = searchInp.value.toLowerCase();
             let visible = true;
             if (dir === 'SEND' && !AppState.showSend) visible = false;
@@ -1264,10 +1473,8 @@
                 const old = AppState.logs.shift();
                 if (old.el.parentNode) old.el.parentNode.removeChild(old.el);
             }
-
-            const isScrolledToBottom = logArea.scrollHeight - logArea.clientHeight <= logArea.scrollTop + 40;
-            if (isScrolledToBottom) logArea.scrollTop = logArea.scrollHeight;
-
+            const isBottom = logArea.scrollHeight - logArea.clientHeight <= logArea.scrollTop + 40;
+            if (isBottom) logArea.scrollTop = logArea.scrollHeight;
             logCounter.textContent = AppState.logs.length + ' logs';
         }
 
@@ -1275,9 +1482,8 @@
             el.style.display = show ? 'flex' : 'none';
             if (show) {
                 const rect = el.getBoundingClientRect();
-                const clamped = clampToViewport(el, rect.left, rect.top);
-                el.style.left = clamped.x + 'px';
-                el.style.top = clamped.y + 'px';
+                const c = clampToViewport(el, rect.left, rect.top);
+                el.style.left = c.x + 'px'; el.style.top = c.y + 'px';
             }
         }
 
@@ -1318,12 +1524,10 @@
                 <div id="senderHeaderBtns"></div>
             </div>
             <div id="sndBody" style="display:flex;flex-direction:column;flex:1;overflow-y:auto;min-height:0;">
-
                 <div style="padding:10px 12px;display:flex;gap:6px;border-bottom:1px solid #1e1e2e;background:#0a0a12;">
                     <select id="selProfile" style="flex:1;background:#13131a;color:#e1e1e6;border:1px solid #1e1e2e;padding:7px 10px;border-radius:6px;font-size:11px;font-family:monospace;outline:none;cursor:pointer;"></select>
                     <button id="btnNewProf" title="Novo perfil" style="background:#1e1e2e;color:#e1e1e6;border:1px solid #1e1e2e;cursor:pointer;padding:7px 12px;border-radius:6px;font-size:11px;font-family:monospace;">+ NOVO</button>
                 </div>
-
                 <div style="padding:10px 12px;background:#0a0a12;display:flex;flex-direction:column;gap:8px;border-bottom:1px solid #1e1e2e;">
                     <div style="display:flex;gap:6px;">
                         <input id="sndId" type="number" placeholder="ID" style="width:70px;background:#13131a;color:#e1e1e6;border:1px solid #1e1e2e;padding:7px 10px;border-radius:6px;font-size:11px;font-family:monospace;outline:none;box-sizing:border-box;">
@@ -1332,8 +1536,8 @@
                     </div>
                     <div style="display:flex;gap:6px;">
                         <input id="sndWaitMs" type="number" placeholder="Pausar (ms)" style="flex:1;background:#13131a;color:#e1e1e6;border:1px solid #1e1e2e;padding:7px 10px;border-radius:6px;font-size:11px;font-family:monospace;outline:none;min-width:0;box-sizing:border-box;">
-                        <button id="btnAddWait" title="Adicionar pausa na fila" style="background:#13131a;color:#e1e1e6;border:1px solid #1e1e2e;cursor:pointer;padding:7px 12px;border-radius:6px;font-size:11px;font-family:monospace;">+ WAIT</button>
-                        <button id="btnAddJs" title="Executar JS no meio da fila" style="background:#13131a;color:#00d4aa;border:1px solid #00d4aa;cursor:pointer;padding:7px 12px;border-radius:6px;font-size:11px;font-family:monospace;">+ JS</button>
+                        <button id="btnAddWait" title="Adicionar pausa" style="background:#13131a;color:#e1e1e6;border:1px solid #1e1e2e;cursor:pointer;padding:7px 12px;border-radius:6px;font-size:11px;font-family:monospace;">+ WAIT</button>
+                        <button id="btnAddJs" title="Adicionar JS manual" style="background:#13131a;color:#00d4aa;border:1px solid #00d4aa;cursor:pointer;padding:7px 12px;border-radius:6px;font-size:11px;font-family:monospace;">+ JS</button>
                     </div>
                     <div style="display:flex;gap:6px;padding-top:6px;border-top:1px dashed rgba(168,85,247,0.2);">
                         <input id="nlJs" type="text" placeholder="✨ Descreva — ex: dançar 3x com pausa 500ms"
@@ -1342,12 +1546,10 @@
                     </div>
                     <div id="nlJsResultado" style="font-size:10px;color:#8a8a9a;line-height:1.5;display:none;background:#0a0a12;border:1px solid #1e1e2e;border-radius:5px;padding:6px 9px;font-family:monospace;white-space:pre-wrap;"></div>
                 </div>
-
                 <div style="padding:10px 12px;background:#0a0a12;border-bottom:1px solid #1e1e2e;">
                     <div style="font-size:10px;color:#8a8a9a;margin-bottom:6px;letter-spacing:0.05em;">FILA DE ENVIO</div>
                     <div id="sndList" style="max-height:220px;overflow-y:auto;border:1px solid #1e1e2e;padding:4px;min-height:70px;background:#13131a;border-radius:6px;"></div>
                 </div>
-
                 <div style="padding:10px 12px;background:#0a0a12;border-bottom:1px solid #1e1e2e;">
                     <div style="color:#6c63ff;font-weight:bold;text-align:center;font-size:11px;margin-bottom:6px;letter-spacing:0.04em;">📥 SIMULAR RECEBIMENTO</div>
                     <div style="display:flex;gap:6px;">
@@ -1356,7 +1558,6 @@
                         <button id="btnFakeRecv" style="background:#6c63ff;color:#fff;border:none;cursor:pointer;padding:7px 12px;border-radius:6px;font-weight:bold;font-size:11px;font-family:monospace;">SIM</button>
                     </div>
                 </div>
-
                 <div style="padding:10px 12px;background:#0a0a12;display:flex;flex-direction:column;gap:8px;">
                     <div style="display:flex;gap:8px;align-items:center;">
                         <label style="flex:1;font-size:11px;color:#8a8a9a;">Delay loop (ms)
@@ -1395,8 +1596,7 @@
             sel.innerHTML = '';
             for (const pid in AppState.profiles) {
                 const opt = document.createElement('option');
-                opt.value = pid;
-                opt.textContent = AppState.profiles[pid].name;
+                opt.value = pid; opt.textContent = AppState.profiles[pid].name;
                 if (pid === AppState.currentProfileId) opt.selected = true;
                 sel.appendChild(opt);
             }
@@ -1407,11 +1607,10 @@
             const list = el.querySelector('#sndList');
             list.innerHTML = '';
             if (prof.packets.length === 0) {
-                const empty = document.createElement('div');
-                empty.style.cssText = 'color:#5a5a6a;font-size:11px;text-align:center;padding:16px;font-style:italic;';
-                empty.textContent = 'Fila vazia — adicione pacotes acima.';
-                list.appendChild(empty);
-                return;
+                const e = document.createElement('div');
+                e.style.cssText = 'color:#5a5a6a;font-size:11px;text-align:center;padding:16px;font-style:italic;';
+                e.textContent = 'Fila vazia — adicione pacotes acima.';
+                list.appendChild(e); return;
             }
             prof.packets.forEach((pkt, index) => {
                 const item = document.createElement('div');
@@ -1420,12 +1619,10 @@
                     background: '#0a0a12', padding: '5px 7px', marginBottom: '3px',
                     border: '1px solid #1e1e2e', borderRadius: '5px', fontSize: '11px'
                 });
-
                 const icon = document.createElement('span');
                 icon.style.cssText = 'width:22px;text-align:center;flex-shrink:0;font-weight:bold;';
                 const content = document.createElement('span');
                 content.style.cssText = 'flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
-
                 if (pkt.isDelay) {
                     icon.textContent = '⏱'; icon.style.color = '#8a8a9a';
                     content.style.color = '#8a8a9a'; content.style.fontStyle = 'italic';
@@ -1436,9 +1633,10 @@
                     const preview = pkt.code.length > 45 ? pkt.code.substring(0, 45) + '…' : pkt.code;
                     content.textContent = `JS: ${preview}`;
                 } else {
+                    const nome = PacketNames.nome(pkt.id, 'SEND');
                     icon.textContent = pkt.id; icon.style.color = '#e1e1e6';
                     content.style.color = '#8a8a9a';
-                    content.textContent = pkt.hex || '(vazio)';
+                    content.textContent = (nome ? nome + ' — ' : '') + (pkt.hex || '(vazio)');
                 }
                 item.appendChild(icon);
                 item.appendChild(content);
@@ -1451,14 +1649,14 @@
                     b.style.cssText = `background:#1e1e2e;color:${cor};border:none;cursor:pointer;padding:3px 7px;border-radius:4px;font-size:10px;`;
                     return b;
                 };
-                const btnUp = mkBtn('↑', 'Mover para cima', '#e1e1e6');
-                on(btnUp, 'click', () => { if (index > 0) { [prof.packets[index - 1], prof.packets[index]] = [prof.packets[index], prof.packets[index - 1]]; saveCurrentProfile(); renderPackets(); } });
-                const btnDown = mkBtn('↓', 'Mover para baixo', '#e1e1e6');
-                on(btnDown, 'click', () => { if (index < prof.packets.length - 1) { [prof.packets[index + 1], prof.packets[index]] = [prof.packets[index], prof.packets[index + 1]]; saveCurrentProfile(); renderPackets(); } });
-                const btnDel = mkBtn('✕', 'Remover', '#ef4444');
-                btnDel.style.border = '1px solid #ef4444';
-                on(btnDel, 'click', () => { prof.packets.splice(index, 1); saveCurrentProfile(); renderPackets(); });
-                btns.appendChild(btnUp); btns.appendChild(btnDown); btns.appendChild(btnDel);
+                const up = mkBtn('↑', 'Mover para cima', '#e1e1e6');
+                on(up, 'click', () => { if (index > 0) { [prof.packets[index - 1], prof.packets[index]] = [prof.packets[index], prof.packets[index - 1]]; saveCurrentProfile(); renderPackets(); } });
+                const down = mkBtn('↓', 'Mover para baixo', '#e1e1e6');
+                on(down, 'click', () => { if (index < prof.packets.length - 1) { [prof.packets[index + 1], prof.packets[index]] = [prof.packets[index], prof.packets[index + 1]]; saveCurrentProfile(); renderPackets(); } });
+                const del = mkBtn('✕', 'Remover', '#ef4444');
+                del.style.border = '1px solid #ef4444';
+                on(del, 'click', () => { prof.packets.splice(index, 1); saveCurrentProfile(); renderPackets(); });
+                btns.appendChild(up); btns.appendChild(down); btns.appendChild(del);
                 item.appendChild(btns);
                 list.appendChild(item);
             });
@@ -1471,8 +1669,7 @@
             const hexVal = el.querySelector('#sndHex').value || '';
             if (idVal !== '' && !isNaN(Number(idVal))) {
                 AppState.profiles[AppState.currentProfileId].packets.push({ id: Number(idVal), hex: hexVal });
-                el.querySelector('#sndId').value = '';
-                el.querySelector('#sndHex').value = '';
+                el.querySelector('#sndId').value = ''; el.querySelector('#sndHex').value = '';
                 saveCurrentProfile(); renderPackets();
             }
         });
@@ -1492,52 +1689,42 @@
             }
         });
 
-        // ─── Geração de JS via IA ───
+        // Geração de JS via IA
         const nlJs = el.querySelector('#nlJs');
         const btnNlJs = el.querySelector('#btnNlJs');
         const nlJsResultado = el.querySelector('#nlJsResultado');
-
         async function gerarJsNL() {
             const desc = nlJs.value.trim();
             if (!desc) return;
             if (!SangAI.disponivel()) {
-                nlJsResultado.style.display = 'block';
-                nlJsResultado.style.color = '#ef4444';
-                nlJsResultado.textContent = '⚠ Sang AI não configurada. Abra o módulo Sang AI e cole sua chave.';
+                nlJsResultado.style.display = 'block'; nlJsResultado.style.color = '#ef4444';
+                nlJsResultado.textContent = '⚠ Sang AI não configurada.';
                 return;
             }
             if (SangAI._busy) return;
-
             SangAI._busy = true;
-            btnNlJs.disabled = true;
-            btnNlJs.textContent = '⏳';
+            btnNlJs.disabled = true; btnNlJs.textContent = '⏳';
             nlJsResultado.style.display = 'block';
             nlJsResultado.style.color = '#8a8a9a';
             nlJsResultado.textContent = 'Sang AI gerando código…';
-
             try {
                 const prof = AppState.profiles[AppState.currentProfileId];
                 const ctx = `Perfil "${prof.name}", ${prof.packets.length} itens na fila.`;
                 const codigo = await SangAI.gerarJs(desc, ctx);
                 if (!codigo) throw new Error('A IA não retornou código.');
-
                 nlJsResultado.style.color = '#c4b5fd';
                 nlJsResultado.textContent = codigo;
-
                 const confirma = confirm(`Código gerado:\n\n${codigo}\n\nAdicionar à fila?`);
                 if (confirma) {
                     prof.packets.push({ isJs: true, code: codigo });
                     saveCurrentProfile(); renderPackets();
-                    nlJs.value = '';
-                    nlJsResultado.style.display = 'none';
+                    nlJs.value = ''; nlJsResultado.style.display = 'none';
                 }
             } catch (e) {
                 nlJsResultado.style.color = '#ef4444';
                 nlJsResultado.textContent = '⚠ ' + (e.message || e);
             } finally {
-                SangAI._busy = false;
-                btnNlJs.disabled = false;
-                btnNlJs.textContent = 'GERAR';
+                SangAI._busy = false; btnNlJs.disabled = false; btnNlJs.textContent = 'GERAR';
             }
         }
         on(btnNlJs, 'click', gerarJsNL);
@@ -1550,8 +1737,7 @@
             if (idVal !== '' && !isNaN(Number(idVal))) {
                 const buffer = Utils.buildPacket(Number(idVal), hexVal);
                 window.gameWS.dispatchEvent(new MessageEvent('message', { data: buffer }));
-                el.querySelector('#fakeId').value = '';
-                el.querySelector('#fakeHex').value = '';
+                el.querySelector('#fakeId').value = ''; el.querySelector('#fakeHex').value = '';
             }
         });
         on(el.querySelector('#btnNewProf'), 'click', () => {
@@ -1576,33 +1762,27 @@
             saveCurrentProfile();
         });
 
-        // ─── Motor de spam ───
         on(el.querySelector('#btnSpamAction'), 'click', async function() {
             if (!window.gameWS) return;
             const btn = el.querySelector('#btnSpamAction');
             const prof = AppState.profiles[AppState.currentProfileId];
-
             if (isSpamming) {
-                isSpamming = false;
-                spamRunId++;
+                isSpamming = false; spamRunId++;
                 btn.textContent = '🚀 INICIAR SEQUÊNCIA';
                 btn.style.background = 'linear-gradient(135deg,#00d4aa,#00a88a)';
                 btn.style.color = '#0a0a0f';
                 return;
             }
             if (prof.packets.length === 0) return;
-
             isSpamming = true;
             const myRunId = ++spamRunId;
             btn.textContent = '⏹ PARAR SEQUÊNCIA';
             btn.style.background = 'linear-gradient(135deg,#ef4444,#b91c1c)';
             btn.style.color = '#fff';
-
             let loops = 0;
             const inf = (prof.spamQtd === 0);
-            const sleepFn = sleep;  // referência disponível pro eval
+            const sleepFn = sleep;
             const UtilsFn = Utils;
-
             while (isSpamming && myRunId === spamRunId && (inf || loops < prof.spamQtd)) {
                 for (const item of prof.packets) {
                     if (!isSpamming || myRunId !== spamRunId) break;
@@ -1610,7 +1790,6 @@
                         await sleep(item.ms);
                     } else if (item.isJs) {
                         try {
-                            // eval com acesso a window.gameWS, sleep e Utils
                             const fn = new Function('window', 'sleep', 'Utils', `return (async () => { ${item.code} })();`);
                             await fn(window, sleepFn, UtilsFn);
                         } catch (e) { console.error('[JS_ACTION] Erro:', e); }
@@ -1625,7 +1804,6 @@
                     await sleep(prof.spamInterval);
                 }
             }
-
             if (myRunId === spamRunId) {
                 isSpamming = false;
                 btn.textContent = '🚀 INICIAR SEQUÊNCIA';
@@ -1638,9 +1816,8 @@
             el.style.display = show ? 'flex' : 'none';
             if (show) {
                 const rect = el.getBoundingClientRect();
-                const clamped = clampToViewport(el, rect.left, rect.top);
-                el.style.left = clamped.x + 'px';
-                el.style.top = clamped.y + 'px';
+                const c = clampToViewport(el, rect.left, rect.top);
+                el.style.left = c.x + 'px'; el.style.top = c.y + 'px';
             }
         }
 
@@ -1712,7 +1889,7 @@
     document.head.appendChild(styleEl);
     cleanup.push(() => { try { styleEl.remove(); } catch(e) {} });
 
-    // ─── Anexar ───
+    // Anexar
     const fragment = document.createDocumentFragment();
     fragment.appendChild(Toolbar.element);
     fragment.appendChild(AnalyzerUI.element);
@@ -1723,13 +1900,12 @@
         [AnalyzerUI.element, SenderUI.element].forEach((panel) => {
             if (panel.style.display === 'none') return;
             const rect = panel.getBoundingClientRect();
-            const clamped = clampToViewport(panel, rect.left, rect.top);
-            panel.style.left = clamped.x + 'px';
-            panel.style.top = clamped.y + 'px';
+            const c = clampToViewport(panel, rect.left, rect.top);
+            panel.style.left = c.x + 'px'; panel.style.top = c.y + 'px';
         });
     });
 
-    // ─── WebSocket via Hub ───
+    // WebSocket via Hub
     if (!window._hubSocket) {
         console.error('[Analyzer] window._hubSocket não encontrado. Carregue via Sang Hub.');
         while (cleanup.length) { const fn = cleanup.pop(); try { fn(); } catch(e) {} }
@@ -1801,7 +1977,7 @@
     window._hubSocket.onConnect((ws) => { if (!_alive) return; window.gameWS = ws; wrapSend(ws); });
     window._hubSocket.onMessage((event, ws) => { if (!_alive) return; if (ws !== window.gameWS) return; handleInbound(event); });
 
-    // ─── API pública ───
+    // API pública
     function kill() {
         _alive = false;
         try { delete window[UID]; } catch(e) {}
