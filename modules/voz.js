@@ -1,4 +1,3 @@
-
 (function() {
     'use strict';
     const UID = '_voz';
@@ -20,7 +19,9 @@
         top: null,
         pontuacao: 'pausa',
         pausaVirgulaMs: 250,
-        modoComando: 'prefixo'
+        modoComando: 'prefixo',
+        maxCharsFallback: 180,
+        delayEntreBlocos: 320
     };
 
     // ─── Persistência ───
@@ -44,10 +45,8 @@
     // ═══ COMANDOS ═══
     const PREFIXO_FORCAR_CHAT = /^(ditar|digitar|escrever|escreve|falar|fala)\s+(.+)$/i;
 
-    // Wake words aceitas. Sem uma delas (e sem a exceção de menu), o texto vai pro chat.
     const PALAVRAS_COMANDO = ['menu', 'sang', 'comando', 'comandar', 'catapimbas'];
     const PREFIXO_COMANDO = new RegExp('^(' + PALAVRAS_COMANDO.join('|') + ')\\s+(.+)$', 'i');
-    // Comandos de menu funcionam sem wake word (frase inteira)
     const COMANDO_MENU_SEM_PREFIXO = /^(mostrar?|mostra|abrir?|abre|abra|fechar?|fecha|feche|esconder?|esconde)\s+(o\s+)?menu$/;
 
     const COMANDOS_VOZ = [
@@ -71,7 +70,6 @@
         /^anotação$/,
         /^nota$/,
         /^(fechar?|fecha|confirmar?|confirma|voltar?|volta)(\s+(isso|tudo|janela|painel))?$/,
-        // Galeria — pastas, seleção, lightbox, backup, print nomeado
         /^criar?\s+pasta(\s+.+)?$/,
         /^(abrir?|abre|abra|entrar?|entra|ir\s+para)\s+(na\s+)?pasta\s+.+$/,
         /^(voltar?|volta)\s+(para\s+)?(o\s+)?(inicio|início|raiz|home)$/,
@@ -89,7 +87,6 @@
         /^(salvar?|salva)\s+(solto|solta|na\s+raiz|no\s+inicio|no\s+início)$/
     ];
 
-    // API compartilhada entre módulos — despachante + filtro
     window._voiceCommands = window._voiceCommands || {
         _extras: [],
         _handlers: [],
@@ -154,6 +151,16 @@
             .find(el => el.getBoundingClientRect().top > window.innerHeight * 0.65 && el.offsetParent) || null;
     }
 
+    function maxLenDoInput(inp) {
+        if (!inp) return DEFAULT_CONFIG.maxCharsFallback;
+        const m = inp.getAttribute('maxlength');
+        if (m) {
+            const n = parseInt(m, 10);
+            if (Number.isFinite(n) && n > 20) return n;
+        }
+        return DEFAULT_CONFIG.maxCharsFallback;
+    }
+
     function setInputValue(el, texto) {
         if (el.isContentEditable) {
             el.focus();
@@ -178,6 +185,32 @@
         el.dispatchEvent(new KeyboardEvent('keydown', o));
         el.dispatchEvent(new KeyboardEvent('keypress', o));
         el.dispatchEvent(new KeyboardEvent('keyup', o));
+    }
+
+    // Divide texto em blocos que caibam no limite do chat, cortando em espaços
+    // quando possível. Sempre tenta cortar em 60% do limite pra não deixar
+    // blocos curtos demais no fim.
+    function dividirEmBlocos(texto, maxLen) {
+        const t = String(texto || '').trim();
+        if (!t) return [];
+        if (t.length <= maxLen) return [t];
+        const blocos = [];
+        let resto = t;
+        while (resto.length > maxLen) {
+            let corte = resto.lastIndexOf(' ', maxLen);
+            if (corte < Math.floor(maxLen * 0.6)) corte = maxLen;
+            let bloco = resto.slice(0, corte).trimEnd();
+            // Evita terminar em conector solto (o próximo bloco continua a frase)
+            const ultima = bloco.split(/\s+/).pop()?.toLowerCase();
+            const CONECTORES_BLOCO = new Set(['e','ou','mas','que','porque','pois','de','do','da','no','na','em','com','por','pra','para','a','o']);
+            if (ultima && CONECTORES_BLOCO.has(ultima) && bloco.length > 20) {
+                bloco = bloco.slice(0, bloco.length - ultima.length).trimEnd();
+            }
+            blocos.push(bloco);
+            resto = resto.slice(bloco.length).trimStart();
+        }
+        if (resto) blocos.push(resto);
+        return blocos;
     }
 
     // ═══ MÓDULO ═══
@@ -261,6 +294,7 @@
         .preview-hdr .dot { width: 7px; height: 7px; border-radius: 50%; }
         .preview-hdr .dot.interim { background: #f5b942; animation: pulse 1s infinite; }
         .preview-hdr .dot.final   { background: #34d399; }
+        .preview-hdr .dot.envio   { background: #22d3ee; animation: pulse .8s infinite; }
         .preview-hdr .aviso {
             margin-left: auto; font-size: 9px; font-weight: 700;
             padding: 2px 6px; border-radius: 4px;
@@ -273,6 +307,10 @@
         .preview-hdr .aviso.forcar {
             color: #22d3ee; background: rgba(34,211,238,.12);
             border: 1px solid rgba(34,211,238,.3);
+        }
+        .preview-hdr .aviso.envio {
+            color: #22d3ee; background: rgba(34,211,238,.18);
+            border: 1px solid rgba(34,211,238,.4);
         }
         .preview-texto { line-height: 1.4; word-break: break-word; min-height: 1.4em; }
         .preview-texto .interim { color: #8b8fa3; font-style: italic; }
@@ -291,6 +329,10 @@
             border-color: transparent;
         }
         .preview-acoes button.primario:hover { filter: brightness(1.15); }
+        .preview-acoes button.stop {
+            background: linear-gradient(135deg, #ef4444, #b91c1c);
+            border-color: transparent;
+        }
 
         .popover {
             position: fixed;
@@ -431,7 +473,9 @@
                 funcionam sem prefixo.<br><br>
                 <strong>Modo livre:</strong> comandos disparam direto, como antes.
                 <code>enviar</code> força envio, <code>cancelar</code> limpa.
-                Use <code>digitar</code> para forçar texto ao chat.
+                Use <code>digitar</code> para forçar texto ao chat.<br><br>
+                <strong>Textos longos:</strong> o módulo divide automaticamente em blocos
+                que caibam no chat e envia em sequência.
                 <div class="dica-foco">💡 Pausa sozinho quando você troca de aba ou janela.</div>
             </div>
         `;
@@ -453,9 +497,6 @@
         cfgModoComando.value = config.modoComando;
 
         // ─── Estado ───
-        // habilitado: usuário quer o voz.js no comando (toggle)
-        // ativo: captando agora (false quando pausado por foco)
-        // pausado: pausa por foco, sem perder a intenção
         let rec = null;
         let habilitado = false;
         let ativo = false;
@@ -468,14 +509,12 @@
         let timerRestart = null;
         let enviando = false;
         let enviandoGen = 0;
-        let silencioAte = 0;  // TTS de outro módulo pediu pausa
+        let silencioAte = 0;
 
-        // ─── Silenciamento externo (ex: galeria falando "Captura feita") ───
         window.addEventListener('sang:voz-silenciar', (e) => {
             silencioAte = Date.now() + (e?.detail?.ms || 1500);
         });
 
-        // ─── Notificação de estado ───
         function dispararEstadoVoz() {
             window.dispatchEvent(new CustomEvent('sang:voz-state', {
                 detail: { habilitado }
@@ -503,7 +542,6 @@
                 const agora = Date.now();
                 const tevePausa = ultimoResultadoEm &&
                     (agora - ultimoResultadoEm) > config.pausaVirgulaMs;
-                // No modo 'groq' não mexemos na pontuação — o modelo corrige tudo
                 const aplicarPausa = config.pontuacao === 'pausa' && tevePausa;
 
                 let interim = '';
@@ -578,7 +616,7 @@
             return r;
         }
 
-        // ─── Parada interna (não mexe em habilitado/pausado, não emite) ───
+        // ─── Parada interna ───
         function _parar() {
             enviandoGen++;
             ativo = false;
@@ -596,7 +634,6 @@
             preview.classList.remove('visivel');
         }
 
-        // ─── Iniciar captura (privado; não mexe em habilitado, não emite) ───
         function _iniciarCaptura() {
             if (ativo) return true;
             textoFinal = '';
@@ -618,7 +655,6 @@
             return true;
         }
 
-        // ─── Controle ───
         function ligar() {
             if (habilitado && ativo) return;
             habilitado = true;
@@ -640,7 +676,6 @@
         }
 
         // ─── Foco / Visibilidade ───
-        // Pausa por foco NÃO mexe em `habilitado` nem emite evento.
         function _pausarPorFoco() {
             if (!ativo) return;
             pausado = true;
@@ -674,6 +709,7 @@
             if (timerSilencio) return;
             timerSilencio = setInterval(() => {
                 if (!ativo || config.modo !== 'auto') return;
+                if (enviando) return; // já estamos mandando blocos
                 const t = (textoFinal + textoInterim).trim();
                 if (!t || t.length < config.minChars) return;
                 if (terminaComConector(t)) return;
@@ -696,6 +732,8 @@
 
         // ─── Preview ───
         function renderPreview() {
+            if (enviando && preview.dataset.modoEnvio === '1') return; // não sobrescreve o contador
+
             const completo = (textoFinal + textoInterim).trim();
             if (!completo || !ativo) {
                 preview.classList.remove('visivel');
@@ -725,6 +763,20 @@
             preview.classList.add('visivel');
         }
 
+        function mostrarEnvio(i, total, bloco) {
+            if (total <= 1) return;
+            txtEl.textContent = bloco;
+            preview.querySelector('.dot').className = 'dot envio';
+            avisoEl.textContent = `📤 ${i}/${total}`;
+            avisoEl.className = 'aviso envio';
+            preview.dataset.modoEnvio = '1';
+            preview.classList.add('visivel');
+        }
+
+        function limparModoEnvio() {
+            delete preview.dataset.modoEnvio;
+        }
+
         function posicionarPreview() {
             const inp = encontrarInputChat();
             let left, top;
@@ -741,8 +793,6 @@
         }
 
         // ─── Formatação via Sang AI ───
-        // Usa mensagens (system + user) em vez de prompt puro. Temperature baixa
-        // e abort de segurança pra não travar o envio.
         async function formatarComSangAI(texto) {
             if (!window._apis?.groq || !window._apis.getKey?.('groq')) return texto;
             const ctrl = new AbortController();
@@ -783,6 +833,27 @@
             }
         }
 
+        // ─── Envio de UM bloco (retorna true se conseguiu) ───
+        async function enviarBloco(bloco, combinavel) {
+            for (let tentativa = 0; tentativa < 3; tentativa++) {
+                const inp = encontrarInputChat();
+                if (inp) {
+                    let final = bloco;
+                    const maxLen = maxLenDoInput(inp);
+                    if (combinavel && inp.value && inp.value.trim()) {
+                        const combinado = inp.value.trim() + ' ' + final;
+                        final = combinado.length > maxLen ? combinado.slice(-maxLen) : combinado;
+                    }
+                    setInputValue(inp, final);
+                    inp.focus();
+                    setTimeout(() => pressEnter(inp), 80);
+                    return true;
+                }
+                await new Promise(r => setTimeout(r, 800));
+            }
+            return false;
+        }
+
         // ─── Envio ───
         async function enviar(forcado) {
             if (enviando) return;
@@ -794,7 +865,6 @@
             if (forcarPrefixo) {
                 texto = forcarPrefixo;
             } else if (!forcado) {
-                // 1. Ações locais sempre funcionam sem prefixo
                 const acao = window._voiceCommands.acaoLocal(texto);
                 if (acao === 'enviar') {
                     textoFinal = ''; textoInterim = ''; ultimoResultadoEm = 0;
@@ -802,16 +872,12 @@
                 }
                 if (acao === 'cancelar') { cancelar(); return; }
 
-                // 2. Modo prefixado
                 if (config.modoComando === 'prefixo') {
-                    // Exceção: abrir/fechar menu passa direto (frase inteira)
                     if (COMANDO_MENU_SEM_PREFIXO.test(texto)) {
                         window._voiceCommands.despachar(texto);
                         textoFinal = ''; textoInterim = ''; ultimoResultadoEm = 0;
                         renderPreview(); return;
                     }
-
-                    // Demais comandos exigem wake word
                     const m = texto.match(PREFIXO_COMANDO);
                     if (m) {
                         const comando = m[2].trim();
@@ -824,9 +890,7 @@
                         textoFinal = ''; textoInterim = ''; ultimoResultadoEm = 0;
                         renderPreview(); return;
                     }
-                    // Sem wake word — cai pro chat normalmente
                 } else {
-                    // 3. Modo livre
                     if (window._voiceCommands.despachar(texto)) {
                         textoFinal = ''; textoInterim = ''; ultimoResultadoEm = 0;
                         renderPreview(); return;
@@ -856,34 +920,38 @@
                     }
                 }
 
-                for (let tentativa = 0; tentativa < 3; tentativa++) {
-                    if (gen !== enviandoGen) return;
+                // Descobre o limite do chat
+                const inp = encontrarInputChat();
+                const maxLen = maxLenDoInput(inp);
 
-                    const inp = encontrarInputChat();
-                    if (inp) {
-                        const maxLen = inp.getAttribute('maxlength')
-                            ? parseInt(inp.getAttribute('maxlength'), 10) : 200;
-                        let final = texto.length > maxLen ? texto.slice(0, maxLen) : texto;
+                // Divide em blocos
+                const blocos = dividirEmBlocos(texto, maxLen);
 
-                        if (inp.value && inp.value.trim()) {
-                            const combinado = inp.value.trim() + ' ' + final;
-                            final = combinado.length > maxLen
-                                ? combinado.slice(-maxLen) : combinado;
-                        }
+                // Limpa buffer ANTES de enviar — se o usuário falar mais, entra nos próximos
+                textoFinal = '';
+                textoInterim = '';
+                ultimoResultadoEm = 0;
 
-                        setInputValue(inp, final);
-                        inp.focus();
-                        setTimeout(() => pressEnter(inp), 80);
+                // Envia bloco por bloco
+                for (let i = 0; i < blocos.length; i++) {
+                    if (gen !== enviandoGen) { limparModoEnvio(); return; }
 
-                        textoFinal = ''; textoInterim = ''; ultimoResultadoEm = 0;
-                        renderPreview();
-                        return;
+                    if (blocos.length > 1) mostrarEnvio(i + 1, blocos.length, blocos[i]);
+
+                    const ok = await enviarBloco(blocos[i], i === 0);
+                    if (!ok) {
+                        avisoEl.textContent = '⚠ chat não encontrado';
+                        avisoEl.className = 'aviso cmd';
+                        break;
                     }
-                    await new Promise(r => setTimeout(r, 800));
+
+                    if (i < blocos.length - 1) {
+                        await new Promise(r => setTimeout(r, config.delayEntreBlocos));
+                    }
                 }
 
-                avisoEl.textContent = '⚠ chat não encontrado';
-                avisoEl.className = 'aviso cmd';
+                limparModoEnvio();
+                renderPreview();
             } finally {
                 enviando = false;
             }
@@ -894,6 +962,7 @@
             textoFinal = '';
             textoInterim = '';
             ultimoResultadoEm = 0;
+            limparModoEnvio();
             renderPreview();
         }
 
@@ -1013,7 +1082,7 @@
         // ─── API ───
         window[UID] = {
             kill() {
-                desligar(); // emite sang:voz-state { habilitado: false } se estava ligado
+                desligar();
                 document.removeEventListener('keydown', onKeydown, true);
                 document.removeEventListener('pointerdown', fecharPopoverFora, true);
                 document.removeEventListener('visibilitychange', onVisibility);
@@ -1033,7 +1102,6 @@
             get pausado() { return pausado; }
         };
 
-        // Sinaliza que a API está pronta para receber handlers
         window.dispatchEvent(new CustomEvent('sang:voz-ready'));
     }
 
