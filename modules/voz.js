@@ -1,7 +1,3 @@
-// modules/voz.js — fala vira texto no chat do Habbo
-// v3: comandos ancorados (só match exato), prefixo "digitar" para forçar
-// texto ao chat, backoff de reconexão, feedback de escuta, limpeza total
-// no kill, modo manual como default, detector de frases cortadas.
 (function() {
     'use strict';
     const UID = '_voz';
@@ -52,11 +48,9 @@
     // COMANDOS
     // ═══════════════════════════════════════════════════════════════
 
-    // Prefixo para forçar QUALQUER texto a ir ao chat, mesmo sendo comando.
-    // Uso: "digitar enviar" → chat recebe "enviar"
     const PREFIXO_FORCAR_CHAT = /^(ditar|digitar|escrever|escreve|falar|fala)\s+(.+)$/i;
 
-    // Comandos consumidos pelo PRÓPRIO módulo (não vão pro chat, não acionam outros)
+    // Comandos consumidos pelo PRÓPRIO módulo
     const COMANDOS_VOZ = [
         {
             re: /^(enviar?|envia|mandar?|manda|manda\s+isso|manda\s+essa|envia\s+isso|envia\s+essa|pode\s+enviar|pode\s+mandar)$/,
@@ -68,9 +62,6 @@
         }
     ];
 
-    // Comandos pertencentes a OUTROS módulos. Se casarem, o texto é
-    // silenciosamente descartado — o hub/módulo correspondente age.
-    // Todos ancorados (^...$) para não capturar frases longas por engano.
     const COMANDOS_RESERVADOS = [
         // Hub: abrir/fechar módulos
         /^(abrir?|abre|abra|ativar?|ativa|ligar?|liga|iniciar?|inicia|fechar?|feche|fecha|desativar?|desativa|desligar?|desliga|parar?|para)\s+(o\s+|a\s+|os\s+|as\s+)?(menu|iptv|tv|youtube|yt|packet|blocklive|liveblock|adblock|bloqueador|booster|jogos|games|gameslive|photoswap|fotoswap|foto|prozilla|galeria|voz|chat|groq|gemini)$/,
@@ -96,7 +87,7 @@
         /^(fechar?|fecha|confirmar?|confirma|voltar?|volta)(\s+(isso|tudo|janela|painel))?$/
     ];
 
-    // Registro compartilhado — outros módulos podem adicionar padrões
+    // Registro compartilhado 
     window._voiceCommands = window._voiceCommands || {
         _extras: [],
         adicionar(re) {
