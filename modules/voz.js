@@ -19,7 +19,7 @@
         left: null,
         top: null,
         pontuacao: 'pausa',
-        pausaVirgulaMs: 550,
+        pausaVirgulaMs: 250,
         modoComando: 'prefixo'
     };
 
