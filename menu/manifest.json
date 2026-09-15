@@ -2,6 +2,17 @@
   "version": "2.2.3",
   "modules": [
     {
+  "id": "apis",
+  "name": "APIs",
+  "description": "Serviço de APIs",
+  "icon": "🔌",
+  "enabled": true,
+  "autoload": true,
+  "secret": true,
+  "instanceKey": "_apis",
+  "url": "https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/services/apis.js"
+    },
+    {
       "id": "end",
       "name": "end",
       "description": "Bloqueador de anúncios + anti-detecção",
