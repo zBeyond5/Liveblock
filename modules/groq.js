@@ -1,4 +1,4 @@
-// modules/groq.js — Sang AI (backend Groq) com visão
+// modules/groq.js — Sang AI (backend Groq)
 (function() {
     'use strict';
     const UID = '_groq';
@@ -9,15 +9,10 @@
     const MIN_W = 440, MIN_H = 520;
     const KEYS_URL = 'https://console.groq.com/keys';
     const FONT_URL = 'https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700;800;900&family=Geist+Mono:wght@400;500;600&display=swap';
-    const MAX_IMG_DIM = 1024;
-    const MAX_IMG_MB = 3.5;
 
     const MODELOS = [
-        { id: 'openai/gpt-oss-120b',      nome: 'SangMax',   tag: 'inteligente', vision: false },
-        { id: 'openai/gpt-oss-20b',       nome: 'Padrão',    tag: 'equilibrado', vision: false },
-        { id: 'meta-llama/llama-4-scout-17b-16e-instruct',     nome: 'Llama 4 Scout',    tag: 'visão',  vision: true },
-        { id: 'meta-llama/llama-4-maverick-17b-128e-instruct', nome: 'Llama 4 Maverick', tag: 'visão+', vision: true },
-        { id: 'qwen/qwen3-32b',           nome: 'Qwen 3 32B',     tag: 'alternativo', vision: false }
+        { id: 'openai/gpt-oss-120b', nome: 'SangMax', tag: 'inteligente' },
+        { id: 'openai/gpt-oss-20b',  nome: 'Padrão',  tag: 'equilibrado' }
     ];
 
     const loadGeom = () => {
@@ -128,49 +123,6 @@
         return out.join('');
     }
 
-    // ─── Imagem: redimensionar antes de enviar ───
-    function processarImagem(file) {
-        return new Promise((resolve, reject) => {
-            const reader = new FileReader();
-            reader.onload = e => {
-                const img = new Image();
-                img.onload = () => {
-                    let { width, height } = img;
-                    if (width > MAX_IMG_DIM || height > MAX_IMG_DIM) {
-                        const r = Math.min(MAX_IMG_DIM / width, MAX_IMG_DIM / height);
-                        width = Math.round(width * r);
-                        height = Math.round(height * r);
-                    }
-                    const cv = document.createElement('canvas');
-                    cv.width = width; cv.height = height;
-                    const ctx = cv.getContext('2d');
-                    ctx.drawImage(img, 0, 0, width, height);
-                    const isPng = file.type === 'image/png';
-                    const mime = isPng ? 'image/png' : 'image/jpeg';
-                    let dataUrl;
-                    try { dataUrl = cv.toDataURL(mime, 0.85); }
-                    catch (_) { dataUrl = e.target.result; }
-
-                    const bytes = Math.ceil(dataUrl.length * 0.75);
-                    if (bytes > MAX_IMG_MB * 1024 * 1024) {
-                        return reject(new Error('Imagem muito grande após compressão (' + (bytes/1024/1024).toFixed(1) + 'MB)'));
-                    }
-                    resolve({
-                        id: 'img_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7),
-                        dataUrl,
-                        name: file.name || 'imagem',
-                        size: bytes,
-                        w: width, h: height
-                    });
-                };
-                img.onerror = () => reject(new Error('Falha ao carregar imagem'));
-                img.src = e.target.result;
-            };
-            reader.onerror = () => reject(new Error('Falha ao ler arquivo'));
-            reader.readAsDataURL(file);
-        });
-    }
-
     // ─── Init ───
     function init() {
         if (window[UID]) return;
@@ -201,10 +153,6 @@
             border: 1px solid rgba(167,139,250,.24);
             border-radius: 18px; overflow: hidden;
             box-shadow: 0 24px 60px rgba(0,0,0,.78), 0 0 0 1px rgba(167,139,250,.06), 0 0 44px rgba(139,92,246,.1);
-            transition: box-shadow .2s;
-        }
-        .panel.dragover {
-            box-shadow: 0 24px 60px rgba(0,0,0,.78), 0 0 0 2px rgba(167,139,250,.6), 0 0 60px rgba(139,92,246,.35);
         }
 
         /* ─── Header ─── */
@@ -327,17 +275,6 @@
             font-weight: 500;
             white-space: pre-wrap;
         }
-        .msg.user .user-imgs {
-            display: grid; gap: 4px; margin-top: 8px;
-            grid-template-columns: repeat(auto-fit, minmax(80px, 1fr));
-        }
-        .msg.user .user-imgs img {
-            width: 100%; height: 80px; object-fit: cover;
-            border-radius: 8px; cursor: zoom-in;
-            border: 1px solid rgba(255,255,255,.25);
-            transition: transform .15s;
-        }
-        .msg.user .user-imgs img:hover { transform: scale(1.03); }
         .msg.ia {
             align-self: flex-start;
             background: linear-gradient(135deg, rgba(139,92,246,.11), rgba(167,139,250,.06));
@@ -492,46 +429,6 @@
         .empty-title { color: #e2d5ff; font-weight: 700; font-size: 15px; letter-spacing: -0.01em; }
         .empty-hint { font-size: 12px; max-width: 280px; line-height: 1.55; color: #8a7aa8; }
 
-        /* ─── Attach strip ─── */
-        .attach-strip {
-            display: none;
-            padding: 10px 14px 0;
-            gap: 8px;
-            overflow-x: auto;
-            flex-shrink: 0;
-        }
-        .attach-strip.visivel { display: flex; }
-        .attach-strip::-webkit-scrollbar { height: 5px; }
-        .attach-strip::-webkit-scrollbar-thumb { background: rgba(167,139,250,.3); border-radius: 3px; }
-
-        .attach-thumb {
-            position: relative; flex-shrink: 0;
-            width: 68px; height: 68px;
-            border-radius: 10px; overflow: hidden;
-            background: #0a0712;
-            border: 1px solid rgba(167,139,250,.35);
-            animation: thumbIn .28s cubic-bezier(.34,1.56,.64,1);
-            box-shadow: 0 4px 14px rgba(0,0,0,.4);
-        }
-        @keyframes thumbIn {
-            0% { opacity: 0; transform: scale(.7); }
-            100% { opacity: 1; transform: scale(1); }
-        }
-        .attach-thumb img {
-            width: 100%; height: 100%; object-fit: cover;
-            cursor: zoom-in; display: block;
-        }
-        .attach-thumb .rm {
-            position: absolute; top: 3px; right: 3px;
-            width: 18px; height: 18px; border-radius: 50%;
-            background: rgba(0,0,0,.75); border: 1px solid rgba(255,255,255,.2);
-            color: #fff; font-size: 10px; font-weight: 700;
-            display: flex; align-items: center; justify-content: center;
-            cursor: pointer; padding: 0;
-            transition: all .15s;
-        }
-        .attach-thumb .rm:hover { background: #ef4444; border-color: #fca5a5; transform: scale(1.15); }
-
         /* ─── Input bar ─── */
         .input-bar {
             display: flex; gap: 8px;
@@ -545,28 +442,6 @@
         .input-bar::before {
             content: ''; position: absolute; top: -1px; left: 12%; right: 12%; height: 1px;
             background: radial-gradient(ellipse at center, rgba(167,139,250,.5), transparent 70%);
-        }
-
-        .attach-btn {
-            width: 42px; height: 42px; border-radius: 12px;
-            flex-shrink: 0;
-            background: rgba(167,139,250,.1);
-            border: 1px solid rgba(167,139,250,.22);
-            color: #c4b5fd;
-            display: flex; align-items: center; justify-content: center;
-            cursor: pointer; font-size: 17px;
-            transition: all .2s cubic-bezier(.34,1.56,.64,1);
-        }
-        .attach-btn:hover {
-            background: linear-gradient(135deg, #a855f7, #7c3aed);
-            color: #fff; border-color: transparent;
-            transform: translateY(-2px);
-            box-shadow: 0 6px 18px rgba(168,85,247,.45);
-        }
-        .attach-btn:active { transform: translateY(0) scale(.95); }
-        .attach-btn.ativo {
-            background: linear-gradient(135deg, #a855f7, #7c3aed);
-            color: #fff; border-color: transparent;
         }
 
         .input-bar textarea {
@@ -645,26 +520,6 @@
         .send-btn .send-spin { display: none; }
         @keyframes spin { to { transform: rotate(360deg); } }
 
-        /* ─── Lightbox ─── */
-        .lightbox {
-            position: absolute; inset: 0; z-index: 40;
-            background: rgba(0,0,0,.9);
-            backdrop-filter: blur(6px);
-            display: none; align-items: center; justify-content: center;
-            padding: 24px;
-            animation: fadeIn .2s ease-out;
-            cursor: zoom-out;
-        }
-        .lightbox.visivel { display: flex; }
-        @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
-        .lightbox img {
-            max-width: 100%; max-height: 100%;
-            border-radius: 10px;
-            box-shadow: 0 20px 60px rgba(0,0,0,.9);
-            animation: lbIn .28s cubic-bezier(.34,1.56,.64,1);
-        }
-        @keyframes lbIn { 0% { transform: scale(.9); opacity: 0; } 100% { transform: scale(1); opacity: 1; } }
-
         /* ─── Modal key ─── */
         .modal-overlay {
             position: absolute; inset: 0; z-index: 30;
@@ -675,6 +530,7 @@
             animation: fadeIn .18s ease-out;
         }
         .modal-overlay.visivel { display: flex; }
+        @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
         .modal {
             background: linear-gradient(175deg, #1a1428, #100c1a);
             border: 1px solid rgba(167,139,250,.3);
@@ -776,8 +632,7 @@
             modelo: loadModel(),
             enviando: false,
             abortController: null,
-            jaTemMensagem: false,
-            anexos: []
+            jaTemMensagem: false
         };
 
         if (!MODELOS.some(m => m.id === state.modelo)) {
@@ -803,14 +658,12 @@
             </div>
             <div class="bar">
                 <select id="modelSel">
-                    ${MODELOS.map(m => `<option value="${m.id}"${m.id === state.modelo ? ' selected' : ''}>${m.nome} · ${m.tag}${m.vision ? ' 👁' : ''}</option>`).join('')}
+                    ${MODELOS.map(m => `<option value="${m.id}"${m.id === state.modelo ? ' selected' : ''}>${m.nome} · ${m.tag}</option>`).join('')}
                 </select>
             </div>
             <div class="body">
                 <div class="log" id="log"></div>
-                <div class="attach-strip" id="attachStrip"></div>
                 <div class="input-bar">
-                    <button class="attach-btn" id="attachBtn" title="Anexar imagem (ou cole/arraste)">📎</button>
                     <textarea id="input" rows="1" placeholder="Pergunte algo…"></textarea>
                     <button class="send-btn" id="send">
                         <span class="send-label">Enviar</span>
@@ -822,7 +675,6 @@
                     </button>
                 </div>
             </div>
-            <input type="file" id="fileInput" accept="image/*" multiple hidden />
             <div class="modal-overlay" id="modalKey">
                 <div class="modal">
                     <div class="modal-icon">🔑</div>
@@ -839,7 +691,6 @@
                     </div>
                 </div>
             </div>
-            <div class="lightbox" id="lightbox"><img id="lightboxImg" alt="" /></div>
             <div class="toast" id="toast"></div>
             <div class="resize-handle" id="resizeHandle"></div>
         `;
@@ -852,9 +703,6 @@
         const hdr = $('#hdr'), logEl = $('#log'), inputEl = $('#input'), sendBtn = $('#send');
         const modelSel = $('#modelSel'), rz = $('#resizeHandle');
         const modal = $('#modalKey'), keyInput = $('#keyInput');
-        const attachBtn = $('#attachBtn'), fileInput = $('#fileInput');
-        const attachStrip = $('#attachStrip');
-        const lightbox = $('#lightbox'), lightboxImg = $('#lightboxImg');
         const toastEl = $('#toast');
 
         // ─── Toast ───
@@ -866,13 +714,6 @@
             toastTm = setTimeout(() => toastEl.classList.remove('visivel'), 2600);
         }
 
-        // ─── Lightbox ───
-        function abrirLightbox(dataUrl) {
-            lightboxImg.src = dataUrl;
-            lightbox.classList.add('visivel');
-        }
-        lightbox.addEventListener('click', () => lightbox.classList.remove('visivel'));
-
         // ─── UI helpers ───
         function renderEmpty() {
             if (state.jaTemMensagem) return;
@@ -880,7 +721,7 @@
                 <div class="empty">
                     <div class="empty-icon">✨</div>
                     <div class="empty-title">Oi! Como posso ajudar?</div>
-                    <div class="empty-hint">Pergunte qualquer coisa ou anexe uma imagem clicando em 📎.</div>
+                    <div class="empty-hint">Pergunte qualquer coisa — estou por aqui.</div>
                 </div>`;
         }
         function limparEmpty() {
@@ -889,23 +730,11 @@
             state.jaTemMensagem = true;
         }
 
-        function addMsgUser(texto, imgs) {
+        function addMsgUser(texto) {
             limparEmpty();
             const el = document.createElement('div');
             el.className = 'msg user';
-            if (texto) el.appendChild(document.createTextNode(texto));
-            if (imgs && imgs.length) {
-                const wrap = document.createElement('div');
-                wrap.className = 'user-imgs';
-                imgs.forEach(img => {
-                    const i = document.createElement('img');
-                    i.src = img.dataUrl;
-                    i.alt = img.name;
-                    i.addEventListener('click', () => abrirLightbox(img.dataUrl));
-                    wrap.appendChild(i);
-                });
-                el.appendChild(wrap);
-            }
+            el.textContent = texto;
             logEl.appendChild(el);
             logEl.scrollTop = logEl.scrollHeight;
             return el;
@@ -1002,120 +831,6 @@
             } catch (_) {}
         }
 
-        // ─── Anexos ───
-        function renderAnexos() {
-            attachStrip.innerHTML = '';
-            if (!state.anexos.length) {
-                attachStrip.classList.remove('visivel');
-                attachBtn.classList.remove('ativo');
-                return;
-            }
-            attachStrip.classList.add('visivel');
-            attachBtn.classList.add('ativo');
-            state.anexos.forEach(a => {
-                const w = document.createElement('div');
-                w.className = 'attach-thumb';
-                const im = document.createElement('img');
-                im.src = a.dataUrl;
-                im.alt = a.name;
-                im.title = a.name;
-                im.addEventListener('click', () => abrirLightbox(a.dataUrl));
-                const rm = document.createElement('button');
-                rm.className = 'rm';
-                rm.textContent = '✕';
-                rm.title = 'Remover';
-                rm.addEventListener('click', e => {
-                    e.stopPropagation();
-                    state.anexos = state.anexos.filter(x => x.id !== a.id);
-                    renderAnexos();
-                    atualizarModeloParaVisao();
-                });
-                w.appendChild(im);
-                w.appendChild(rm);
-                attachStrip.appendChild(w);
-            });
-        }
-
-        async function anexarArquivo(file) {
-            if (!file || !file.type.startsWith('image/')) return;
-            if (state.anexos.length >= 5) {
-                mostrarToast('Máximo de 5 imagens por vez.');
-                return;
-            }
-            try {
-                const a = await processarImagem(file);
-                state.anexos.push(a);
-                renderAnexos();
-                atualizarModeloParaVisao();
-            } catch (e) {
-                mostrarToast('❌ ' + (e.message || 'Falha ao anexar'));
-            }
-        }
-
-        function atualizarModeloParaVisao() {
-            if (!state.anexos.length) return;
-            const atual = MODELOS.find(m => m.id === state.modelo);
-            if (atual && atual.vision) return;
-            // Auto-switch para primeiro modelo de visão
-            const visao = MODELOS.find(m => m.vision);
-            if (visao) {
-                state.modelo = visao.id;
-                saveModel(state.modelo);
-                modelSel.value = visao.id;
-                addMsgSys('👁 Modelo trocado para ' + visao.nome + ' (suporta imagens).');
-            }
-        }
-
-        attachBtn.addEventListener('click', () => fileInput.click());
-        fileInput.addEventListener('change', () => {
-            for (const f of fileInput.files) anexarArquivo(f);
-            fileInput.value = '';
-        });
-
-        // Colar imagem
-        inputEl.addEventListener('paste', e => {
-            const items = e.clipboardData?.items;
-            if (!items) return;
-            const files = [];
-            for (const item of items) {
-                if (item.kind === 'file' && item.type.startsWith('image/')) {
-                    const f = item.getAsFile();
-                    if (f) files.push(f);
-                }
-            }
-            if (files.length) {
-                e.preventDefault();
-                files.forEach(anexarArquivo);
-            }
-        });
-
-        // Arrastar & soltar
-        let dragDepth = 0;
-        panel.addEventListener('dragenter', e => {
-            if (!e.dataTransfer?.types?.includes('Files')) return;
-            e.preventDefault();
-            dragDepth++;
-            panel.classList.add('dragover');
-        });
-        panel.addEventListener('dragover', e => {
-            if (!e.dataTransfer?.types?.includes('Files')) return;
-            e.preventDefault();
-        });
-        panel.addEventListener('dragleave', e => {
-            if (!e.dataTransfer?.types?.includes('Files')) return;
-            dragDepth = Math.max(0, dragDepth - 1);
-            if (dragDepth === 0) panel.classList.remove('dragover');
-        });
-        panel.addEventListener('drop', e => {
-            e.preventDefault();
-            dragDepth = 0;
-            panel.classList.remove('dragover');
-            if (!e.dataTransfer?.files?.length) return;
-            for (const f of e.dataTransfer.files) {
-                if (f.type.startsWith('image/')) anexarArquivo(f);
-            }
-        });
-
         // ─── Modal key ───
         function abrirModal() {
             keyInput.value = window._apis?.getKey('groq') || '';
@@ -1192,8 +907,7 @@
             if (state.enviando) return;
 
             const texto = inputEl.value.trim();
-            const imgs = state.anexos.slice();
-            if (!texto && !imgs.length) return;
+            if (!texto) return;
 
             if (!window._apis?.groq) {
                 addMsgErro('Serviço não registrado. Recarregue a página.');
@@ -1204,23 +918,11 @@
                 return;
             }
 
-            // Monta conteúdo
-            let content;
-            if (imgs.length) {
-                content = [];
-                if (texto) content.push({ type: 'text', text: texto });
-                imgs.forEach(i => content.push({ type: 'image_url', image_url: { url: i.dataUrl } }));
-            } else {
-                content = texto;
-            }
-
             inputEl.value = '';
             inputEl.style.height = 'auto';
-            state.anexos = [];
-            renderAnexos();
 
-            addMsgUser(texto, imgs);
-            state.mensagens.push({ role: 'user', content });
+            addMsgUser(texto);
+            state.mensagens.push({ role: 'user', content: texto });
 
             await chamarAPI();
         }
@@ -1270,7 +972,6 @@
         modelSel.addEventListener('change', () => {
             state.modelo = modelSel.value;
             saveModel(state.modelo);
-            atualizarModeloParaVisao();
         });
 
         $('#btnClear').addEventListener('click', limparConversa);
