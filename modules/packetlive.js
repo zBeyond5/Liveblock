@@ -3,6 +3,9 @@
     const UID = '_analyzer';
     if (window[UID]) { try { window[UID].kill(); } catch(e) {} }
 
+    // ─── Constante do modelo ───
+    const MODELO_SANGMAX = 'openai/gpt-oss-120b';
+
     // ─── Cleanup global ───
     const cleanup = [];
     const on = (target, type, fn, opts) => {
@@ -40,8 +43,7 @@
         fontSize: Storage.get('font_size', 13),
         showSend: true,
         showRecv: true,
-        dicionario: Storage.get('dicionario', {}),  // { [id]: { count, primeiro, ultimo, tamanhoMedio, descricao? } }
-        chatIA: []  // histórico da conversa com a IA (em memória, não persiste)
+        dicionario: Storage.get('dicionario', {})
     };
 
     // ─── Utilitários binários ───
@@ -81,12 +83,13 @@
                 fullHex,
                 payloadHex,
                 ascii: this.bufferToString(payloadBuf),
-                byteLength: data.byteLength
+                byteLength: data.byteLength,
+                payloadLength: data.byteLength - 6
             };
         }
     };
 
-    // ─── Firewall e filtros ───
+    // ─── Firewall ───
     const PacketFilter = {
         isVisualBlocked(packet) {
             if (AppState.blIds.has(packet.header)) return true;
@@ -125,107 +128,201 @@
         }
     };
 
-    // ─── Inbound transformer (pass-through) ───
-    const InboundTransformer = {
-        rules: {},
-        transform(data) { return data; }
-    };
+    const InboundTransformer = { rules: {}, transform(data) { return data; } };
 
     // ═══════════════════════════════════════════════════════════════
-    // SANG AI SERVICE — toda comunicação com Groq passa por aqui
+    // SANG AI SERVICE
+    // Todas as chamadas usam modelo SangMax (gpt-oss-120b) explicitamente.
+    // Parse de JSON robusto com fallback regex. Timeouts generosos.
     // ═══════════════════════════════════════════════════════════════
     const SangAI = {
+        _busy: false,
+
         disponivel() {
             return !!(window._apis?.groq && window._apis.getKey?.('groq'));
         },
 
+        _limpar(txt) {
+            return String(txt || '')
+                .replace(/^```[a-zA-Z]*\n?/gm, '')
+                .replace(/```$/gm, '')
+                .replace(/^["'`]+|["'`]+$/g, '')
+                .trim();
+        },
+
+        _parseJson(txt) {
+            const limpo = this._limpar(txt).replace(/```json|```/g, '').trim();
+            try { return JSON.parse(limpo); } catch(e) {}
+            const m = limpo.match(/\{[\s\S]*\}/);
+            if (m) { try { return JSON.parse(m[0]); } catch(e) {} }
+            return null;
+        },
+
         async _chamar(systemPrompt, userContent, opts = {}) {
-            if (!this.disponivel()) throw new Error('Sang AI não configurada');
+            if (!this.disponivel()) throw new Error('Sang AI não configurada. Abra o módulo Sang AI e cole sua chave.');
+
             const ctrl = new AbortController();
-            const timer = setTimeout(() => ctrl.abort(), opts.timeout || 12000);
+            const timeoutMs = opts.timeout || 20000;
+            const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+
             try {
-                const r = await window._apis.groq({
+                const resposta = await window._apis.groq({
                     mensagens: [
                         { role: 'system', content: systemPrompt },
                         { role: 'user', content: userContent }
                     ],
-                    maxTokens: opts.maxTokens || 500,
+                    modelo: MODELO_SANGMAX,
+                    maxTokens: opts.maxTokens || 600,
                     temperature: opts.temperature ?? 0.3
                 }, { signal: ctrl.signal, forceRefresh: true });
-                return (r || '').trim();
+
+                if (!resposta || !String(resposta).trim()) {
+                    throw new Error('Sang AI respondeu vazio. Tente de novo.');
+                }
+                return this._limpar(resposta);
+            } catch (e) {
+                if (e.name === 'AbortError') throw new Error('Timeout — resposta demorou mais de ' + Math.round(timeoutMs/1000) + 's.');
+                if (e.codigo === 'cota-local') throw new Error('Limite local do Groq atingido. Aguarde 1 minuto.');
+                if (e.codigo === 'sem-chave') throw new Error('Chave do Groq não configurada.');
+                if (e.message && e.message.includes('429')) throw new Error('Rate limit da Groq. Aguarde alguns segundos.');
+                throw e;
             } finally {
                 clearTimeout(timer);
             }
         },
 
+        // ─── Análise de pacote individual ───
         async analisarPacote(packet) {
+            const payloadHexLimitado = packet.payloadHex.length > 800
+                ? packet.payloadHex.slice(0, 800) + '…'
+                : packet.payloadHex;
+
             return this._chamar(
-                'Você analisa pacotes de rede de um jogo online estilo Habbo. ' +
-                'Responda em português, direto, sem introdução. Máximo 4 frases. ' +
-                'Explique: (1) o que o pacote parece fazer, (2) o que os bytes representam, ' +
-                '(3) se é comum ou suspeito. Se não souber, diga "provável" ou "possível".',
-                `ID: ${packet.header}\nTamanho: ${packet.byteLength} bytes\n` +
-                `Hex: ${packet.fullHex}\nASCII: ${packet.ascii || '(binário)'}`,
-                { maxTokens: 350 }
+                'Você analisa pacotes binários de um jogo online estilo Habbo Hotel. ' +
+                'Formato do protocolo: 4 bytes de tamanho total, 2 bytes de ID do pacote, ' +
+                'depois o payload (restante).\n\n' +
+                'Responda em português brasileiro, direto, sem introdução. Máximo 4 frases. ' +
+                'Siga esta estrutura:\n' +
+                '• O que o pacote provavelmente faz\n' +
+                '• O que os bytes do payload representam\n' +
+                '• Se é normal ou suspeito\n\n' +
+                'Se não souber, use "provavelmente" ou "possivelmente". Nunca invente certeza.',
+                `Pacote a analisar:\n\n` +
+                `ID: ${packet.header}\n` +
+                `Tamanho total: ${packet.byteLength} bytes\n` +
+                `Tamanho do payload: ${packet.payloadLength} bytes\n` +
+                `Hex do payload: ${payloadHexLimitado}\n` +
+                `ASCII do payload: ${packet.ascii || '(binário, sem texto legível)'}`,
+                { maxTokens: 400, temperature: 0.3 }
             );
         },
 
+        // ─── Análise de sequência ───
         async analisarSequencia(packets) {
-            const linhas = packets.slice(0, 30).map(p =>
-                `[${p.dir}] ID ${p.header} (${p.byteLength}b): ${p.fullHex.slice(0, 120)}`
+            if (!packets.length) throw new Error('Sem pacotes capturados ainda.');
+
+            const lista = packets.slice(0, 20).map((p, i) =>
+                `${i + 1}. [${p.dir}] ID ${p.header} | ${p.byteLength}b | payload: ${p.payloadHex.slice(0, 100) || '(vazio)'}`
             ).join('\n');
-            return this._chamar(
-                'Você analisa uma sequência de pacotes de rede de um jogo online estilo Habbo. ' +
-                'Responda em português, direto, sem introdução. Máximo 5 frases. ' +
-                'Conte a "história" da sequência: o que está acontecendo entre cliente e servidor.',
-                `Últimos ${packets.length} pacotes:\n\n${linhas}`,
-                { maxTokens: 500 }
-            );
-        },
 
-        async criarFiltroLinguagemNatural(descricao, amostras) {
-            const amostrasTxt = amostras.slice(0, 20).map(p =>
-                `ID ${p.header} (${p.byteLength}b) ASCII: "${p.ascii.slice(0, 40)}"`
-            ).join('\n');
             return this._chamar(
-                'Você converte comandos em português em regras de filtro para um analisador de pacotes. ' +
-                'Responda SOMENTE com JSON válido, sem markdown, sem comentários.\n' +
-                'Formato: {"ids":[123],"strings":["ABC"],"motivo":"..."}\n' +
-                '- "ids": array de IDs numéricos (pode ser vazio)\n' +
-                '- "strings": array de strings para buscar no hex/ascii (pode ser vazio)\n' +
-                '- "motivo": explicação curta da regra',
-                `Comando: "${descricao}"\n\nAmostras recentes:\n${amostrasTxt}`,
-                { maxTokens: 300, temperature: 0.2 }
-            );
-        },
-
-        async gerarJs(descricao, contexto) {
-            return this._chamar(
-                'Você gera código JavaScript para uma fila de ações em um analisador de pacotes de jogo. ' +
-                'O código roda dentro de uma função assíncrona com acesso a:\n' +
-                '- window.gameWS.send(buffer) para enviar pacotes\n' +
-                '- sleep(ms) para aguardar\n' +
-                '- Utils.buildPacket(id, hexPayload) para montar pacotes\n\n' +
-                'Responda SOMENTE com o código JS, sem markdown, sem comentários explicativos, ' +
-                'sem bloco de código. Use uma linha só se possível.',
-                `Pedido: "${descricao}"\n\nContexto: ${contexto || 'nenhum'}`,
-                { maxTokens: 400, temperature: 0.2 }
-            );
-        },
-
-        async chatLivre(mensagem, contextoPacotes) {
-            const ctx = contextoPacotes && contextoPacotes.length
-                ? '\n\nContexto — últimos pacotes capturados:\n' +
-                  contextoPacotes.slice(0, 15).map(p =>
-                      `[${p.dir}] ID ${p.header} (${p.byteLength}b): ${p.fullHex.slice(0, 80)}`
-                  ).join('\n')
-                : '';
-            return this._chamar(
-                'Você é Sang AI, assistente embutida num analisador de pacotes de rede de jogo online ' +
-                '(estilo Habbo). Responda em português, direto. Você pode ajudar a entender pacotes, ' +
-                'sugerir filtros, explicar o protocolo, gerar comandos. Seja útil e específica.',
-                mensagem + ctx,
+                'Você analisa sequências de pacotes binários de um jogo online estilo Habbo Hotel. ' +
+                'Responda em português brasileiro, direto. Máximo 5 frases. ' +
+                'Conte a "história" do que está acontecendo: quem está pedindo o quê ao servidor. ' +
+                'Mencione IDs específicos quando fizer sentido. Sem introdução, sem bullet points.',
+                `Sequência de ${packets.length} pacotes capturados:\n\n${lista}`,
                 { maxTokens: 600 }
+            );
+        },
+
+        // ─── Filtro em linguagem natural ───
+        async criarFiltroLinguagemNatural(descricao, amostras) {
+            const amostrasTxt = amostras.length
+                ? amostras.slice(0, 15).map(p =>
+                    `ID ${p.header} (${p.byteLength}b) — ASCII: "${p.ascii.slice(0, 50) || '(binário)'}"`
+                  ).join('\n')
+                : '(nenhuma amostra capturada ainda)';
+
+            const resp = await this._chamar(
+                'Você converte pedidos em português em regras de filtro para um analisador de pacotes binários de jogo.\n\n' +
+                'Responda SOMENTE com JSON válido, nada mais. Sem markdown, sem crases, sem texto antes ou depois.\n\n' +
+                'Formato EXATO:\n' +
+                '{"ids":[123,456],"strings":["ABC"],"motivo":"explicação curta"}\n\n' +
+                'Regras dos campos:\n' +
+                '- "ids": array de inteiros. Ex: [4521, 1080]. Vazio [] se não aplicável.\n' +
+                '- "strings": array de strings hex/ascii. Ex: ["48 65 6C", "chat"]. Vazio [] se não aplicável.\n' +
+                '- "motivo": frase curta explicando por que essa regra filtra o pedido.\n\n' +
+                'Se o pedido for vago, use as amostras pra inferir IDs e strings concretos.',
+                `Pedido: "${descricao}"\n\nAmostras recentes:\n${amostrasTxt}`,
+                { maxTokens: 400, temperature: 0.1 }
+            );
+
+            const dados = this._parseJson(resp);
+            if (!dados) throw new Error('A IA respondeu em formato inválido.');
+
+            return {
+                ids: Array.isArray(dados.ids)
+                    ? dados.ids.map(n => Number(n)).filter(n => Number.isFinite(n) && n > 0)
+                    : [],
+                strings: Array.isArray(dados.strings)
+                    ? dados.strings.map(s => String(s).trim()).filter(Boolean)
+                    : [],
+                motivo: typeof dados.motivo === 'string' ? dados.motivo : ''
+            };
+        },
+
+        // ─── Geração de JS ───
+        async gerarJs(descricao, contexto) {
+            const codigo = await this._chamar(
+                'Você gera código JavaScript puro para uma fila de ações em um analisador de pacotes de jogo online.\n\n' +
+                'O código é executado com eval() dentro de uma função async. Funções disponíveis:\n' +
+                '  window.gameWS.send(ArrayBuffer) — envia um pacote\n' +
+                '  Utils.buildPacket(id, "HEX string") — constrói um ArrayBuffer a partir de ID + payload hex\n' +
+                '  sleep(ms) — pausa assíncrona (retorna Promise)\n\n' +
+                'Regras:\n' +
+                '1. Responda SOMENTE com o código. Sem ```js, sem ```, sem explicação.\n' +
+                '2. Pode usar await, loops, condicionais.\n' +
+                '3. Para enviar: window.gameWS.send(Utils.buildPacket(123, "AA BB"))\n' +
+                '4. Para pausar: await sleep(500)\n' +
+                '5. Se mencionar repetição, use for loop.\n' +
+                '6. Máximo 15 linhas.\n' +
+                '7. Exemplo pra "dançar 3x com pausa 500ms":\n' +
+                '   for (let i = 0; i < 3; i++) { window.gameWS.send(Utils.buildPacket(2000, "")); await sleep(500); }',
+                `Pedido: "${descricao}"\nContexto: ${contexto || 'nenhum'}`,
+                { maxTokens: 500, temperature: 0.1 }
+            );
+            return codigo.replace(/```js|```javascript|```/g, '').trim();
+        },
+
+        // ─── Chat livre ───
+        async chatLivre(mensagem, contextoPacotes) {
+            const totalDicionario = Object.keys(AppState.dicionario).length;
+
+            const contexto = contextoPacotes && contextoPacotes.length
+                ? `\n\n--- Contexto do analisador ---\n` +
+                  `Pacotes no log agora: ${contextoPacotes.length}\n` +
+                  `IDs únicos no dicionário: ${totalDicionario}\n\n` +
+                  `Últimos pacotes capturados:\n` +
+                  contextoPacotes.slice(0, 10).map(p =>
+                      `[${p.dir}] ID ${p.header} | ${p.byteLength}b | ${p.payloadHex.slice(0, 80) || '(vazio)'}`
+                  ).join('\n')
+                : `\n\n--- Contexto do analisador ---\n(sem pacotes capturados no momento)`;
+
+            return this._chamar(
+                'Você é Sang AI, assistente técnica embutida num analisador de pacotes de rede de ' +
+                'jogo online estilo Habbo Hotel.\n\n' +
+                'Você entende o protocolo: pacote binário com 4 bytes de tamanho, 2 bytes de ID, ' +
+                'e o resto de payload. Você tem acesso ao contexto dos pacotes capturados.\n\n' +
+                'Responda em português brasileiro, direto e específica. Você pode:\n' +
+                '• Explicar IDs e payloads\n' +
+                '• Sugerir filtros com base no tráfego capturado\n' +
+                '• Identificar padrões anômalos\n' +
+                '• Ajudar a construir sequências\n' +
+                '• Responder dúvidas sobre o protocolo Habbo\n\n' +
+                'Se não souber algo, diga "não sei com certeza, mas…" e dê a melhor hipótese. ' +
+                'Nunca invente detalhes específicos. Seja concisa.',
+                mensagem + contexto,
+                { maxTokens: 800 }
             );
         }
     };
@@ -294,7 +391,6 @@
             }
         }
         const grip = document.createElement('div');
-        grip.className = 'resize-grip';
         Object.assign(grip.style, {
             position: 'absolute', right: '0', bottom: '0', width: '18px', height: '18px',
             cursor: 'nwse-resize', zIndex: '5',
@@ -307,10 +403,8 @@
 
         let resizing = false, startX, startY, startW, startH;
         on(grip, 'mousedown', (e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            resizing = true;
-            startX = e.clientX; startY = e.clientY;
+            e.preventDefault(); e.stopPropagation();
+            resizing = true; startX = e.clientX; startY = e.clientY;
             const rect = targetEl.getBoundingClientRect();
             startW = rect.width; startH = rect.height;
         });
@@ -382,8 +476,7 @@
         Object.assign(btnEye.style, btnBase, { padding: '5px 10px', fontSize: '13px' });
         btnEye.title = 'Mostrar/Ocultar tudo (Ctrl+Alt+Q)';
 
-        let analyzerVisible = false;
-        let senderVisible = false;
+        let analyzerVisible = false, senderVisible = false;
 
         function highlight(btn, on_) {
             if (on_) {
@@ -398,29 +491,15 @@
                 btn.style.boxShadow = 'none';
             }
         }
-
         function updateButtons() {
             highlight(btnAnalyzer, analyzerVisible);
             highlight(btnSender, senderVisible);
         }
-
-        function setAnalyzerVisible(show) {
-            analyzerVisible = show;
-            AnalyzerUI.setVisible(analyzerVisible);
-            updateButtons();
-        }
-        function setSenderVisible(show) {
-            senderVisible = show;
-            SenderUI.setVisible(senderVisible);
-            updateButtons();
-        }
+        function setAnalyzerVisible(show) { analyzerVisible = show; AnalyzerUI.setVisible(analyzerVisible); updateButtons(); }
+        function setSenderVisible(show) { senderVisible = show; SenderUI.setVisible(senderVisible); updateButtons(); }
         function toggleAnalyzer() { setAnalyzerVisible(!analyzerVisible); }
         function toggleSender() { setSenderVisible(!senderVisible); }
-        function toggleBoth() {
-            const anyVisible = analyzerVisible || senderVisible;
-            setAnalyzerVisible(!anyVisible);
-            setSenderVisible(!anyVisible);
-        }
+        function toggleBoth() { const v = analyzerVisible || senderVisible; setAnalyzerVisible(!v); setSenderVisible(!v); }
 
         on(btnAnalyzer, 'click', toggleAnalyzer);
         on(btnSender, 'click', toggleSender);
@@ -447,7 +526,7 @@
     const SenderRef = { fill: null };
 
     // ═══════════════════════════════════════════════════════════════
-    // ANALYZER UI — com tabs (Log | Filtros | IA)
+    // ANALYZER UI (tabs: LOG | FILTROS | IA)
     // ═══════════════════════════════════════════════════════════════
     const AnalyzerUI = (function() {
         const el = document.createElement('div');
@@ -464,7 +543,6 @@
         });
 
         el.innerHTML = `
-            <!-- Header -->
             <div class="drag-header" style="
                 background:linear-gradient(180deg, #12121c 0%, #0a0a12 100%);
                 padding:11px 14px;cursor:move;
@@ -486,29 +564,13 @@
                 </div>
             </div>
 
-            <!-- Tabs -->
             <div id="analyzerTabs" style="display:flex;background:#0a0a12;border-bottom:1px solid #1e1e2e;padding:0 8px;gap:2px;">
-                <button class="az-tab active" data-tab="log" style="
-                    background:transparent;color:#e1e1e6;border:none;cursor:pointer;
-                    padding:10px 16px;font-size:11px;font-family:monospace;
-                    letter-spacing:0.05em;position:relative;transition:color 0.15s;
-                    outline:none;
-                ">📋 LOG</button>
-                <button class="az-tab" data-tab="filtros" style="
-                    background:transparent;color:#8a8a9a;border:none;cursor:pointer;
-                    padding:10px 16px;font-size:11px;font-family:monospace;
-                    letter-spacing:0.05em;position:relative;transition:color 0.15s;
-                    outline:none;
-                ">🛡️ FILTROS</button>
-                <button class="az-tab" data-tab="ia" style="
-                    background:transparent;color:#8a8a9a;border:none;cursor:pointer;
-                    padding:10px 16px;font-size:11px;font-family:monospace;
-                    letter-spacing:0.05em;position:relative;transition:color 0.15s;
-                    outline:none;
-                ">✨ SANG AI</button>
+                <button class="az-tab active" data-tab="log" style="background:transparent;color:#e1e1e6;border:none;cursor:pointer;padding:10px 16px;font-size:11px;font-family:monospace;letter-spacing:0.05em;position:relative;transition:color 0.15s;outline:none;">📋 LOG</button>
+                <button class="az-tab" data-tab="filtros" style="background:transparent;color:#8a8a9a;border:none;cursor:pointer;padding:10px 16px;font-size:11px;font-family:monospace;letter-spacing:0.05em;position:relative;transition:color 0.15s;outline:none;">🛡️ FILTROS</button>
+                <button class="az-tab" data-tab="ia" style="background:transparent;color:#8a8a9a;border:none;cursor:pointer;padding:10px 16px;font-size:11px;font-family:monospace;letter-spacing:0.05em;position:relative;transition:color 0.15s;outline:none;">✨ SANG AI</button>
             </div>
 
-            <!-- Pane: LOG -->
+            <!-- LOG -->
             <div id="paneLog" style="display:flex;flex-direction:column;flex:1;overflow:hidden;min-height:0;">
                 <div style="padding:8px 12px;display:flex;gap:12px;align-items:center;background:#0a0a12;border-bottom:1px solid #1e1e2e;">
                     <label style="display:flex;align-items:center;gap:5px;cursor:pointer;font-size:11px;color:#00d4aa;font-weight:600;">
@@ -518,35 +580,32 @@
                         <input type="checkbox" id="chkRecv" checked style="accent-color:#6c63ff;cursor:pointer;"> RECEBIDOS
                     </label>
                     <div style="flex:1;min-width:0;">
-                        <input id="logSearch" type="text"
-                            placeholder="🔍 Filtrar por ID, hex, texto…"
-                            style="width:100%;background:#13131a;color:#e1e1e6;
-                            border:1px solid #1e1e2e;padding:6px 10px;font-size:11px;
-                            border-radius:6px;font-family:monospace;outline:none;box-sizing:border-box;">
+                        <input id="logSearch" type="text" placeholder="🔍 Filtrar por ID, hex, texto…"
+                            style="width:100%;background:#13131a;color:#e1e1e6;border:1px solid #1e1e2e;
+                            padding:6px 10px;font-size:11px;border-radius:6px;font-family:monospace;outline:none;box-sizing:border-box;">
                     </div>
                     <span id="logCounter" style="font-size:10px;color:#8a8a9a;white-space:nowrap;">0 logs</span>
                 </div>
 
                 <div style="padding:6px 12px;display:flex;gap:6px;background:#0a0a12;border-bottom:1px solid #1e1e2e;">
-                    <button id="btnPauseLogs" class="az-action" style="flex:1;background:#13131a;color:#e1e1e6;border:1px solid #1e1e2e;cursor:pointer;padding:6px 10px;border-radius:6px;font-size:11px;font-family:monospace;transition:all 0.15s;">⏸ PAUSAR</button>
-                    <button id="btnCopyAll" class="az-action" style="flex:1;background:#13131a;color:#00d4aa;border:1px solid #1e1e2e;cursor:pointer;padding:6px 10px;border-radius:6px;font-size:11px;font-family:monospace;transition:all 0.15s;">📋 COPIAR</button>
-                    <button id="btnClearLogs" class="az-action" style="flex:1;background:#13131a;color:#ef4444;border:1px solid #1e1e2e;cursor:pointer;padding:6px 10px;border-radius:6px;font-size:11px;font-family:monospace;transition:all 0.15s;">🗑 LIMPAR</button>
+                    <button id="btnPauseLogs" style="flex:1;background:#13131a;color:#e1e1e6;border:1px solid #1e1e2e;cursor:pointer;padding:6px 10px;border-radius:6px;font-size:11px;font-family:monospace;transition:all 0.15s;">⏸ PAUSAR</button>
+                    <button id="btnCopyAll" style="flex:1;background:#13131a;color:#00d4aa;border:1px solid #1e1e2e;cursor:pointer;padding:6px 10px;border-radius:6px;font-size:11px;font-family:monospace;transition:all 0.15s;">📋 COPIAR</button>
+                    <button id="btnClearLogs" style="flex:1;background:#13131a;color:#ef4444;border:1px solid #1e1e2e;cursor:pointer;padding:6px 10px;border-radius:6px;font-size:11px;font-family:monospace;transition:all 0.15s;">🗑 LIMPAR</button>
                     <button id="btnKillSwitch" style="background:#13131a;color:#ef4444;border:1px solid #ef4444;cursor:pointer;padding:6px 12px;border-radius:6px;font-weight:bold;font-size:11px;font-family:monospace;transition:all 0.2s;white-space:nowrap;">⚠️ DROP ALL</button>
                 </div>
 
                 <div id="logArea" style="flex:1;overflow-y:auto;padding:10px;min-height:80px;"></div>
             </div>
 
-            <!-- Pane: FILTROS -->
+            <!-- FILTROS -->
             <div id="paneFiltros" style="display:none;flex-direction:column;flex:1;overflow:hidden;min-height:0;padding:14px;gap:14px;">
                 <div style="display:flex;gap:14px;flex:1;min-height:0;">
                     <div style="flex:1;display:flex;flex-direction:column;min-width:0;background:#13131a;border:1px solid #1e1e2e;border-radius:8px;padding:12px;">
                         <div style="color:#6c63ff;font-weight:bold;margin-bottom:10px;font-size:11px;letter-spacing:0.05em;display:flex;align-items:center;gap:6px;">
-                            <span style="width:6px;height:6px;border-radius:50%;background:#6c63ff;"></span>
-                            OCULTAR DO LOG
+                            <span style="width:6px;height:6px;border-radius:50%;background:#6c63ff;"></span> OCULTAR DO LOG
                         </div>
                         <div style="font-size:10px;color:#6a6a7a;margin-bottom:8px;line-height:1.5;">
-                            Some da visualização — o pacote ainda trafega normalmente.
+                            Some da visualização — o pacote ainda trafega.
                         </div>
                         <div style="display:flex;gap:4px;margin-bottom:6px;">
                             <input id="vId" type="number" placeholder="ID" style="width:70px;background:#0a0a12;color:#e1e1e6;border:1px solid #1e1e2e;padding:6px 8px;font-size:11px;border-radius:5px;outline:none;box-sizing:border-box;font-family:monospace;">
@@ -557,15 +616,14 @@
                             <button id="btnAddVStr" style="background:#13131a;color:#6c63ff;border:1px solid #6c63ff;cursor:pointer;padding:6px 12px;border-radius:5px;font-size:11px;font-weight:bold;">+</button>
                         </div>
                         <div id="listV" style="flex:1;overflow-y:auto;margin-bottom:8px;font-size:10px;"></div>
-                        <button id="btnClrV" style="width:100%;background:#13131a;color:#ef4444;border:1px solid #ef4444;cursor:pointer;padding:5px;border-radius:5px;font-size:10px;transition:all 0.15s;">LIMPAR TUDO</button>
+                        <button id="btnClrV" style="width:100%;background:#13131a;color:#ef4444;border:1px solid #ef4444;cursor:pointer;padding:5px;border-radius:5px;font-size:10px;">LIMPAR TUDO</button>
                     </div>
                     <div style="flex:1;display:flex;flex-direction:column;min-width:0;background:#13131a;border:1px solid #1e1e2e;border-radius:8px;padding:12px;">
                         <div style="color:#ef4444;font-weight:bold;margin-bottom:10px;font-size:11px;letter-spacing:0.05em;display:flex;align-items:center;gap:6px;">
-                            <span style="width:6px;height:6px;border-radius:50%;background:#ef4444;"></span>
-                            BLOQUEAR ENVIO
+                            <span style="width:6px;height:6px;border-radius:50%;background:#ef4444;"></span> BLOQUEAR ENVIO
                         </div>
                         <div style="font-size:10px;color:#6a6a7a;margin-bottom:8px;line-height:1.5;">
-                            Impede o pacote de sair — o servidor nunca o recebe.
+                            Impede o pacote de sair — o servidor nunca recebe.
                         </div>
                         <div style="display:flex;gap:4px;margin-bottom:6px;">
                             <input id="dId" type="number" placeholder="ID" style="width:70px;background:#0a0a12;color:#e1e1e6;border:1px solid #1e1e2e;padding:6px 8px;font-size:11px;border-radius:5px;outline:none;box-sizing:border-box;font-family:monospace;">
@@ -576,42 +634,40 @@
                             <button id="btnAddDStr" style="background:#13131a;color:#ef4444;border:1px solid #ef4444;cursor:pointer;padding:6px 12px;border-radius:5px;font-size:11px;font-weight:bold;">+</button>
                         </div>
                         <div id="listD" style="flex:1;overflow-y:auto;margin-bottom:8px;font-size:10px;"></div>
-                        <button id="btnClrD" style="width:100%;background:#13131a;color:#ef4444;border:1px solid #ef4444;cursor:pointer;padding:5px;border-radius:5px;font-size:10px;transition:all 0.15s;">LIMPAR TUDO</button>
+                        <button id="btnClrD" style="width:100%;background:#13131a;color:#ef4444;border:1px solid #ef4444;cursor:pointer;padding:5px;border-radius:5px;font-size:10px;">LIMPAR TUDO</button>
                     </div>
                 </div>
 
-                <!-- Linguagem natural -->
                 <div style="background:linear-gradient(135deg, rgba(168,85,247,0.08), rgba(108,99,255,0.05));
                     border:1px solid rgba(168,85,247,0.25);border-radius:8px;padding:12px;">
                     <div style="color:#c4b5fd;font-weight:bold;font-size:11px;letter-spacing:0.05em;margin-bottom:8px;display:flex;align-items:center;gap:6px;">
-                        ✨ CRIAR FILTRO COM LINGUAGEM NATURAL
+                        ✨ FILTRO EM LINGUAGEM NATURAL
                     </div>
                     <div style="display:flex;gap:6px;">
-                        <input id="nlFiltro" type="text"
-                            placeholder="Ex: esconde pacotes de movimento, bloqueia chat…"
+                        <input id="nlFiltro" type="text" placeholder="Ex: esconde pacotes de movimento, bloqueia chat…"
                             style="flex:1;background:#0a0a12;color:#e1e1e6;border:1px solid rgba(168,85,247,0.3);
                             padding:8px 10px;font-size:11px;border-radius:6px;outline:none;
                             font-family:monospace;box-sizing:border-box;min-width:0;">
                         <button id="btnNlFiltro" style="background:linear-gradient(135deg,#a855f7,#6c63ff);
                             color:#fff;border:none;cursor:pointer;padding:8px 16px;border-radius:6px;
-                            font-weight:bold;font-size:11px;font-family:monospace;white-space:nowrap;">GERAR</button>
+                            font-weight:bold;font-size:11px;font-family:monospace;white-space:nowrap;
+                            transition:all 0.15s;">GERAR</button>
                     </div>
                     <div id="nlFiltroResultado" style="margin-top:8px;font-size:10.5px;color:#8a8a9a;line-height:1.5;"></div>
                 </div>
             </div>
 
-            <!-- Pane: IA -->
+            <!-- IA -->
             <div id="paneIA" style="display:none;flex-direction:column;flex:1;overflow:hidden;min-height:0;">
                 <div id="iaChat" style="flex:1;overflow-y:auto;padding:14px;display:flex;flex-direction:column;gap:10px;min-height:0;"></div>
                 <div style="padding:8px 12px;background:#0a0a12;border-top:1px solid #1e1e2e;display:flex;gap:6px;flex-wrap:wrap;">
-                    <button class="ia-quick" style="background:#13131a;color:#c4b5fd;border:1px solid rgba(168,85,247,0.3);cursor:pointer;padding:5px 10px;border-radius:5px;font-size:10px;font-family:monospace;">Últimos 10 pacotes</button>
-                    <button class="ia-quick" style="background:#13131a;color:#c4b5fd;border:1px solid rgba(168,85,247,0.3);cursor:pointer;padding:5px 10px;border-radius:5px;font-size:10px;font-family:monospace;">Sugerir filtros</button>
-                    <button class="ia-quick" style="background:#13131a;color:#c4b5fd;border:1px solid rgba(168,85,247,0.3);cursor:pointer;padding:5px 10px;border-radius:5px;font-size:10px;font-family:monospace;">Detectar anomalias</button>
-                    <button class="ia-quick" style="background:#13131a;color:#c4b5fd;border:1px solid rgba(168,85,247,0.3);cursor:pointer;padding:5px 10px;border-radius:5px;font-size:10px;font-family:monospace;">O que é ID 4521?</button>
+                    <button class="ia-quick" data-q="seq10" style="background:#13131a;color:#c4b5fd;border:1px solid rgba(168,85,247,0.3);cursor:pointer;padding:5px 10px;border-radius:5px;font-size:10px;font-family:monospace;">Últimos 10 pacotes</button>
+                    <button class="ia-quick" data-q="filtros" style="background:#13131a;color:#c4b5fd;border:1px solid rgba(168,85,247,0.3);cursor:pointer;padding:5px 10px;border-radius:5px;font-size:10px;font-family:monospace;">Sugerir filtros</button>
+                    <button class="ia-quick" data-q="anomalias" style="background:#13131a;color:#c4b5fd;border:1px solid rgba(168,85,247,0.3);cursor:pointer;padding:5px 10px;border-radius:5px;font-size:10px;font-family:monospace;">Detectar anomalias</button>
+                    <button class="ia-quick" data-q="resumo" style="background:#13131a;color:#c4b5fd;border:1px solid rgba(168,85,247,0.3);cursor:pointer;padding:5px 10px;border-radius:5px;font-size:10px;font-family:monospace;">Resumir tráfego</button>
                 </div>
                 <div style="padding:10px 12px;background:#0a0a12;border-top:1px solid #1e1e2e;display:flex;gap:6px;align-items:flex-end;">
-                    <textarea id="iaInput" rows="1"
-                        placeholder="Pergunte algo ou descreva o que procura…"
+                    <textarea id="iaInput" rows="1" placeholder="Pergunte algo ou descreva o que procura…"
                         style="flex:1;background:#13131a;color:#e1e1e6;border:1px solid #1e1e2e;
                         padding:8px 10px;font-size:11.5px;border-radius:6px;outline:none;
                         font-family:monospace;resize:none;min-height:36px;max-height:100px;
@@ -630,7 +686,6 @@
         const closeBtn = createCloseButton(() => Toolbar.setAnalyzerVisible(false));
         el.querySelector('#analyzerHeaderBtns').appendChild(closeBtn);
 
-        // ─── Referências ───
         const logArea = el.querySelector('#logArea');
         logArea.style.fontSize = AppState.fontSize + 'px';
         const logCounter = el.querySelector('#logCounter');
@@ -645,38 +700,32 @@
             filtros: el.querySelector('#paneFiltros'),
             ia: el.querySelector('#paneIA')
         };
-        const tabUnderline = 'position:absolute;left:0;right:0;bottom:-1px;height:2px;background:linear-gradient(90deg,#a855f7,#6c63ff);border-radius:2px;';
+        const tabUnderlineCss = 'position:absolute;left:0;right:0;bottom:-1px;height:2px;background:linear-gradient(90deg,#a855f7,#6c63ff);border-radius:2px;';
 
         function setActiveTab(name) {
             tabs.forEach(t => {
                 const isActive = t.dataset.tab === name;
                 t.classList.toggle('active', isActive);
                 t.style.color = isActive ? '#e1e1e6' : '#8a8a9a';
-                // Underline
                 let underline = t.querySelector('.az-underline');
                 if (isActive && !underline) {
                     underline = document.createElement('span');
                     underline.className = 'az-underline';
-                    underline.style.cssText = tabUnderline;
+                    underline.style.cssText = tabUnderlineCss;
                     t.appendChild(underline);
                 } else if (!isActive && underline) {
                     underline.remove();
                 }
             });
             Object.keys(panes).forEach(k => {
-                panes[k].style.display = (k === name) ? (k === 'log' ? 'flex' : k === 'filtros' ? 'flex' : 'flex') : 'none';
+                panes[k].style.display = (k === name) ? 'flex' : 'none';
             });
-            if (name === 'ia') {
-                panes.ia.style.flexDirection = 'column';
-                if (!panes.ia.dataset.iniciado) {
-                    panes.ia.dataset.iniciado = '1';
-                    iaInit();
-                }
+            if (name === 'ia' && !panes.ia.dataset.iniciado) {
+                panes.ia.dataset.iniciado = '1';
+                iaInit();
             }
         }
-
         tabs.forEach(t => on(t, 'click', () => setActiveTab(t.dataset.tab)));
-        // Marca underline inicial
         setTimeout(() => setActiveTab('log'), 0);
 
         // ─── Fonte ───
@@ -696,12 +745,10 @@
         on(btnKill, 'click', () => {
             AppState.killSwitchActive = !AppState.killSwitchActive;
             if (AppState.killSwitchActive) {
-                btnKill.style.background = '#ef4444';
-                btnKill.style.color = '#fff';
+                btnKill.style.background = '#ef4444'; btnKill.style.color = '#fff';
                 btnKill.textContent = '🛑 DROP ATIVO';
             } else {
-                btnKill.style.background = '#13131a';
-                btnKill.style.color = '#ef4444';
+                btnKill.style.background = '#13131a'; btnKill.style.color = '#ef4444';
                 btnKill.textContent = '⚠️ DROP ALL';
             }
         });
@@ -733,7 +780,7 @@
             navigator.clipboard.writeText(allText);
         });
 
-        // ─── Filtro de visibilidade ───
+        // ─── Visibilidade ───
         function refreshVisibility() {
             const q = searchInp.value.toLowerCase();
             let visibleCount = 0;
@@ -771,7 +818,6 @@
             d.appendChild(btn);
             return d;
         }
-
         function renderFilters() {
             const lv = el.querySelector('#listV'); lv.innerHTML = '';
             const ld = el.querySelector('#listD'); ld.innerHTML = '';
@@ -814,43 +860,36 @@
                 nlResult.innerHTML = '<span style="color:#ef4444;">⚠ Sang AI não configurada. Abra o módulo Sang AI e cole sua chave.</span>';
                 return;
             }
+            if (SangAI._busy) return;
+            SangAI._busy = true;
             nlBtn.disabled = true;
             nlBtn.textContent = '⏳';
-            nlResult.innerHTML = '<span style="color:#8a8a9a;">Consultando Sang AI…</span>';
+            nlResult.innerHTML = '<span style="color:#8a8a9a;">Consultando SangMax…</span>';
             try {
-                // Pega amostras recentes pra dar contexto
-                const amostras = AppState.logs.slice(-20).map(l => ({
-                    header: l.packet.header,
-                    byteLength: l.packet.byteLength,
-                    ascii: l.packet.ascii
-                }));
-                const resp = await SangAI.criarFiltroLinguagemNatural(desc, amostras);
-                const limpo = resp.replace(/```json|```/g, '').trim();
-                let dados;
-                try { dados = JSON.parse(limpo); }
-                catch (e) {
-                    nlResult.innerHTML = `<span style="color:#ef4444;">Resposta inválida da IA: ${limpo.slice(0, 200)}</span>`;
+                const amostras = AppState.logs.slice(-15).map(l => l.packet);
+                const r = await SangAI.criarFiltroLinguagemNatural(desc, amostras);
+
+                if (!r.ids.length && !r.strings.length) {
+                    nlResult.innerHTML =
+                        '<span style="color:#f5b942;">⚠ A IA não conseguiu extrair filtros concretos do pedido.</span>' +
+                        (r.motivo ? `<br><span style="color:#8a8a9a;">${r.motivo}</span>` : '');
                     return;
                 }
 
-                const ids = Array.isArray(dados.ids) ? dados.ids : [];
-                const strings = Array.isArray(dados.strings) ? dados.strings : [];
-                const motivo = dados.motivo || '';
-
-                // Aplica em VISUAL por padrão
-                ids.forEach(id => PacketFilter.manageList('VISUAL', 'ADD_ID', String(id)));
-                strings.forEach(s => PacketFilter.manageList('VISUAL', 'ADD_STR', s));
+                r.ids.forEach(id => PacketFilter.manageList('VISUAL', 'ADD_ID', String(id)));
+                r.strings.forEach(s => PacketFilter.manageList('VISUAL', 'ADD_STR', s));
                 renderFilters();
 
                 nlResult.innerHTML =
                     `<span style="color:#00d4aa;">✓ Aplicado em OCULTAR DO LOG</span>` +
-                    (motivo ? `<br><span style="color:#8a8a9a;">${motivo}</span>` : '') +
-                    (ids.length ? `<br><span style="color:#6c63ff;">IDs: ${ids.join(', ')}</span>` : '') +
-                    (strings.length ? `<br><span style="color:#6c63ff;">Strings: ${strings.join(', ')}</span>` : '');
+                    (r.motivo ? `<br><span style="color:#8a8a9a;">${r.motivo}</span>` : '') +
+                    (r.ids.length ? `<br><span style="color:#6c63ff;">IDs: ${r.ids.join(', ')}</span>` : '') +
+                    (r.strings.length ? `<br><span style="color:#6c63ff;">Strings: ${r.strings.join(', ')}</span>` : '');
                 nlInput.value = '';
             } catch (e) {
                 nlResult.innerHTML = `<span style="color:#ef4444;">Erro: ${e.message || e}</span>`;
             } finally {
+                SangAI._busy = false;
                 nlBtn.disabled = false;
                 nlBtn.textContent = 'GERAR';
             }
@@ -858,7 +897,7 @@
         on(nlBtn, 'click', gerarFiltroNL);
         on(nlInput, 'keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); gerarFiltroNL(); } });
 
-        // ─── IA Chat ───
+        // ─── Chat da IA ───
         const iaChat = el.querySelector('#iaChat');
         const iaInput = el.querySelector('#iaInput');
         const iaSendBtn = el.querySelector('#iaSend');
@@ -868,90 +907,92 @@
             if (iaPronto) return;
             iaPronto = true;
             iaAdd('ia',
-                'Oi! Sou a **Sang AI** aqui no Analyzer. Posso:\n\n' +
-                '• Explicar pacotes individuais (clica no 🧠 de qualquer pacote)\n' +
-                '• Analisar os últimos N pacotes de uma vez\n' +
-                '• Sugerir filtros com base no tráfego\n' +
-                '• Responder perguntas sobre IDs específicos\n\n' +
-                'Pergunta à vontade.'
+                'Oi! Sou a Sang AI aqui no Analyzer. Posso:\n\n' +
+                '• **Explicar um pacote específico** — clica no 🧠 em qualquer item do log\n' +
+                '• **Analisar os últimos N pacotes** — botão "Últimos 10 pacotes" abaixo\n' +
+                '• **Sugerir filtros** com base no tráfego\n' +
+                '• **Detectar anomalias** no fluxo\n' +
+                '• **Responder perguntas** sobre IDs, padrões e protocolo\n\n' +
+                'Digite ou use os atalhos abaixo.'
             );
             if (!SangAI.disponivel()) {
-                iaAdd('erro', 'Sang AI não configurada. Abra o módulo Sang AI e cole sua chave da Groq.');
+                iaAdd('erro', '⚠ Sang AI não configurada. Abra o módulo **Sang AI** e cole sua chave da Groq (console.groq.com/keys).');
             }
         }
 
         function iaAdd(tipo, texto) {
-            const el_ = document.createElement('div');
-            el_.style.cssText = 'max-width:88%;padding:10px 14px;border-radius:12px;font-size:12px;line-height:1.5;white-space:pre-wrap;word-wrap:break-word;animation:iaMsgIn 0.28s cubic-bezier(0.34,1.56,0.64,1);';
+            const div = document.createElement('div');
+            div.style.cssText = 'max-width:88%;padding:10px 14px;border-radius:12px;font-size:12px;line-height:1.55;white-space:pre-wrap;word-wrap:break-word;animation:iaMsgIn 0.28s cubic-bezier(0.34,1.56,0.64,1);';
             if (tipo === 'user') {
-                el_.style.background = 'linear-gradient(135deg,#6c63ff,#a855f7)';
-                el_.style.color = '#fff';
-                el_.style.alignSelf = 'flex-end';
-                el_.style.borderBottomRightRadius = '4px';
+                div.style.background = 'linear-gradient(135deg,#6c63ff,#a855f7)';
+                div.style.color = '#fff';
+                div.style.alignSelf = 'flex-end';
+                div.style.borderBottomRightRadius = '4px';
             } else if (tipo === 'ia') {
-                el_.style.background = 'rgba(168,85,247,0.08)';
-                el_.style.border = '1px solid rgba(168,85,247,0.2)';
-                el_.style.color = '#e9d5ff';
-                el_.style.alignSelf = 'flex-start';
-                el_.style.borderBottomLeftRadius = '4px';
+                div.style.background = 'rgba(168,85,247,0.08)';
+                div.style.border = '1px solid rgba(168,85,247,0.2)';
+                div.style.color = '#e9d5ff';
+                div.style.alignSelf = 'flex-start';
+                div.style.borderBottomLeftRadius = '4px';
             } else if (tipo === 'erro') {
-                el_.style.background = 'rgba(239,68,68,0.08)';
-                el_.style.border = '1px solid rgba(239,68,68,0.25)';
-                el_.style.color = '#fca5a5';
-                el_.style.alignSelf = 'center';
-                el_.style.fontSize = '11px';
+                div.style.background = 'rgba(239,68,68,0.08)';
+                div.style.border = '1px solid rgba(239,68,68,0.25)';
+                div.style.color = '#fca5a5';
+                div.style.alignSelf = 'center';
+                div.style.fontSize = '11px';
             } else if (tipo === 'sys') {
-                el_.style.background = 'rgba(255,255,255,0.03)';
-                el_.style.color = '#8a7aa8';
-                el_.style.alignSelf = 'center';
-                el_.style.fontSize = '10.5px';
-                el_.style.fontStyle = 'italic';
-                el_.style.padding = '6px 12px';
-                el_.style.borderRadius = '20px';
+                div.style.background = 'rgba(255,255,255,0.03)';
+                div.style.color = '#8a7aa8';
+                div.style.alignSelf = 'center';
+                div.style.fontSize = '10.5px';
+                div.style.fontStyle = 'italic';
+                div.style.padding = '6px 12px';
+                div.style.borderRadius = '20px';
             }
-            // Markdown simples pra negrito
-            el_.innerHTML = texto
+            // Markdown simples
+            const html = String(texto)
+                .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
                 .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
                 .replace(/`([^`]+)`/g, '<code style="background:rgba(168,85,247,0.15);padding:1px 5px;border-radius:4px;font-size:11px;color:#e9d5ff;">$1</code>');
-            iaChat.appendChild(el_);
+            div.innerHTML = html;
+            iaChat.appendChild(div);
             iaChat.scrollTop = iaChat.scrollHeight;
-            return el_;
+            return div;
         }
 
-        function iaAddLoading() {
-            const el_ = document.createElement('div');
-            el_.style.cssText = 'align-self:flex-start;background:rgba(168,85,247,0.08);border:1px solid rgba(168,85,247,0.2);border-radius:12px;border-bottom-left-radius:4px;padding:12px 16px;display:flex;gap:5px;animation:iaMsgIn 0.28s;';
-            el_.innerHTML = '<span class="ia-dot"></span><span class="ia-dot"></span><span class="ia-dot"></span>';
-            iaChat.appendChild(el_);
+        function iaAddLoading(texto) {
+            const div = document.createElement('div');
+            div.style.cssText = 'align-self:flex-start;background:rgba(168,85,247,0.08);border:1px solid rgba(168,85,247,0.2);border-radius:12px;border-bottom-left-radius:4px;padding:11px 16px;display:flex;align-items:center;gap:8px;animation:iaMsgIn 0.28s;font-size:11px;color:#c4b5fd;';
+            div.innerHTML = `<span class="ia-dot"></span><span class="ia-dot"></span><span class="ia-dot"></span><span style="margin-left:6px;">${texto || 'pensando…'}</span>`;
+            iaChat.appendChild(div);
             iaChat.scrollTop = iaChat.scrollHeight;
-            return el_;
+            return div;
         }
 
-        async function iaEnviar(texto) {
+        async function iaEnviar(texto, labelLoading) {
             if (!texto.trim()) return;
             if (!SangAI.disponivel()) {
-                iaAdd('erro', 'Sang AI não configurada.');
+                iaAdd('erro', 'Sang AI não configurada. Cole sua chave da Groq no módulo Sang AI.');
                 return;
             }
+            if (SangAI._busy) return;
+
+            SangAI._busy = true;
             iaAdd('user', texto);
             iaInput.value = '';
             iaInput.style.height = 'auto';
             iaSendBtn.disabled = true;
-            const load = iaAddLoading();
+            const load = iaAddLoading(labelLoading);
             try {
-                const amostras = AppState.logs.slice(-15).map(l => ({
-                    dir: l.dir,
-                    header: l.packet.header,
-                    byteLength: l.packet.byteLength,
-                    fullHex: l.packet.fullHex
-                }));
+                const amostras = AppState.logs.slice(-15).map(l => l.packet);
                 const resp = await SangAI.chatLivre(texto, amostras);
                 load.remove();
                 iaAdd('ia', resp);
             } catch (e) {
                 load.remove();
-                iaAdd('erro', 'Erro: ' + (e.message || e));
+                iaAdd('erro', e.message || String(e));
             } finally {
+                SangAI._busy = false;
                 iaSendBtn.disabled = false;
                 iaInput.focus();
             }
@@ -966,39 +1007,40 @@
             iaInput.style.height = Math.min(100, iaInput.scrollHeight) + 'px';
         });
 
-        // ─── Quick actions da IA ───
+        // ─── Quick actions ───
         el.querySelectorAll('.ia-quick').forEach(btn => {
             on(btn, 'click', async () => {
-                const txt = btn.textContent.trim();
-                if (txt === 'Últimos 10 pacotes') {
+                const q = btn.dataset.q;
+                if (q === 'seq10') {
                     if (AppState.logs.length === 0) { iaAdd('sys', 'Nenhum pacote capturado ainda.'); return; }
-                    const pack = AppState.logs.slice(-10).map(l => ({
-                        dir: l.dir, header: l.packet.header, byteLength: l.packet.byteLength, fullHex: l.packet.fullHex
-                    }));
+                    if (SangAI._busy) return;
+                    SangAI._busy = true;
                     iaAdd('user', 'Analisa os últimos 10 pacotes.');
                     iaSendBtn.disabled = true;
-                    const load = iaAddLoading();
+                    const load = iaAddLoading('analisando sequência…');
                     try {
+                        const pack = AppState.logs.slice(-10).map(l => l.packet);
                         const resp = await SangAI.analisarSequencia(pack);
                         load.remove();
                         iaAdd('ia', resp);
                     } catch (e) {
                         load.remove();
-                        iaAdd('erro', 'Erro: ' + (e.message || e));
+                        iaAdd('erro', e.message || String(e));
                     } finally {
+                        SangAI._busy = false;
                         iaSendBtn.disabled = false;
                     }
-                } else if (txt === 'Sugerir filtros') {
-                    iaEnviar('Olhando os últimos pacotes, sugere 2-3 filtros úteis pra reduzir ruído no log. Formato: lista curta com o motivo.');
-                } else if (txt === 'Detectar anomalias') {
+                } else if (q === 'filtros') {
+                    iaEnviar('Olhando os últimos pacotes, sugere 2 ou 3 filtros úteis pra reduzir ruído no log. Lista curta, com o motivo de cada um.');
+                } else if (q === 'anomalias') {
                     iaEnviar('Olhando os últimos pacotes, tem algo anormal? Pacotes com tamanho incomum, IDs raros, ou sequências estranhas.');
-                } else if (txt === 'O que é ID 4521?') {
-                    iaEnviar('O que costuma ser o ID 4521 no protocolo Habbo?');
+                } else if (q === 'resumo') {
+                    iaEnviar('Faz um resumo do que o tráfego capturado está mostrando agora. O que o cliente e o servidor estão trocando.');
                 }
             });
         });
 
-        // ─── Botões nos pacotes ───
+        // ─── Botões em pacotes ───
         function createSendButton(packet) {
             const btn = document.createElement('button');
             btn.textContent = '↗';
@@ -1031,25 +1073,36 @@
             });
             on(btn, 'click', async (e) => {
                 e.stopPropagation();
+                if (SangAI._busy) return;
+                SangAI._busy = true;
+                const originalText = btn.textContent;
                 btn.textContent = '⏳';
                 btn.disabled = true;
+
+                let info = container.querySelector('.ai-info');
+                if (info) info.remove();
+                info = document.createElement('div');
+                info.className = 'ai-info';
+                info.style.cssText =
+                    'margin-top:8px;padding:9px 12px;background:rgba(168,85,247,0.08);' +
+                    'border-left:3px solid #a855f7;border-radius:0 6px 6px 0;' +
+                    'color:#c4b5fd;font-size:0.9em;line-height:1.55;font-style:italic;';
+                info.textContent = 'Sang AI analisando pacote…';
+                container.appendChild(info);
+
                 try {
                     const analise = await SangAI.analisarPacote(packet);
-                    const old = container.querySelector('.ai-info');
-                    if (old) old.remove();
-                    if (!analise) return;
-                    const div = document.createElement('div');
-                    div.className = 'ai-info';
-                    div.style.cssText =
-                        'margin-top:8px;padding:9px 12px;background:rgba(168,85,247,0.08);' +
-                        'border-left:3px solid #a855f7;border-radius:0 6px 6px 0;' +
-                        'color:#e9d5ff;font-size:0.9em;line-height:1.55;white-space:pre-wrap;';
-                    div.textContent = analise;
-                    container.appendChild(div);
+                    info.style.fontStyle = 'normal';
+                    info.textContent = analise;
                 } catch (err) {
-                    // Silencioso — o log já mostra erro de rede
+                    info.style.background = 'rgba(239,68,68,0.08)';
+                    info.style.borderLeftColor = '#ef4444';
+                    info.style.color = '#fca5a5';
+                    info.style.fontStyle = 'normal';
+                    info.textContent = '⚠ ' + (err.message || err);
                 } finally {
-                    btn.textContent = '🧠';
+                    SangAI._busy = false;
+                    btn.textContent = originalText;
                     btn.disabled = false;
                 }
             });
@@ -1087,7 +1140,6 @@
             return container;
         }
 
-        // ─── Registrar pacote no dicionário ───
         function atualizarDicionario(packet) {
             const id = packet.header;
             const d = AppState.dicionario[id];
@@ -1104,18 +1156,15 @@
                 d.ultimo = Date.now();
                 d.tamanhoMedio = Math.round((d.tamanhoMedio * (d.count - 1) + packet.byteLength) / d.count);
             }
-            // Persiste a cada 50 pacotes pra não sobrecarregar
             if (AppState.globalPacketCount % 50 === 0) {
                 Storage.set('dicionario', AppState.dicionario);
             }
         }
 
-        // ─── Adicionar log ───
         function addLog(packet, dir, isDropped) {
             AppState.globalPacketCount++;
             const id = AppState.globalPacketCount;
             const time = new Date().toLocaleTimeString();
-
             atualizarDicionario(packet);
 
             let borderColor, idColor, dirLabel;
@@ -1130,13 +1179,8 @@
             const rawText = `${time} | Pacote #${id}\n${dirLabel} ID: ${packet.header} | ${packet.byteLength} bytes\n${packet.fullHex}\n${packet.ascii}`;
 
             const item = document.createElement('div');
-            item.style.cssText =
-                `border-left:3px solid ${borderColor};` +
-                'background:#13131a;border-radius:0 6px 6px 0;' +
-                'margin-bottom:8px;padding:9px 11px;' +
-                'animation:iaMsgIn 0.22s ease-out;';
+            item.style.cssText = `border-left:3px solid ${borderColor};background:#13131a;border-radius:0 6px 6px 0;margin-bottom:8px;padding:9px 11px;animation:iaMsgIn 0.22s ease-out;`;
 
-            // Topo
             const top = document.createElement('div');
             top.style.cssText = 'display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:6px;flex-wrap:wrap;';
 
@@ -1182,7 +1226,6 @@
             top.appendChild(right);
             item.appendChild(top);
 
-            // ID + tamanho + analyze
             const idWrap = document.createElement('div');
             idWrap.style.cssText = 'display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;flex-wrap:wrap;gap:6px;';
 
@@ -1196,19 +1239,16 @@
 
             item.appendChild(idWrap);
 
-            // Hex
             const hexWrap = document.createElement('div');
             hexWrap.style.cssText = 'margin-bottom:4px;';
             hexWrap.appendChild(makeExpandableHex(packet.fullHex, packet.byteLength));
             item.appendChild(hexWrap);
 
-            // ASCII
             const asciiDiv = document.createElement('div');
             asciiDiv.style.cssText = 'color:#6a6a7a;font-size:0.9em;font-style:italic;';
             asciiDiv.textContent = packet.ascii || '(binário)';
             item.appendChild(asciiDiv);
 
-            // Visibilidade
             const searchString = `${packet.header} ${packet.fullHex} ${packet.ascii}`.toLowerCase();
             const q = searchInp.value.toLowerCase();
             let visible = true;
@@ -1245,7 +1285,7 @@
     })();
 
     // ═══════════════════════════════════════════════════════════════
-    // SENDER UI — com geração de JS por linguagem natural
+    // SENDER UI
     // ═══════════════════════════════════════════════════════════════
     const SenderUI = (function() {
         const el = document.createElement('div');
@@ -1265,8 +1305,7 @@
                 padding:11px 14px;cursor:move;
                 border-bottom:1px solid #1e1e2e;border-radius:10px 10px 0 0;
                 font-weight:bold;font-size:12px;color:#e1e1e6;user-select:none;
-                display:flex;justify-content:space-between;align-items:center;
-                letter-spacing:0.05em;
+                display:flex;justify-content:space-between;align-items:center;letter-spacing:0.05em;
             ">
                 <span style="display:flex;align-items:center;gap:10px;">
                     <span style="width:8px;height:8px;border-radius:50%;background:#6c63ff;
@@ -1280,13 +1319,11 @@
             </div>
             <div id="sndBody" style="display:flex;flex-direction:column;flex:1;overflow-y:auto;min-height:0;">
 
-                <!-- Perfil -->
                 <div style="padding:10px 12px;display:flex;gap:6px;border-bottom:1px solid #1e1e2e;background:#0a0a12;">
                     <select id="selProfile" style="flex:1;background:#13131a;color:#e1e1e6;border:1px solid #1e1e2e;padding:7px 10px;border-radius:6px;font-size:11px;font-family:monospace;outline:none;cursor:pointer;"></select>
                     <button id="btnNewProf" title="Novo perfil" style="background:#1e1e2e;color:#e1e1e6;border:1px solid #1e1e2e;cursor:pointer;padding:7px 12px;border-radius:6px;font-size:11px;font-family:monospace;">+ NOVO</button>
                 </div>
 
-                <!-- Adicionar pacote -->
                 <div style="padding:10px 12px;background:#0a0a12;display:flex;flex-direction:column;gap:8px;border-bottom:1px solid #1e1e2e;">
                     <div style="display:flex;gap:6px;">
                         <input id="sndId" type="number" placeholder="ID" style="width:70px;background:#13131a;color:#e1e1e6;border:1px solid #1e1e2e;padding:7px 10px;border-radius:6px;font-size:11px;font-family:monospace;outline:none;box-sizing:border-box;">
@@ -1298,21 +1335,19 @@
                         <button id="btnAddWait" title="Adicionar pausa na fila" style="background:#13131a;color:#e1e1e6;border:1px solid #1e1e2e;cursor:pointer;padding:7px 12px;border-radius:6px;font-size:11px;font-family:monospace;">+ WAIT</button>
                         <button id="btnAddJs" title="Executar JS no meio da fila" style="background:#13131a;color:#00d4aa;border:1px solid #00d4aa;cursor:pointer;padding:7px 12px;border-radius:6px;font-size:11px;font-family:monospace;">+ JS</button>
                     </div>
-                    <!-- Gerar JS por linguagem natural -->
                     <div style="display:flex;gap:6px;padding-top:6px;border-top:1px dashed rgba(168,85,247,0.2);">
-                        <input id="nlJs" type="text" placeholder="✨ Descreva a ação — ex: dançar 3x com pausa 500ms"
+                        <input id="nlJs" type="text" placeholder="✨ Descreva — ex: dançar 3x com pausa 500ms"
                             style="flex:1;background:#0a0a12;color:#e1e1e6;border:1px solid rgba(168,85,247,0.3);padding:7px 10px;border-radius:6px;font-size:11px;font-family:monospace;outline:none;min-width:0;box-sizing:border-box;">
-                        <button id="btnNlJs" style="background:linear-gradient(135deg,#a855f7,#6c63ff);color:#fff;border:none;cursor:pointer;padding:7px 14px;border-radius:6px;font-weight:bold;font-size:11px;font-family:monospace;white-space:nowrap;">GERAR</button>
+                        <button id="btnNlJs" style="background:linear-gradient(135deg,#a855f7,#6c63ff);color:#fff;border:none;cursor:pointer;padding:7px 14px;border-radius:6px;font-weight:bold;font-size:11px;font-family:monospace;white-space:nowrap;transition:all 0.15s;">GERAR</button>
                     </div>
+                    <div id="nlJsResultado" style="font-size:10px;color:#8a8a9a;line-height:1.5;display:none;background:#0a0a12;border:1px solid #1e1e2e;border-radius:5px;padding:6px 9px;font-family:monospace;white-space:pre-wrap;"></div>
                 </div>
 
-                <!-- Fila -->
                 <div style="padding:10px 12px;background:#0a0a12;border-bottom:1px solid #1e1e2e;">
                     <div style="font-size:10px;color:#8a8a9a;margin-bottom:6px;letter-spacing:0.05em;">FILA DE ENVIO</div>
                     <div id="sndList" style="max-height:220px;overflow-y:auto;border:1px solid #1e1e2e;padding:4px;min-height:70px;background:#13131a;border-radius:6px;"></div>
                 </div>
 
-                <!-- Simular recebimento -->
                 <div style="padding:10px 12px;background:#0a0a12;border-bottom:1px solid #1e1e2e;">
                     <div style="color:#6c63ff;font-weight:bold;text-align:center;font-size:11px;margin-bottom:6px;letter-spacing:0.04em;">📥 SIMULAR RECEBIMENTO</div>
                     <div style="display:flex;gap:6px;">
@@ -1322,7 +1357,6 @@
                     </div>
                 </div>
 
-                <!-- Config + Start -->
                 <div style="padding:10px 12px;background:#0a0a12;display:flex;flex-direction:column;gap:8px;">
                     <div style="display:flex;gap:8px;align-items:center;">
                         <label style="flex:1;font-size:11px;color:#8a8a9a;">Delay loop (ms)
@@ -1334,9 +1368,8 @@
                     </div>
                     <button id="btnSpamAction" style="
                         background:linear-gradient(135deg,#00d4aa,#00a88a);color:#0a0a0f;border:none;cursor:pointer;
-                        padding:12px;font-weight:bold;width:100%;
-                        border-radius:8px;font-size:13px;font-family:monospace;transition:all 0.15s;
-                        letter-spacing:0.05em;
+                        padding:12px;font-weight:bold;width:100%;border-radius:8px;font-size:13px;
+                        font-family:monospace;transition:all 0.15s;letter-spacing:0.05em;
                     ">🚀 INICIAR SEQUÊNCIA</button>
                 </div>
             </div>
@@ -1394,21 +1427,16 @@
                 content.style.cssText = 'flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
 
                 if (pkt.isDelay) {
-                    icon.textContent = '⏱';
-                    icon.style.color = '#8a8a9a';
-                    content.style.color = '#8a8a9a';
-                    content.style.fontStyle = 'italic';
+                    icon.textContent = '⏱'; icon.style.color = '#8a8a9a';
+                    content.style.color = '#8a8a9a'; content.style.fontStyle = 'italic';
                     content.textContent = `Aguardar ${pkt.ms}ms`;
                 } else if (pkt.isJs) {
-                    icon.textContent = '🧠';
-                    icon.style.color = '#00d4aa';
-                    content.style.color = '#00d4aa';
-                    content.style.fontStyle = 'italic';
+                    icon.textContent = '🧠'; icon.style.color = '#00d4aa';
+                    content.style.color = '#00d4aa'; content.style.fontStyle = 'italic';
                     const preview = pkt.code.length > 45 ? pkt.code.substring(0, 45) + '…' : pkt.code;
                     content.textContent = `JS: ${preview}`;
                 } else {
-                    icon.textContent = pkt.id;
-                    icon.style.color = '#e1e1e6';
+                    icon.textContent = pkt.id; icon.style.color = '#e1e1e6';
                     content.style.color = '#8a8a9a';
                     content.textContent = pkt.hex || '(vazio)';
                 }
@@ -1417,43 +1445,21 @@
 
                 const btns = document.createElement('div');
                 btns.style.cssText = 'display:flex;gap:2px;flex-shrink:0;';
-
                 const mkBtn = (txt, title, cor) => {
                     const b = document.createElement('button');
-                    b.textContent = txt;
-                    b.title = title;
+                    b.textContent = txt; b.title = title;
                     b.style.cssText = `background:#1e1e2e;color:${cor};border:none;cursor:pointer;padding:3px 7px;border-radius:4px;font-size:10px;`;
                     return b;
                 };
-
                 const btnUp = mkBtn('↑', 'Mover para cima', '#e1e1e6');
-                on(btnUp, 'click', () => {
-                    if (index > 0) {
-                        [prof.packets[index - 1], prof.packets[index]] = [prof.packets[index], prof.packets[index - 1]];
-                        saveCurrentProfile(); renderPackets();
-                    }
-                });
-
+                on(btnUp, 'click', () => { if (index > 0) { [prof.packets[index - 1], prof.packets[index]] = [prof.packets[index], prof.packets[index - 1]]; saveCurrentProfile(); renderPackets(); } });
                 const btnDown = mkBtn('↓', 'Mover para baixo', '#e1e1e6');
-                on(btnDown, 'click', () => {
-                    if (index < prof.packets.length - 1) {
-                        [prof.packets[index + 1], prof.packets[index]] = [prof.packets[index], prof.packets[index + 1]];
-                        saveCurrentProfile(); renderPackets();
-                    }
-                });
-
+                on(btnDown, 'click', () => { if (index < prof.packets.length - 1) { [prof.packets[index + 1], prof.packets[index]] = [prof.packets[index], prof.packets[index + 1]]; saveCurrentProfile(); renderPackets(); } });
                 const btnDel = mkBtn('✕', 'Remover', '#ef4444');
                 btnDel.style.border = '1px solid #ef4444';
-                on(btnDel, 'click', () => {
-                    prof.packets.splice(index, 1);
-                    saveCurrentProfile(); renderPackets();
-                });
-
-                btns.appendChild(btnUp);
-                btns.appendChild(btnDown);
-                btns.appendChild(btnDel);
+                on(btnDel, 'click', () => { prof.packets.splice(index, 1); saveCurrentProfile(); renderPackets(); });
+                btns.appendChild(btnUp); btns.appendChild(btnDown); btns.appendChild(btnDel);
                 item.appendChild(btns);
-
                 list.appendChild(item);
             });
             el.querySelector('#sndDelay').value = prof.spamInterval;
@@ -1470,7 +1476,6 @@
                 saveCurrentProfile(); renderPackets();
             }
         });
-
         on(el.querySelector('#btnAddWait'), 'click', () => {
             const ms = parseInt(el.querySelector('#sndWaitMs').value);
             if (!isNaN(ms) && ms > 0) {
@@ -1479,45 +1484,58 @@
                 saveCurrentProfile(); renderPackets();
             }
         });
-
         on(el.querySelector('#btnAddJs'), 'click', () => {
-            const jsCode = prompt('Insira o código JavaScript a ser executado na fila:');
+            const jsCode = prompt('Código JavaScript a executar na fila:');
             if (jsCode && jsCode.trim() !== '') {
                 AppState.profiles[AppState.currentProfileId].packets.push({ isJs: true, code: jsCode.trim() });
                 saveCurrentProfile(); renderPackets();
             }
         });
 
-        // ─── Gerar JS via IA ───
+        // ─── Geração de JS via IA ───
         const nlJs = el.querySelector('#nlJs');
         const btnNlJs = el.querySelector('#btnNlJs');
+        const nlJsResultado = el.querySelector('#nlJsResultado');
 
         async function gerarJsNL() {
             const desc = nlJs.value.trim();
             if (!desc) return;
             if (!SangAI.disponivel()) {
-                alert('Sang AI não configurada. Abra o módulo Sang AI e cole sua chave.');
+                nlJsResultado.style.display = 'block';
+                nlJsResultado.style.color = '#ef4444';
+                nlJsResultado.textContent = '⚠ Sang AI não configurada. Abra o módulo Sang AI e cole sua chave.';
                 return;
             }
+            if (SangAI._busy) return;
+
+            SangAI._busy = true;
             btnNlJs.disabled = true;
             btnNlJs.textContent = '⏳';
+            nlJsResultado.style.display = 'block';
+            nlJsResultado.style.color = '#8a8a9a';
+            nlJsResultado.textContent = 'Sang AI gerando código…';
+
             try {
-                const ctx = `Perfil atual "${AppState.profiles[AppState.currentProfileId].name}" com ${AppState.profiles[AppState.currentProfileId].packets.length} itens na fila.`;
+                const prof = AppState.profiles[AppState.currentProfileId];
+                const ctx = `Perfil "${prof.name}", ${prof.packets.length} itens na fila.`;
                 const codigo = await SangAI.gerarJs(desc, ctx);
-                const limpo = codigo.replace(/```js|```javascript|```/g, '').trim();
-                if (!limpo) {
-                    alert('A IA não retornou código.');
-                    return;
-                }
-                const confirma = confirm(`Código gerado:\n\n${limpo}\n\nAdicionar à fila?`);
+                if (!codigo) throw new Error('A IA não retornou código.');
+
+                nlJsResultado.style.color = '#c4b5fd';
+                nlJsResultado.textContent = codigo;
+
+                const confirma = confirm(`Código gerado:\n\n${codigo}\n\nAdicionar à fila?`);
                 if (confirma) {
-                    AppState.profiles[AppState.currentProfileId].packets.push({ isJs: true, code: limpo });
+                    prof.packets.push({ isJs: true, code: codigo });
                     saveCurrentProfile(); renderPackets();
                     nlJs.value = '';
+                    nlJsResultado.style.display = 'none';
                 }
             } catch (e) {
-                alert('Erro: ' + (e.message || e));
+                nlJsResultado.style.color = '#ef4444';
+                nlJsResultado.textContent = '⚠ ' + (e.message || e);
             } finally {
+                SangAI._busy = false;
                 btnNlJs.disabled = false;
                 btnNlJs.textContent = 'GERAR';
             }
@@ -1536,7 +1554,6 @@
                 el.querySelector('#fakeHex').value = '';
             }
         });
-
         on(el.querySelector('#btnNewProf'), 'click', () => {
             const name = prompt('Nome do novo perfil:');
             if (name && name.trim()) {
@@ -1546,7 +1563,6 @@
                 saveCurrentProfile(); renderProfiles(); renderPackets();
             }
         });
-
         on(el.querySelector('#selProfile'), 'change', (e) => {
             AppState.currentProfileId = e.target.value;
             saveCurrentProfile(); renderPackets();
@@ -1584,6 +1600,8 @@
 
             let loops = 0;
             const inf = (prof.spamQtd === 0);
+            const sleepFn = sleep;  // referência disponível pro eval
+            const UtilsFn = Utils;
 
             while (isSpamming && myRunId === spamRunId && (inf || loops < prof.spamQtd)) {
                 for (const item of prof.packets) {
@@ -1591,7 +1609,11 @@
                     if (item.isDelay) {
                         await sleep(item.ms);
                     } else if (item.isJs) {
-                        try { eval(item.code); } catch (e) { console.error('[JS_ACTION] Erro:', e); }
+                        try {
+                            // eval com acesso a window.gameWS, sleep e Utils
+                            const fn = new Function('window', 'sleep', 'Utils', `return (async () => { ${item.code} })();`);
+                            await fn(window, sleepFn, UtilsFn);
+                        } catch (e) { console.error('[JS_ACTION] Erro:', e); }
                     } else {
                         if (!window.gameWS) break;
                         const buffer = Utils.buildPacket(item.id, item.hex);
@@ -1690,7 +1712,7 @@
     document.head.appendChild(styleEl);
     cleanup.push(() => { try { styleEl.remove(); } catch(e) {} });
 
-    // ─── Anexar ao DOM ───
+    // ─── Anexar ───
     const fragment = document.createDocumentFragment();
     fragment.appendChild(Toolbar.element);
     fragment.appendChild(AnalyzerUI.element);
@@ -1715,7 +1737,6 @@
     }
 
     const _recentPackets = new Map();
-
     function fastBufferHash(buffer) {
         const u8 = new Uint8Array(buffer);
         let hash = 0;
@@ -1727,7 +1748,6 @@
         }
         return `${len}_${hash}`;
     }
-
     function isDuplicate(data) {
         if (!(data instanceof ArrayBuffer)) return false;
         const key = fastBufferHash(data);
@@ -1735,13 +1755,10 @@
         if (_recentPackets.has(key) && now - _recentPackets.get(key) < 50) return true;
         _recentPackets.set(key, now);
         if (_recentPackets.size > 200) {
-            for (const [k, t] of _recentPackets) {
-                if (now - t > 200) _recentPackets.delete(k);
-            }
+            for (const [k, t] of _recentPackets) if (now - t > 200) _recentPackets.delete(k);
         }
         return false;
     }
-
     function handleTraffic(data, dir, isDropped) {
         if (!_alive) return;
         if (AppState.isPaused) return;
@@ -1752,7 +1769,6 @@
             AnalyzerUI.addLog(packet, dir, !!isDropped);
         }
     }
-
     function wrapSend(ws) {
         if (!ws || ws._analyzerSendWrapped) return;
         ws._analyzerSendWrapped = true;
@@ -1770,7 +1786,6 @@
             return originalSend(data);
         };
     }
-
     async function handleInbound(event) {
         if (!_alive) return;
         let data = event.data;
@@ -1783,42 +1798,22 @@
 
     window.gameWS = window._hubSocket.getActive();
     if (window.gameWS) wrapSend(window.gameWS);
-
-    window._hubSocket.onConnect((ws) => {
-        if (!_alive) return;
-        window.gameWS = ws;
-        wrapSend(ws);
-    });
-
-    window._hubSocket.onMessage((event, ws) => {
-        if (!_alive) return;
-        if (ws !== window.gameWS) return;
-        handleInbound(event);
-    });
+    window._hubSocket.onConnect((ws) => { if (!_alive) return; window.gameWS = ws; wrapSend(ws); });
+    window._hubSocket.onMessage((event, ws) => { if (!_alive) return; if (ws !== window.gameWS) return; handleInbound(event); });
 
     // ─── API pública ───
     function kill() {
         _alive = false;
         try { delete window[UID]; } catch(e) {}
-
-        // Restaura send original
         try {
             if (window.gameWS && window.gameWS._analyzerSendWrapped) {
-                if (window.gameWS._analyzerOriginalSend) {
-                    window.gameWS.send = window.gameWS._analyzerOriginalSend;
-                }
+                if (window.gameWS._analyzerOriginalSend) window.gameWS.send = window.gameWS._analyzerOriginalSend;
                 delete window.gameWS._analyzerSendWrapped;
                 delete window.gameWS._analyzerOriginalSend;
             }
         } catch(e) {}
-
-        // Persiste dicionário final
         try { Storage.set('dicionario', AppState.dicionario); } catch(e) {}
-
-        // Remove listeners
         while (cleanup.length) { const fn = cleanup.pop(); try { fn(); } catch(e) {} }
-
-        // Remove DOM
         try {
             [Toolbar.element, AnalyzerUI.element, SenderUI.element].forEach(el => {
                 if (el && el.parentNode) el.parentNode.removeChild(el);
