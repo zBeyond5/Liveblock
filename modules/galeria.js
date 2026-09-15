@@ -1,6 +1,6 @@
 (function () {
   'use strict';
-  const _galeria = 'sangGaleriaAnotacoes';
+  const _galeria = '_galeria';
   if (window[_galeria]) { try { window[_galeria].kill(); } catch (e) {} }
 
   const DB_NAME = 'ga_module_db', STORE = 'photos', FOLDER_STORE = 'folders';
