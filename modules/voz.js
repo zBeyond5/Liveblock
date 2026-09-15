@@ -1,3 +1,4 @@
+// modules/voz.js — fala vira texto no chat do Habbo
 (function() {
     'use strict';
     const UID = '_voz';
@@ -525,9 +526,11 @@
         let ultimoStreamEm = 0;
         let flashTimer = null;
 
-        window.addEventListener('sang:voz-silenciar', (e) => {
+        // Nomeado pra permitir removeEventListener no kill().
+        function onSilenciar(e) {
             silencioAte = Date.now() + (e?.detail?.ms || 1500);
-        });
+        }
+        window.addEventListener('sang:voz-silenciar', onSilenciar);
 
         function dispararEstadoVoz() {
             window.dispatchEvent(new CustomEvent('sang:voz-state', {
@@ -586,7 +589,6 @@
                     nivelEl.classList.remove('pico');
                 }, 350);
 
-                // Tenta enviar em pedaços antes mesmo da pausa
                 tentarStreaming();
 
                 renderPreview();
@@ -809,7 +811,6 @@
         }
 
         // ─── Verifica se o texto acumulado parece comando ───
-        // Se sim, não streama: espera a pausa pra deixar o despachante decidir.
         function ehInicioDeComando(texto) {
             const n = normalize(texto);
             if (PREFIXO_COMANDO.test(n)) return true;
@@ -819,8 +820,6 @@
         }
 
         // ─── Envio contínuo ───
-        // Quando o texto acumulado bate o limite do chat, corta o pedaço que cabe
-        // e envia na hora, guardando o resto pra continuar acumulando.
         function tentarStreaming() {
             if (!config.streaming) return;
             if (enviando) return;
@@ -834,20 +833,15 @@
 
             if (textoFinal.length < maxLen) return;
 
-            // Segura se está claramente começando um comando (a menos que
-            // já tenha passado muito do limite, indicando que não é comando).
             if (ehInicioDeComando(textoFinal) && textoFinal.length < maxLen * 2) return;
 
-            // Corta no último espaço dentro do limite
             let corte = textoFinal.lastIndexOf(' ', maxLen);
             if (corte < Math.floor(maxLen * 0.5)) corte = maxLen;
             const bloco = textoFinal.slice(0, corte).trimEnd();
             if (!bloco) return;
 
-            // Reserva o resto
             textoFinal = textoFinal.slice(bloco.length).trimStart();
 
-            // Marca ANTES de enviar (evita reentrada)
             enviando = true;
             ultimoStreamEm = Date.now();
 
@@ -863,22 +857,21 @@
                 try { pressEnter(inp); } catch {}
                 enviando = false;
                 flashEnvio(bloco.length);
-                // Continua se ainda tem muito texto acumulado
                 tentarStreaming();
             }, 60);
         }
 
         // ─── Formatação via Sang AI ───
-                async function formatarComSangAI(texto) {
+        async function formatarComSangAI(texto) {
             if (!window._apis?.groq || !window._apis.getKey?.('groq')) return texto;
             const ctrl = new AbortController();
             const timer = setTimeout(() => ctrl.abort(), 8000);
             try {
                 const r = await window._apis.groq({
                     mensagens: [
-    {
-        role: 'system',
-        content: `
+                        {
+                            role: 'system',
+                            content: `
 Você é um formatador inteligente de transcrições de áudio em português brasileiro, semelhante à formatação de mensagens de voz de um assistente conversacional.
 
 Sua tarefa é transformar a transcrição bruta em uma mensagem natural, clara e bem pontuada, preservando fielmente o que a pessoa quis dizer.
@@ -937,12 +930,12 @@ eu tava indo pra casa mais aí eu vi ele
 Saída:
 Eu tava indo pra casa, mas aí eu vi ele.
 `,
-    },
-    {
-        role: 'user',
-        content: texto
-    }
-],
+                        },
+                        {
+                            role: 'user',
+                            content: texto
+                        }
+                    ],
                     maxTokens: 600,
                     temperature: 0.15,
                     topP: 0.9
@@ -1033,6 +1026,20 @@ Eu tava indo pra casa, mas aí eu vi ele.
                 }
             }
 
+            // Guarda antecipada: sem input, não perde o buffer. Também limpa o
+            // buffer ANTES do await da formatação — durante o await a fala pode
+            // continuar entrando, e um clear depois apagaria o que chegou.
+            const inp = encontrarInputChat();
+            if (!inp) {
+                avisoEl.textContent = '⚠ chat não encontrado';
+                avisoEl.className = 'aviso cmd';
+                return;
+            }
+
+            textoFinal = '';
+            textoInterim = '';
+            ultimoResultadoEm = 0;
+
             enviando = true;
             const gen = ++enviandoGen;
 
@@ -1042,21 +1049,11 @@ Eu tava indo pra casa, mas aí eu vi ele.
                     avisoEl.className = 'aviso forcar';
                     const formatado = await formatarComSangAI(texto);
                     if (gen !== enviandoGen) return;
-                    if (formatado && formatado !== texto) {
-                        texto = formatado;
-                        textoFinal = formatado;
-                        textoInterim = '';
-                        renderPreview();
-                    }
+                    if (formatado) texto = formatado;
                 }
 
-                const inp = encontrarInputChat();
                 const maxLen = maxLenDoInput(inp);
                 const blocos = dividirEmBlocos(texto, maxLen);
-
-                textoFinal = '';
-                textoInterim = '';
-                ultimoResultadoEm = 0;
 
                 for (let i = 0; i < blocos.length; i++) {
                     if (gen !== enviandoGen) return;
@@ -1139,7 +1136,7 @@ Eu tava indo pra casa, mas aí eu vi ele.
             e.preventDefault();
             const r = fab.getBoundingClientRect();
             popover.style.left = Math.max(10, Math.min(r.left - 300, window.innerWidth - 310)) + 'px';
-            popover.style.top = Math.min(r.top, window.innerHeight - 540) + 'px';
+            popover.style.top = Math.max(10, Math.min(r.top, window.innerHeight - 540)) + 'px';
             popover.classList.toggle('visivel');
         });
 
@@ -1214,6 +1211,7 @@ Eu tava indo pra casa, mas aí eu vi ele.
         window[UID] = {
             kill() {
                 desligar();
+                window.removeEventListener('sang:voz-silenciar', onSilenciar);
                 document.removeEventListener('keydown', onKeydown, true);
                 document.removeEventListener('pointerdown', fecharPopoverFora, true);
                 document.removeEventListener('visibilitychange', onVisibility);
