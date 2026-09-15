@@ -1,3 +1,4 @@
+
 (function() {
     'use strict';
     const UID = '_voz';
@@ -18,7 +19,8 @@
         left: null,
         top: null,
         pontuacao: 'pausa',
-        pausaVirgulaMs: 550
+        pausaVirgulaMs: 550,
+        modoComando: 'prefixo'
     };
 
     // ─── Persistência ───
@@ -42,6 +44,12 @@
     // ═══ COMANDOS ═══
     const PREFIXO_FORCAR_CHAT = /^(ditar|digitar|escrever|escreve|falar|fala)\s+(.+)$/i;
 
+    // Wake words aceitas. Sem uma delas (e sem a exceção de menu), o texto vai pro chat.
+    const PALAVRAS_COMANDO = ['menu', 'sang', 'comando', 'comandar', 'catapimbas'];
+    const PREFIXO_COMANDO = new RegExp('^(' + PALAVRAS_COMANDO.join('|') + ')\\s+(.+)$', 'i');
+    // Comandos de menu funcionam sem wake word (frase inteira)
+    const COMANDO_MENU_SEM_PREFIXO = /^(mostrar?|mostra|abrir?|abre|abra|fechar?|fecha|feche|esconder?|esconde)\s+(o\s+)?menu$/;
+
     const COMANDOS_VOZ = [
         { re: /^(enviar?|envia|mandar?|manda|manda\s+isso|manda\s+essa|envia\s+isso|envia\s+essa|pode\s+enviar|pode\s+mandar)$/, acao: 'enviar' },
         { re: /^(cancelar?|cancela|apagar?|apaga|limpar?|limpa|limpa\s+isso|apaga\s+isso|descarta(r)?|descarta|deixa\s+pra\s+la|deixa\s+pra\s+lá)$/, acao: 'cancelar' }
@@ -62,7 +70,23 @@
         /^anotacao$/,
         /^anotação$/,
         /^nota$/,
-        /^(fechar?|fecha|confirmar?|confirma|voltar?|volta)(\s+(isso|tudo|janela|painel))?$/
+        /^(fechar?|fecha|confirmar?|confirma|voltar?|volta)(\s+(isso|tudo|janela|painel))?$/,
+        // Galeria — pastas, seleção, lightbox, backup, print nomeado
+        /^criar?\s+pasta(\s+.+)?$/,
+        /^(abrir?|abre|abra|entrar?|entra|ir\s+para)\s+(na\s+)?pasta\s+.+$/,
+        /^(voltar?|volta)\s+(para\s+)?(o\s+)?(inicio|início|raiz|home)$/,
+        /^listar?\s+pastas$/,
+        /^(excluir?|apagar?|deletar?|remover?)\s+(a\s+)?pasta\s+atual$/,
+        /^(selecionar?|seleciona|marcar?|marca)\s+tudo$/,
+        /^(desmarcar?|desmarca|limpar?|limpa|cancelar?|cancela)\s+(selecao|seleção|tudo)$/,
+        /^(mover?|move)\s+(a\s+)?(selecao|seleção|selecionadas?)$/,
+        /^(excluir?|exclui|apagar?|apaga|deletar?|deleta|remover?|remove)\s+(a\s+)?(selecao|seleção|selecionadas?)$/,
+        /^(proxima|próxima|avancar?|avanca|avança|proximo|próximo|anterior|retroceder?|retrocede)\s*(foto|imagem)?$/,
+        /^(fechar?|feche|fecha)\s+(a\s+)?(imagem|foto|lightbox)$/,
+        /^(exportar?|exporta|fazer?|faz|salvar?|salva)\s+(backup|backup\s+da\s+galeria)$/,
+        /^(exportar?|exporta)\s+(galeria|fotos|notas)$/,
+        /^(salvar?|salva|tirar?|tira|capturar?|captura)\s+(print\s+)?na\s+pasta\s+.+$/,
+        /^(salvar?|salva)\s+(solto|solta|na\s+raiz|no\s+inicio|no\s+início)$/
     ];
 
     // API compartilhada entre módulos — despachante + filtro
@@ -277,7 +301,7 @@
             color: #e8e8f0;
             font-size: 12px;
             font-family: -apple-system, system-ui, sans-serif;
-            width: 270px;
+            width: 280px;
             box-shadow: 0 12px 32px rgba(0,0,0,.8);
             display: none;
             z-index: 2147483001;
@@ -392,12 +416,22 @@
                     <option value="groq">Formatar com Sang AI</option>
                 </select>
             </div>
+            <div class="campo">
+                <label>Modo de comando</label>
+                <select id="cfgModoComando">
+                    <option value="prefixo">Prefixado (menu, sang, comando, catapimbas)</option>
+                    <option value="livre">Livre (atual)</option>
+                </select>
+            </div>
             <div class="ajuda">
-                Fale <code>enviar</code> para forçar envio, <code>cancelar</code> para limpar.
-                Comandos do hub (<code>abrir iptv</code>, <code>tirar print</code>…) são
-                roteados automaticamente para os módulos.<br><br>
-                Para forçar qualquer texto ao chat, use <code>digitar</code>.
-                Ex: <code>digitar enviar</code>.
+                <strong>Modo prefixado:</strong> comandos começam com
+                <code>menu</code>, <code>sang</code>, <code>comando</code> ou <code>catapimbas</code>.
+                Ex: <code>sang abrir iptv</code>.<br><br>
+                <strong>Exceção:</strong> <code>abrir menu</code> e <code>fechar menu</code>
+                funcionam sem prefixo.<br><br>
+                <strong>Modo livre:</strong> comandos disparam direto, como antes.
+                <code>enviar</code> força envio, <code>cancelar</code> limpa.
+                Use <code>digitar</code> para forçar texto ao chat.
                 <div class="dica-foco">💡 Pausa sozinho quando você troca de aba ou janela.</div>
             </div>
         `;
@@ -410,11 +444,13 @@
         const cfgSilencio = popover.querySelector('#cfgSilencio');
         const cfgLang = popover.querySelector('#cfgLang');
         const cfgPontuacao = popover.querySelector('#cfgPontuacao');
+        const cfgModoComando = popover.querySelector('#cfgModoComando');
 
         cfgModo.value = config.modo;
         cfgSilencio.value = String(config.silencioMs);
         cfgLang.value = config.lang;
         cfgPontuacao.value = config.pontuacao;
+        cfgModoComando.value = config.modoComando;
 
         // ─── Estado ───
         // habilitado: usuário quer o voz.js no comando (toggle)
@@ -432,6 +468,12 @@
         let timerRestart = null;
         let enviando = false;
         let enviandoGen = 0;
+        let silencioAte = 0;  // TTS de outro módulo pediu pausa
+
+        // ─── Silenciamento externo (ex: galeria falando "Captura feita") ───
+        window.addEventListener('sang:voz-silenciar', (e) => {
+            silencioAte = Date.now() + (e?.detail?.ms || 1500);
+        });
 
         // ─── Notificação de estado ───
         function dispararEstadoVoz() {
@@ -456,9 +498,13 @@
             };
 
             r.onresult = (event) => {
+                if (Date.now() < silencioAte) return;
+
                 const agora = Date.now();
                 const tevePausa = ultimoResultadoEm &&
                     (agora - ultimoResultadoEm) > config.pausaVirgulaMs;
+                // No modo 'groq' não mexemos na pontuação — o modelo corrige tudo
+                const aplicarPausa = config.pontuacao === 'pausa' && tevePausa;
 
                 let interim = '';
                 for (let i = event.resultIndex; i < event.results.length; i++) {
@@ -467,7 +513,7 @@
                         const trecho = res[0].transcript.trim();
                         if (!trecho) continue;
 
-                        if (config.pontuacao !== 'off' && tevePausa && textoFinal.trim()
+                        if (aplicarPausa && textoFinal.trim()
                             && !/[.,!?;:]\s*$/.test(textoFinal.trimEnd())) {
                             textoFinal = textoFinal.trimEnd() + ', ';
                         } else if (textoFinal && !textoFinal.endsWith(' ')) {
@@ -665,8 +711,11 @@
             if (forcar) {
                 avisoEl.textContent = '→ vai pro chat';
                 avisoEl.className = 'aviso forcar';
-            } else if (window._voiceCommands.tem(completo)) {
+            } else if (config.modoComando === 'livre' && window._voiceCommands.tem(completo)) {
                 avisoEl.textContent = '⚠ comando reservado';
+                avisoEl.className = 'aviso cmd';
+            } else if (config.modoComando === 'prefixo' && PREFIXO_COMANDO.test(completo)) {
+                avisoEl.textContent = '⚡ comando';
                 avisoEl.className = 'aviso cmd';
             } else {
                 avisoEl.textContent = '';
@@ -692,22 +741,45 @@
         }
 
         // ─── Formatação via Sang AI ───
+        // Usa mensagens (system + user) em vez de prompt puro. Temperature baixa
+        // e abort de segurança pra não travar o envio.
         async function formatarComSangAI(texto) {
             if (!window._apis?.groq || !window._apis.getKey?.('groq')) return texto;
+            const ctrl = new AbortController();
+            const timer = setTimeout(() => ctrl.abort(), 4500);
             try {
                 const r = await window._apis.groq({
-                    prompt:
-                        'Reescreva o texto abaixo corrigindo ortografia e adicionando pontuação ' +
-                        '(vírgulas, pontos, interrogações quando fizer sentido). Não mude o sentido, ' +
-                        'não adicione conteúdo novo, mantenha o tom informal. Responda apenas com o ' +
-                        'texto corrigido, sem aspas nem comentários.\n\n' + texto,
-                    maxTokens: 400,
-                    temperature: 0.2
-                });
-                return (r && r.trim()) ? r.trim().replace(/^["']|["']$/g, '') : texto;
+                    mensagens: [
+                        {
+                            role: 'system',
+                            content:
+                                'Você é um corretor de texto em português brasileiro. ' +
+                                'Sua tarefa é APENAS corrigir ortografia e adicionar pontuação ' +
+                                '(vírgulas, pontos, interrogações, exclamações) ao texto do usuário. ' +
+                                'Regras: ' +
+                                '1) Responda SOMENTE com o texto corrigido, sem introdução, sem aspas, sem markdown. ' +
+                                '2) Não adicione, remova ou reordene palavras — só pontue e corrija erros. ' +
+                                '3) Mantenha o tom informal e gírias. ' +
+                                '4) Use vírgulas em pausas naturais e pontos ao final de frases.'
+                        },
+                        { role: 'user', content: texto }
+                    ],
+                    maxTokens: 500,
+                    temperature: 0.1
+                }, { signal: ctrl.signal, forceRefresh: true });
+                const limpo = String(r || '').trim()
+                    .replace(/^["'`]+|["'`]+$/g, '')
+                    .replace(/^[-–—]\s*/, '')
+                    .replace(/\n+/g, ' ')
+                    .trim();
+                return limpo || texto;
             } catch (e) {
-                console.warn('[Voz] Formatação Sang AI falhou:', e);
+                if (e.name !== 'AbortError') {
+                    console.warn('[Voz] Formatação Sang AI falhou:', e);
+                }
                 return texto;
+            } finally {
+                clearTimeout(timer);
             }
         }
 
@@ -722,26 +794,48 @@
             if (forcarPrefixo) {
                 texto = forcarPrefixo;
             } else if (!forcado) {
-                // 1. Handlers registrados (módulos específicos, depois hub)
-                if (window._voiceCommands.despachar(texto)) {
-                    textoFinal = '';
-                    textoInterim = '';
-                    ultimoResultadoEm = 0;
-                    renderPreview();
-                    return;
-                }
-                // 2. Ações locais (enviar / cancelar)
+                // 1. Ações locais sempre funcionam sem prefixo
                 const acao = window._voiceCommands.acaoLocal(texto);
                 if (acao === 'enviar') {
                     textoFinal = ''; textoInterim = ''; ultimoResultadoEm = 0;
                     renderPreview(); return;
                 }
                 if (acao === 'cancelar') { cancelar(); return; }
-                // 3. Reservado sem handler — descarta silenciosamente
-                if (window._voiceCommands.tem(texto)) {
-                    console.log('[Voz] Comando reservado sem handler:', texto);
-                    textoFinal = ''; textoInterim = ''; ultimoResultadoEm = 0;
-                    renderPreview(); return;
+
+                // 2. Modo prefixado
+                if (config.modoComando === 'prefixo') {
+                    // Exceção: abrir/fechar menu passa direto (frase inteira)
+                    if (COMANDO_MENU_SEM_PREFIXO.test(texto)) {
+                        window._voiceCommands.despachar(texto);
+                        textoFinal = ''; textoInterim = ''; ultimoResultadoEm = 0;
+                        renderPreview(); return;
+                    }
+
+                    // Demais comandos exigem wake word
+                    const m = texto.match(PREFIXO_COMANDO);
+                    if (m) {
+                        const comando = m[2].trim();
+                        const consumido = window._voiceCommands.despachar(comando);
+                        if (!consumido) {
+                            console.log('[Voz] Wake word sem handler:', comando);
+                            avisoEl.textContent = '⚠ comando não reconhecido';
+                            avisoEl.className = 'aviso cmd';
+                        }
+                        textoFinal = ''; textoInterim = ''; ultimoResultadoEm = 0;
+                        renderPreview(); return;
+                    }
+                    // Sem wake word — cai pro chat normalmente
+                } else {
+                    // 3. Modo livre
+                    if (window._voiceCommands.despachar(texto)) {
+                        textoFinal = ''; textoInterim = ''; ultimoResultadoEm = 0;
+                        renderPreview(); return;
+                    }
+                    if (window._voiceCommands.tem(texto)) {
+                        console.log('[Voz] Comando reservado sem handler:', texto);
+                        textoFinal = ''; textoInterim = ''; ultimoResultadoEm = 0;
+                        renderPreview(); return;
+                    }
                 }
             }
 
@@ -848,8 +942,8 @@
         fab.addEventListener('contextmenu', e => {
             e.preventDefault();
             const r = fab.getBoundingClientRect();
-            popover.style.left = Math.max(10, Math.min(r.left - 280, window.innerWidth - 290)) + 'px';
-            popover.style.top = Math.min(r.top, window.innerHeight - 440) + 'px';
+            popover.style.left = Math.max(10, Math.min(r.left - 290, window.innerWidth - 300)) + 'px';
+            popover.style.top = Math.min(r.top, window.innerHeight - 500) + 'px';
             popover.classList.toggle('visivel');
         });
 
@@ -868,6 +962,11 @@
         cfgPontuacao.addEventListener('change', () => {
             config.pontuacao = cfgPontuacao.value;
             saveConfig(config);
+        });
+        cfgModoComando.addEventListener('change', () => {
+            config.modoComando = cfgModoComando.value;
+            saveConfig(config);
+            renderPreview();
         });
 
         // ─── Popover fecha ao clicar fora ───
