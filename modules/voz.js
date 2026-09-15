@@ -5,7 +5,7 @@
 
     const SpeechRecognitionAPI = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SpeechRecognitionAPI) {
-        console.warn('[Voz] Web Speech API não suportada neste navegador.');
+        console.warn('[Voz] Web Speech API não suportada.');
         return;
     }
 
@@ -16,93 +16,65 @@
         minChars: 2,
         lang: 'pt-BR',
         left: null,
-        top: null
+        top: null,
+        pontuacao: 'pausa',
+        pausaVirgulaMs: 550
     };
 
     // ─── Persistência ───
-    function loadConfig() {
+    const loadConfig = () => {
         try {
             const raw = localStorage.getItem(STATE_KEY);
             return raw ? { ...DEFAULT_CONFIG, ...JSON.parse(raw) } : { ...DEFAULT_CONFIG };
-        } catch (_) { return { ...DEFAULT_CONFIG }; }
-    }
-    function saveConfig(c) {
-        try { localStorage.setItem(STATE_KEY, JSON.stringify(c)); } catch (_) {}
-    }
+        } catch { return { ...DEFAULT_CONFIG }; }
+    };
+    const saveConfig = c => {
+        try { localStorage.setItem(STATE_KEY, JSON.stringify(c)); } catch {}
+    };
 
     // ─── Utilidades ───
-    function escapeHtml(str) {
-        return String(str ?? '').replace(/[&<>"']/g, c => ({
-            '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
-        }[c]));
-    }
-    function normalize(s) {
-        return String(s || '')
-            .normalize('NFD')
-            .replace(/[\u0300-\u036f]/g, '')
-            .toLowerCase()
-            .trim();
-    }
+    const escapeHtml = s => String(s ?? '').replace(/[&<>"']/g, c => ({
+        '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+    }[c]));
+    const normalize = s => String(s || '')
+        .normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
 
-    // ═══════════════════════════════════════════════════════════════
-    // COMANDOS
-    // ═══════════════════════════════════════════════════════════════
-
+    // ═══ COMANDOS ═══
     const PREFIXO_FORCAR_CHAT = /^(ditar|digitar|escrever|escreve|falar|fala)\s+(.+)$/i;
 
-    // Comandos consumidos pelo PRÓPRIO módulo
     const COMANDOS_VOZ = [
-        {
-            re: /^(enviar?|envia|mandar?|manda|manda\s+isso|manda\s+essa|envia\s+isso|envia\s+essa|pode\s+enviar|pode\s+mandar)$/,
-            acao: 'enviar'
-        },
-        {
-            re: /^(cancelar?|cancela|apagar?|apaga|limpar?|limpa|limpa\s+isso|apaga\s+isso|descarta(r)?|descarta|deixa\s+pra\s+la|deixa\s+pra\s+lá)$/,
-            acao: 'cancelar'
-        }
+        { re: /^(enviar?|envia|mandar?|manda|manda\s+isso|manda\s+essa|envia\s+isso|envia\s+essa|pode\s+enviar|pode\s+mandar)$/, acao: 'enviar' },
+        { re: /^(cancelar?|cancela|apagar?|apaga|limpar?|limpa|limpa\s+isso|apaga\s+isso|descarta(r)?|descarta|deixa\s+pra\s+la|deixa\s+pra\s+lá)$/, acao: 'cancelar' }
     ];
 
     const COMANDOS_RESERVADOS = [
-        // Hub: abrir/fechar módulos
         /^(abrir?|abre|abra|ativar?|ativa|ligar?|liga|iniciar?|inicia|fechar?|feche|fecha|desativar?|desativa|desligar?|desliga|parar?|para)\s+(o\s+|a\s+|os\s+|as\s+)?(menu|iptv|tv|youtube|yt|packet|blocklive|liveblock|adblock|bloqueador|booster|jogos|games|gameslive|photoswap|fotoswap|foto|prozilla|galeria|voz|chat|groq|gemini)$/,
         /^(mostrar?|mostra|esconder?|esconde|abrir?|abre|fechar?|fecha)\s+menu$/,
         /^menu$/,
         /^(modo\s+)?(voz|microfone|mic)$/,
-
-        // Print / captura
         /^(tirar?|tira)\s+print$/,
         /^(capturar?|captura)\s+(a\s+)?tela$/,
         /^print$/,
         /^(salvar?|salva)\s+(na\s+pasta|solto|solta)$/,
-
-        // Notas
         /^(criar?|cria|nova?|novo)\s+(anotacao|anotação|nota)$/,
         /^(salvar?|salva)\s+nota$/,
         /^(concluir?|conclui|finalizar?|finaliza)(\s+(nota|anotacao|anotação))?$/,
         /^anotacao$/,
         /^anotação$/,
         /^nota$/,
-
-        // Genéricos
         /^(fechar?|fecha|confirmar?|confirma|voltar?|volta)(\s+(isso|tudo|janela|painel))?$/
     ];
 
-    // Registro compartilhado 
     window._voiceCommands = window._voiceCommands || {
         _extras: [],
-        adicionar(re) {
-            if (re instanceof RegExp) this._extras.push(re);
-        },
+        adicionar(re) { if (re instanceof RegExp) this._extras.push(re); },
         tem(texto) {
             const n = normalize(texto);
-            return COMANDOS_RESERVADOS.some(r => r.test(n))
-                || this._extras.some(r => r.test(n));
+            return COMANDOS_RESERVADOS.some(r => r.test(n)) || this._extras.some(r => r.test(n));
         },
         acaoLocal(texto) {
             const n = normalize(texto);
-            for (const cmd of COMANDOS_VOZ) {
-                if (cmd.re.test(n)) return cmd.acao;
-            }
+            for (const cmd of COMANDOS_VOZ) if (cmd.re.test(n)) return cmd.acao;
             return null;
         },
         extrairForcarChat(texto) {
@@ -111,12 +83,9 @@
         }
     };
 
-    // ═══════════════════════════════════════════════════════════════
-    // CHAT DO JOGO
-    // ═══════════════════════════════════════════════════════════════
-
+    // ═══ CHAT DO JOGO ═══
     function encontrarInputChat() {
-        const candidatos = [
+        const sels = [
             'input[placeholder*="onversa"]',
             'input[placeholder*="alar"]',
             'input[placeholder*="ensagem"]',
@@ -127,18 +96,14 @@
             '.chat input',
             'input[type="text"][maxlength]'
         ];
-        for (const sel of candidatos) {
+        for (const sel of sels) {
             const el = document.querySelector(sel);
             if (el && el.offsetParent !== null) return el;
         }
-        const inputs = [...document.querySelectorAll('input[type="text"], textarea')];
-        return inputs.find(el => {
-            const r = el.getBoundingClientRect();
-            return r.top > window.innerHeight * 0.65 && el.offsetParent !== null;
-        }) || null;
+        return [...document.querySelectorAll('input[type="text"], textarea')]
+            .find(el => el.getBoundingClientRect().top > window.innerHeight * 0.65 && el.offsetParent) || null;
     }
 
-    // React-safe: dispara setter nativo + eventos sintéticos
     function setInputValue(el, texto) {
         if (el.isContentEditable) {
             el.focus();
@@ -151,29 +116,21 @@
             return;
         }
         const proto = el instanceof HTMLTextAreaElement
-            ? HTMLTextAreaElement.prototype
-            : HTMLInputElement.prototype;
+            ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
         const desc = Object.getOwnPropertyDescriptor(proto, 'value');
-        if (desc && desc.set) desc.set.call(el, texto);
-        else el.value = texto;
+        if (desc?.set) desc.set.call(el, texto); else el.value = texto;
         el.dispatchEvent(new Event('input', { bubbles: true }));
         el.dispatchEvent(new Event('change', { bubbles: true }));
     }
 
     function pressEnter(el) {
-        const opts = {
-            key: 'Enter', code: 'Enter', keyCode: 13, which: 13,
-            bubbles: true, cancelable: true
-        };
-        el.dispatchEvent(new KeyboardEvent('keydown', opts));
-        el.dispatchEvent(new KeyboardEvent('keypress', opts));
-        el.dispatchEvent(new KeyboardEvent('keyup', opts));
+        const o = { key:'Enter', code:'Enter', keyCode:13, which:13, bubbles:true, cancelable:true };
+        el.dispatchEvent(new KeyboardEvent('keydown', o));
+        el.dispatchEvent(new KeyboardEvent('keypress', o));
+        el.dispatchEvent(new KeyboardEvent('keyup', o));
     }
 
-    // ═══════════════════════════════════════════════════════════════
-    // MÓDULO
-    // ═══════════════════════════════════════════════════════════════
-
+    // ═══ MÓDULO ═══
     function init() {
         const config = loadConfig();
 
@@ -295,7 +252,6 @@
             text-transform: uppercase; letter-spacing: .08em; color: #a78bfa;
         }
         .campo { margin-bottom: 11px; }
-        .campo:last-of-type { margin-bottom: 0; }
         .campo label {
             display: block; font-size: 9.5px; color: #8b8fa3;
             text-transform: uppercase; letter-spacing: .05em;
@@ -333,12 +289,12 @@
                 <line x1="8" y1="23" x2="16" y2="23"/>
             </svg>
             <span class="nivel"></span>`;
-        const posIni = {
+        const pos = {
             left: config.left ?? (window.innerWidth - 66),
             top: config.top ?? (window.innerHeight - 66)
         };
-        fab.style.left = Math.max(0, Math.min(window.innerWidth - 56, posIni.left)) + 'px';
-        fab.style.top = Math.max(0, Math.min(window.innerHeight - 56, posIni.top)) + 'px';
+        fab.style.left = Math.max(0, Math.min(window.innerWidth - 56, pos.left)) + 'px';
+        fab.style.top = Math.max(0, Math.min(window.innerHeight - 56, pos.top)) + 'px';
         root.appendChild(fab);
 
         // ─── Preview ───
@@ -388,32 +344,39 @@
                     <option value="es-ES">Español</option>
                 </select>
             </div>
+            <div class="campo">
+                <label>Pontuação</label>
+                <select id="cfgPontuacao">
+                    <option value="off">Nenhuma</option>
+                    <option value="pausa">Vírgula nas pausas</option>
+                    <option value="groq">Formatar com Groq</option>
+                </select>
+            </div>
             <div class="ajuda">
                 Fale <code>enviar</code> para forçar envio, <code>cancelar</code> para limpar.
-                Se um texto bater exatamente com um comando do hub
-                (<code>abrir iptv</code>, <code>tirar print</code>…), ele é filtrado
-                e o outro módulo age.<br><br>
-                Para forçar qualquer texto ao chat, use o prefixo
-                <code>digitar</code>. Ex: <code>digitar enviar</code>.
+                Comandos do hub (<code>abrir iptv</code>, <code>tirar print</code>…) são
+                filtrados automaticamente.<br><br>
+                Para forçar qualquer texto ao chat, use <code>digitar</code>.
+                Ex: <code>digitar enviar</code>.
             </div>
         `;
         root.appendChild(popover);
 
         const txtEl = preview.querySelector('#txt');
         const avisoEl = preview.querySelector('#aviso');
-        const btnCancelar = preview.querySelector('#cancelar');
-        const btnEnviar = preview.querySelector('#enviar');
         const nivelEl = fab.querySelector('.nivel');
         const cfgModo = popover.querySelector('#cfgModo');
         const cfgSilencio = popover.querySelector('#cfgSilencio');
         const cfgLang = popover.querySelector('#cfgLang');
+        const cfgPontuacao = popover.querySelector('#cfgPontuacao');
 
         cfgModo.value = config.modo;
         cfgSilencio.value = String(config.silencioMs);
         cfgLang.value = config.lang;
+        cfgPontuacao.value = config.pontuacao;
 
         // ─── Estado ───
-        let reconhecimento = null;
+        let rec = null;
         let ativo = false;
         let textoFinal = '';
         let textoInterim = '';
@@ -421,8 +384,10 @@
         let timerSilencio = null;
         let tentativasRestart = 0;
         let timerRestart = null;
+        let enviando = false;
+        let enviandoGen = 0;
 
-        // ═══ Reconhecimento ═══
+        // ─── Reconhecimento ───
         function criarRecognition() {
             const r = new SpeechRecognitionAPI();
             r.lang = config.lang;
@@ -437,16 +402,31 @@
             };
 
             r.onresult = (event) => {
+                const agora = Date.now();
+                const tevePausa = ultimoResultadoEm &&
+                    (agora - ultimoResultadoEm) > config.pausaVirgulaMs;
+
                 let interim = '';
                 for (let i = event.resultIndex; i < event.results.length; i++) {
                     const res = event.results[i];
-                    if (res.isFinal) textoFinal += res[0].transcript;
-                    else interim += res[0].transcript;
+                    if (res.isFinal) {
+                        const trecho = res[0].transcript.trim();
+                        if (!trecho) continue;
+
+                        if (config.pontuacao !== 'off' && tevePausa && textoFinal.trim()
+                            && !/[.,!?;:]\s*$/.test(textoFinal.trimEnd())) {
+                            textoFinal = textoFinal.trimEnd() + ', ';
+                        } else if (textoFinal && !textoFinal.endsWith(' ')) {
+                            textoFinal += ' ';
+                        }
+                        textoFinal += trecho;
+                    } else {
+                        interim += res[0].transcript;
+                    }
                 }
                 textoInterim = interim;
-                ultimoResultadoEm = Date.now();
+                ultimoResultadoEm = agora;
 
-                // Feedback visual
                 fab.classList.add('hearing');
                 nivelEl.classList.add('pico');
                 setTimeout(() => {
@@ -461,26 +441,20 @@
             r.onerror = (e) => {
                 const tipo = e.error;
                 if (tipo === 'no-speech' || tipo === 'aborted') return;
-
                 if (tipo === 'not-allowed' || tipo === 'service-not-allowed') {
                     console.warn('[Voz] Permissão de microfone negada.');
                     desligar();
                     return;
                 }
-
                 if (tipo === 'network') {
                     console.warn('[Voz] Erro de rede — vai tentar reconectar.');
                     return;
                 }
-
                 console.warn('[Voz] Erro:', tipo);
             };
 
             r.onend = () => {
-                if (!ativo) {
-                    fab.classList.remove('ativo');
-                    return;
-                }
+                if (!ativo) { fab.classList.remove('ativo'); return; }
                 tentativasRestart++;
                 if (tentativasRestart > 8) {
                     console.warn('[Voz] Muitas falhas seguidas — desativando.');
@@ -490,15 +464,15 @@
                 const espera = Math.min(30000, 1000 * Math.pow(2, tentativasRestart - 1));
                 if (timerRestart) clearTimeout(timerRestart);
                 timerRestart = setTimeout(() => {
-                    if (!ativo || !reconhecimento) return;
-                    try { reconhecimento.start(); } catch (_) {}
+                    if (!ativo || !rec) return;
+                    try { rec.start(); } catch {}
                 }, espera);
             };
 
             return r;
         }
 
-        // ═══ Controle ═══
+        // ─── Controle ───
         function ligar() {
             if (ativo) return;
             textoFinal = '';
@@ -506,13 +480,12 @@
             ultimoResultadoEm = 0;
             tentativasRestart = 0;
             ativo = true;
-            reconhecimento = criarRecognition();
-            try {
-                reconhecimento.start();
-            } catch (e) {
+            rec = criarRecognition();
+            try { rec.start(); }
+            catch (e) {
                 console.error('[Voz] Falha ao iniciar:', e);
                 ativo = false;
-                reconhecimento = null;
+                rec = null;
                 return;
             }
             fab.classList.add('ativo');
@@ -520,18 +493,15 @@
         }
 
         function desligar() {
+            enviandoGen++;
             ativo = false;
             if (timerRestart) { clearTimeout(timerRestart); timerRestart = null; }
-            if (reconhecimento) {
-                try {
-                    reconhecimento.onend = null;
-                    reconhecimento.stop();
-                } catch (_) {}
-                reconhecimento = null;
+            if (rec) {
+                try { rec.onend = null; rec.stop(); } catch {}
+                rec = null;
             }
             pararTimerSilencio();
-            fab.classList.remove('ativo');
-            fab.classList.remove('hearing');
+            fab.classList.remove('ativo', 'hearing');
             nivelEl.classList.remove('pico');
             textoFinal = '';
             textoInterim = '';
@@ -539,18 +509,16 @@
             preview.classList.remove('visivel');
         }
 
-        function toggle() {
-            if (ativo) desligar(); else ligar();
-        }
+        function toggle() { if (ativo) desligar(); else ligar(); }
 
-        // ═══ Timer de silêncio (auto) ═══
+        // ─── Timer de silêncio ───
         function iniciarTimerSilencio() {
             if (timerSilencio) return;
             timerSilencio = setInterval(() => {
                 if (!ativo || config.modo !== 'auto') return;
-                const texto = (textoFinal + textoInterim).trim();
-                if (!texto || texto.length < config.minChars) return;
-                if (terminaComConector(texto)) return;
+                const t = (textoFinal + textoInterim).trim();
+                if (!t || t.length < config.minChars) return;
+                if (terminaComConector(t)) return;
                 if (Date.now() - ultimoResultadoEm >= config.silencioMs) enviar(false);
             }, 220);
         }
@@ -558,40 +526,34 @@
             if (timerSilencio) { clearInterval(timerSilencio); timerSilencio = null; }
         }
 
-        // Evita envio de frase cortada no meio
         const CONECTORES = new Set([
-            'e', 'ou', 'mas', 'que', 'porque', 'pois', 'entao', 'então',
-            'tambem', 'também', 'ainda', 'ja', 'já', 'se', 'quando', 'como',
-            'para', 'pra', 'de', 'do', 'da', 'no', 'na', 'em', 'com', 'sem',
-            'por', 'ao', 'aos', 'as', 'às', 'os', 'um', 'uma', 'uns', 'umas'
+            'e','ou','mas','que','porque','pois','entao','então','tambem','também',
+            'ainda','ja','já','se','quando','como','para','pra','de','do','da',
+            'no','na','em','com','sem','por','ao','aos','as','às','os','um','uma','uns','umas'
         ]);
-        function terminaComConector(texto) {
-            const palavras = normalize(texto).split(/\s+/);
-            const ultima = palavras[palavras.length - 1];
-            return CONECTORES.has(ultima);
+        function terminaComConector(t) {
+            const p = normalize(t).split(/\s+/);
+            return CONECTORES.has(p[p.length - 1]);
         }
 
-        // ═══ Render do preview ═══
+        // ─── Preview ───
         function renderPreview() {
-            const textoCompleto = (textoFinal + textoInterim).trim();
-            if (!textoCompleto || !ativo) {
+            const completo = (textoFinal + textoInterim).trim();
+            if (!completo || !ativo) {
                 preview.classList.remove('visivel');
                 avisoEl.textContent = '';
                 avisoEl.className = 'aviso';
                 return;
             }
-
             txtEl.innerHTML = escapeHtml(textoFinal) +
                 (textoInterim ? `<span class="interim">${escapeHtml(textoInterim)}</span>` : '');
-            const dot = preview.querySelector('.dot');
-            dot.className = 'dot ' + (textoInterim ? 'interim' : 'final');
+            preview.querySelector('.dot').className = 'dot ' + (textoInterim ? 'interim' : 'final');
 
-            // Aviso dinâmico
-            const forcar = window._voiceCommands.extrairForcarChat(textoCompleto);
+            const forcar = window._voiceCommands.extrairForcarChat(completo);
             if (forcar) {
                 avisoEl.textContent = '→ vai pro chat';
                 avisoEl.className = 'aviso forcar';
-            } else if (window._voiceCommands.tem(textoCompleto)) {
+            } else if (window._voiceCommands.tem(completo)) {
                 avisoEl.textContent = '⚠ comando reservado';
                 avisoEl.className = 'aviso cmd';
             } else {
@@ -603,10 +565,10 @@
         }
 
         function posicionarPreview() {
-            const inputAlvo = encontrarInputChat();
+            const inp = encontrarInputChat();
             let left, top;
-            if (inputAlvo) {
-                const r = inputAlvo.getBoundingClientRect();
+            if (inp) {
+                const r = inp.getBoundingClientRect();
                 left = Math.max(10, r.left);
                 top = Math.max(10, r.top - 130);
             } else {
@@ -617,105 +579,121 @@
             preview.style.top = Math.min(top, window.innerHeight - 140) + 'px';
         }
 
-        // ═══ Envio ═══
-        let tentativasEnvio = 0;
-
-        function enviar(forcado) {
-            if (tentativasEnvio >= 3) {
-                tentativasEnvio = 0;
-                console.warn('[Voz] Input do chat não apareceu após 3 tentativas.');
-                avisoEl.textContent = '⚠ chat não encontrado';
-                avisoEl.className = 'aviso cmd';
-                return;
+        // ─── Formatação via Groq ───
+        async function formatarComGroq(texto) {
+            if (!window._apis?.groq || !window._apis.getKey?.('groq')) return texto;
+            try {
+                const r = await window._apis.groq({
+                    prompt:
+                        'Reescreva o texto abaixo corrigindo ortografia e adicionando pontuação ' +
+                        '(vírgulas, pontos, interrogações quando fizer sentido). Não mude o sentido, ' +
+                        'não adicione conteúdo novo, mantenha o tom informal. Responda apenas com o ' +
+                        'texto corrigido, sem aspas nem comentários.\n\n' + texto,
+                    maxTokens: 400,
+                    temperature: 0.2
+                });
+                return (r && r.trim()) ? r.trim().replace(/^["']|["']$/g, '') : texto;
+            } catch (e) {
+                console.warn('[Voz] Formatação Groq falhou:', e);
+                return texto;
             }
+        }
+
+        // ─── Envio ───
+        async function enviar(forcado) {
+            if (enviando) return;
 
             let texto = (textoFinal + textoInterim).trim();
             if (texto.length < config.minChars) return;
 
-            // Prefixo "digitar X" força X ao chat, ignorando o filtro de comandos
-            const forcar = window._voiceCommands.extrairForcarChat(texto);
-            if (forcar) {
-                texto = forcar;
+            const forcarPrefixo = window._voiceCommands.extrairForcarChat(texto);
+            if (forcarPrefixo) {
+                texto = forcarPrefixo;
             } else if (!forcado) {
-                // Comando local do módulo?
-                const acaoLocal = window._voiceCommands.acaoLocal(texto);
-                if (acaoLocal === 'enviar') {
-                    // Não é o caso — estamos já dentro de enviar. Só limpa e sai.
-                    textoFinal = '';
-                    textoInterim = '';
-                    ultimoResultadoEm = 0;
-                    renderPreview();
-                    return;
+                const acao = window._voiceCommands.acaoLocal(texto);
+                if (acao === 'enviar') {
+                    textoFinal = ''; textoInterim = ''; ultimoResultadoEm = 0;
+                    renderPreview(); return;
                 }
-                if (acaoLocal === 'cancelar') {
-                    cancelar();
-                    return;
-                }
-                // Comando reservado de outro módulo?
+                if (acao === 'cancelar') { cancelar(); return; }
                 if (window._voiceCommands.tem(texto)) {
                     console.log('[Voz] Comando reservado filtrado:', texto);
-                    textoFinal = '';
-                    textoInterim = '';
-                    ultimoResultadoEm = 0;
-                    renderPreview();
-                    return;
+                    textoFinal = ''; textoInterim = ''; ultimoResultadoEm = 0;
+                    renderPreview(); return;
                 }
             }
 
-            const inputAlvo = encontrarInputChat();
-            if (!inputAlvo) {
-                tentativasEnvio++;
-                setTimeout(() => enviar(forcado), 800);
-                return;
+            enviando = true;
+            const gen = ++enviandoGen;
+
+            try {
+                if (config.pontuacao === 'groq' && !forcarPrefixo) {
+                    avisoEl.textContent = '✨ formatando…';
+                    avisoEl.className = 'aviso forcar';
+                    const formatado = await formatarComGroq(texto);
+                    if (gen !== enviandoGen) return;
+                    if (formatado && formatado !== texto) {
+                        texto = formatado;
+                        textoFinal = formatado;
+                        textoInterim = '';
+                        renderPreview();
+                    }
+                }
+
+                for (let tentativa = 0; tentativa < 3; tentativa++) {
+                    if (gen !== enviandoGen) return;
+
+                    const inp = encontrarInputChat();
+                    if (inp) {
+                        const maxLen = inp.getAttribute('maxlength')
+                            ? parseInt(inp.getAttribute('maxlength'), 10) : 200;
+                        let final = texto.length > maxLen ? texto.slice(0, maxLen) : texto;
+
+                        if (inp.value && inp.value.trim()) {
+                            const combinado = inp.value.trim() + ' ' + final;
+                            final = combinado.length > maxLen
+                                ? combinado.slice(-maxLen) : combinado;
+                        }
+
+                        setInputValue(inp, final);
+                        inp.focus();
+                        setTimeout(() => pressEnter(inp), 80);
+
+                        textoFinal = ''; textoInterim = ''; ultimoResultadoEm = 0;
+                        renderPreview();
+                        return;
+                    }
+                    await new Promise(r => setTimeout(r, 800));
+                }
+
+                avisoEl.textContent = '⚠ chat não encontrado';
+                avisoEl.className = 'aviso cmd';
+            } finally {
+                enviando = false;
             }
-            tentativasEnvio = 0;
-
-            // Respeita maxlength
-            const maxLen = inputAlvo.getAttribute('maxlength')
-                ? parseInt(inputAlvo.getAttribute('maxlength'), 10)
-                : 200;
-            if (texto.length > maxLen) texto = texto.slice(0, maxLen);
-
-            // Não sobrescreve o que o usuário já estava digitando
-            if (inputAlvo.value && inputAlvo.value.trim()) {
-                const atual = inputAlvo.value.trim();
-                const combinado = atual + ' ' + texto;
-                texto = combinado.length > maxLen
-                    ? combinado.slice(-maxLen)
-                    : combinado;
-            }
-
-            setInputValue(inputAlvo, texto);
-            inputAlvo.focus();
-            setTimeout(() => pressEnter(inputAlvo), 80);
-
-            textoFinal = '';
-            textoInterim = '';
-            ultimoResultadoEm = 0;
-            renderPreview();
         }
 
         function cancelar() {
+            enviandoGen++;
             textoFinal = '';
             textoInterim = '';
             ultimoResultadoEm = 0;
-            tentativasEnvio = 0;
             renderPreview();
         }
 
-        // ═══ Eventos do preview ═══
-        btnEnviar.addEventListener('click', (e) => {
+        // ─── Eventos preview ───
+        preview.querySelector('#enviar').addEventListener('click', e => {
             e.stopPropagation();
             enviar(true);
         });
-        btnCancelar.addEventListener('click', (e) => {
+        preview.querySelector('#cancelar').addEventListener('click', e => {
             e.stopPropagation();
             cancelar();
         });
 
-        // ═══ Eventos do FAB ═══
+        // ─── FAB ───
         let fabDrag = null, fabMoved = false;
-        fab.addEventListener('pointerdown', (e) => {
+        fab.addEventListener('pointerdown', e => {
             if (e.button !== 0) return;
             fabDrag = {
                 sx: e.clientX, sy: e.clientY,
@@ -723,115 +701,97 @@
                 top: parseInt(fab.style.top, 10)
             };
             fabMoved = false;
-            try { fab.setPointerCapture(e.pointerId); } catch (_) {}
+            try { fab.setPointerCapture(e.pointerId); } catch {}
         });
-        fab.addEventListener('pointermove', (e) => {
+        fab.addEventListener('pointermove', e => {
             if (!fabDrag) return;
             const dx = e.clientX - fabDrag.sx;
             const dy = e.clientY - fabDrag.sy;
             if (!fabMoved && Math.hypot(dx, dy) < 4) return;
             fabMoved = true;
-            const nl = Math.max(0, Math.min(window.innerWidth - 56, fabDrag.left + dx));
-            const nt = Math.max(0, Math.min(window.innerHeight - 56, fabDrag.top + dy));
-            fab.style.left = nl + 'px';
-            fab.style.top = nt + 'px';
+            fab.style.left = Math.max(0, Math.min(window.innerWidth - 56, fabDrag.left + dx)) + 'px';
+            fab.style.top = Math.max(0, Math.min(window.innerHeight - 56, fabDrag.top + dy)) + 'px';
         });
-        fab.addEventListener('pointerup', (e) => {
+        fab.addEventListener('pointerup', e => {
             if (!fabDrag) return;
-            try { fab.releasePointerCapture(e.pointerId); } catch (_) {}
-            if (!fabMoved) {
-                toggle();
-            } else {
+            try { fab.releasePointerCapture(e.pointerId); } catch {}
+            if (!fabMoved) toggle();
+            else {
                 config.left = parseInt(fab.style.left, 10);
                 config.top = parseInt(fab.style.top, 10);
                 saveConfig(config);
             }
             fabDrag = null;
         });
-
-        fab.addEventListener('contextmenu', (e) => {
+        fab.addEventListener('contextmenu', e => {
             e.preventDefault();
             const r = fab.getBoundingClientRect();
             popover.style.left = Math.max(10, Math.min(r.left - 280, window.innerWidth - 290)) + 'px';
-            popover.style.top = Math.min(r.top, window.innerHeight - 360) + 'px';
+            popover.style.top = Math.min(r.top, window.innerHeight - 420) + 'px';
             popover.classList.toggle('visivel');
         });
 
-        // ═══ Config ═══
-        cfgModo.addEventListener('change', () => {
-            config.modo = cfgModo.value;
-            saveConfig(config);
-        });
-        cfgSilencio.addEventListener('change', () => {
-            config.silencioMs = parseInt(cfgSilencio.value, 10);
-            saveConfig(config);
-        });
+        // ─── Config ───
+        cfgModo.addEventListener('change', () => { config.modo = cfgModo.value; saveConfig(config); });
+        cfgSilencio.addEventListener('change', () => { config.silencioMs = parseInt(cfgSilencio.value, 10); saveConfig(config); });
         cfgLang.addEventListener('change', () => {
             config.lang = cfgLang.value;
             saveConfig(config);
-            if (ativo) {
-                desligar();
-                setTimeout(ligar, 300);
-            }
+            if (ativo) { desligar(); setTimeout(ligar, 300); }
+        });
+        cfgPontuacao.addEventListener('change', () => {
+            config.pontuacao = cfgPontuacao.value;
+            saveConfig(config);
         });
 
-        // ═══ Fecha popover ao clicar fora ═══
-        function fecharPopoverAoClicarFora(e) {
+        // ─── Popover fecha ao clicar fora ───
+        function fecharPopoverFora(e) {
             if (!popover.classList.contains('visivel')) return;
             const path = e.composedPath ? e.composedPath() : [];
             if (path.includes(popover) || path.includes(fab)) return;
             popover.classList.remove('visivel');
         }
-        document.addEventListener('pointerdown', fecharPopoverAoClicarFora, true);
+        document.addEventListener('pointerdown', fecharPopoverFora, true);
 
-        // ═══ Hotkeys ═══
-        function estaDigitandoEmInput() {
+        // ─── Hotkeys ───
+        const estaDigitando = () => {
             const el = document.activeElement;
             if (!el) return false;
             const tag = el.tagName;
             return tag === 'INPUT' || tag === 'TEXTAREA' || el.isContentEditable;
-        }
+        };
 
         function onKeydown(e) {
-            // Alt+V — toggle. Não dispara dentro de input
-            if (e.altKey && e.key.toLowerCase() === 'v' && !estaDigitandoEmInput()) {
-                e.preventDefault();
-                e.stopPropagation();
-                toggle();
-                return;
+            if (e.altKey && e.key.toLowerCase() === 'v' && !estaDigitando()) {
+                e.preventDefault(); e.stopPropagation(); toggle(); return;
             }
-            // Escape — cancela o buffer (sem preventDefault, deixa o jogo processar)
             if (e.key === 'Escape' && ativo && (textoFinal || textoInterim)) {
-                cancelar();
-                return;
+                cancelar(); return;
             }
-            // Enter no modo manual — envia, mas só se não estiver digitando
             if (e.key === 'Enter' && ativo && config.modo === 'manual'
-                && (textoFinal || textoInterim) && !estaDigitandoEmInput()) {
-                e.preventDefault();
-                e.stopPropagation();
-                enviar(true);
+                && (textoFinal || textoInterim) && !estaDigitando()) {
+                e.preventDefault(); e.stopPropagation(); enviar(true);
             }
         }
         document.addEventListener('keydown', onKeydown, true);
 
-        // ═══ Resize ═══
-        function onWindowResize() {
+        // ─── Resize ───
+        function onResize() {
             const l = parseInt(fab.style.left, 10);
             const t = parseInt(fab.style.top, 10);
             fab.style.left = Math.max(0, Math.min(window.innerWidth - 56, l)) + 'px';
             fab.style.top = Math.max(0, Math.min(window.innerHeight - 56, t)) + 'px';
             if (preview.classList.contains('visivel')) posicionarPreview();
         }
-        window.addEventListener('resize', onWindowResize);
+        window.addEventListener('resize', onResize);
 
-        // ═══ API pública ═══
+        // ─── API ───
         window[UID] = {
             kill() {
                 desligar();
                 document.removeEventListener('keydown', onKeydown, true);
-                document.removeEventListener('pointerdown', fecharPopoverAoClicarFora, true);
-                window.removeEventListener('resize', onWindowResize);
+                document.removeEventListener('pointerdown', fecharPopoverFora, true);
+                window.removeEventListener('resize', onResize);
                 if (timerRestart) clearTimeout(timerRestart);
                 if (timerSilencio) clearInterval(timerSilencio);
                 host.remove();
@@ -845,7 +805,7 @@
     }
 
     if (document.body) init();
-    else new MutationObserver((_, obs) => {
-        if (document.body) { obs.disconnect(); init(); }
+    else new MutationObserver((_, o) => {
+        if (document.body) { o.disconnect(); init(); }
     }).observe(document.documentElement, { childList: true });
 })();
