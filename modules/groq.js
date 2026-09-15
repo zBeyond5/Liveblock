@@ -1,4 +1,3 @@
-// modules/groq.js — chat com Sang AI (backend: Groq)
 (function() {
     'use strict';
     const UID = '_groq';
@@ -10,10 +9,8 @@
     const KEYS_URL = 'https://console.groq.com/keys';
 
     const MODELOS = [
-        { id: 'openai/gpt-oss-120b', nome: 'GPT-OSS 120B', tag: 'inteligente' },
-        { id: 'openai/gpt-oss-20b',  nome: 'GPT-OSS 20B',  tag: 'equilibrado' },
-        { id: 'meta-llama/llama-4-scout-17b-16e-instruct', nome: 'Llama 4 Scout', tag: 'rápido' },
-        { id: 'qwen/qwen3-32b',      nome: 'Qwen 3 32B',   tag: 'alternativo' }
+        { id: 'openai/gpt-oss-120b', nome: 'SangMax', tag: 'inteligente' },
+        { id: 'openai/gpt-oss-20b',  nome: 'Standard',  tag: 'equilibrado' },
     ];
 
     const loadGeom = () => {
