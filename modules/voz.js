@@ -9,13 +9,10 @@
         return;
     }
 
-    const IS_EDGE = /Edg\//.test(navigator.userAgent);
-    const RESTART_RAPIDO_MS = IS_EDGE ? 150 : 0;
-
     const STATE_KEY = 'sang_voz_state';
     const DEFAULT_CONFIG = {
         modo: 'manual',
-        silencioMs: IS_EDGE ? 1800 : 2500,
+        silencioMs: 2500,
         minChars: 2,
         lang: 'pt-BR',
         left: null,
@@ -28,7 +25,7 @@
         delayEntreBlocos: 320
     };
 
-    const MIN_INTERVALO_STREAM = 350;
+    const MIN_INTERVALO_STREAM = 250;  // ms entre envios contínuos
 
     // ─── Persistência ───
     const loadConfig = () => {
@@ -193,6 +190,9 @@
         el.dispatchEvent(new KeyboardEvent('keyup', o));
     }
 
+    // Divide texto em blocos que caibam no limite do chat, cortando em espaços
+    // quando possível. Não fatia palavra no meio; evita deixar conector solto
+    // no fim do bloco pra continuar a frase naturalmente no próximo.
     function dividirEmBlocos(texto, maxLen) {
         const t = String(texto || '').trim();
         if (!t) return [];
@@ -486,7 +486,6 @@
                 <strong>Modo livre:</strong> comandos disparam direto, como antes.
                 <code>enviar</code> força envio, <code>cancelar</code> limpa.
                 Use <code>digitar</code> para forçar texto ao chat.
-                ${IS_EDGE ? '<div style="color:#f5b942;font-size:9.5px;margin-top:10px;line-height:1.5;">⚠ Edge tem suporte parcial ao SpeechRecognition. Se a captura ficar instável, tente no Chrome.</div>' : ''}
                 <div class="dica-foco">💡 Pausa sozinho quando você troca de aba ou janela.</div>
             </div>
         `;
@@ -559,21 +558,13 @@
                     (agora - ultimoResultadoEm) > config.pausaVirgulaMs;
                 const aplicarPausa = config.pontuacao === 'pausa' && tevePausa;
 
-                // Dedupe: Edge às vezes reenvia o mesmo resultado. Guardamos
-                // uma chave por (isFinal, texto, índice) pra não duplicar frase.
-                const chavesVistas = new Set();
                 let interim = '';
-                for (let i = 0; i < event.results.length; i++) {
+                for (let i = event.resultIndex; i < event.results.length; i++) {
                     const res = event.results[i];
-                    const trecho = res[0].transcript.trim();
-                    if (!trecho) continue;
-                    const chave = `${res.isFinal ? 'f' : 'i'}:${i}:${trecho}`;
-                    if (chavesVistas.has(chave)) continue;
-                    chavesVistas.add(chave);
-
                     if (res.isFinal) {
-                        // Evita reinserir trecho que já está no buffer
-                        if (textoFinal.includes(trecho)) continue;
+                        const trecho = res[0].transcript.trim();
+                        if (!trecho) continue;
+
                         if (aplicarPausa && textoFinal.trim()
                             && !/[.,!?;:]\s*$/.test(textoFinal.trimEnd())) {
                             textoFinal = textoFinal.trimEnd() + ', ';
@@ -582,7 +573,7 @@
                         }
                         textoFinal += trecho;
                     } else {
-                        interim += trecho;
+                        interim += res[0].transcript;
                     }
                 }
                 textoInterim = interim;
@@ -595,7 +586,9 @@
                     nivelEl.classList.remove('pico');
                 }, 350);
 
+                // Tenta enviar em pedaços antes mesmo da pausa
                 tentarStreaming();
+
                 renderPreview();
                 posicionarPreview();
             };
@@ -620,19 +613,7 @@
 
             r.onend = () => {
                 if (!ativo) { fab.classList.remove('ativo'); return; }
-
-                // Edge dispara onend após cada frase (não é falha — é o backend
-                // do Azure fechando a sessão). Se teve resultado recente,
-                // tratamos como ciclo normal e reiniciamos rápido.
-                const teveResultadoRecente = ultimoResultadoEm &&
-                    (Date.now() - ultimoResultadoEm) < 5000;
-
-                if (teveResultadoRecente) {
-                    tentativasRestart = 0;
-                } else {
-                    tentativasRestart++;
-                }
-
+                tentativasRestart++;
                 if (tentativasRestart > 8) {
                     console.warn('[Voz] Muitas falhas seguidas — desativando.');
                     habilitado = false;
@@ -641,11 +622,7 @@
                     dispararEstadoVoz();
                     return;
                 }
-
-                const espera = teveResultadoRecente
-                    ? RESTART_RAPIDO_MS
-                    : Math.min(30000, 1000 * Math.pow(2, tentativasRestart - 1));
-
+                const espera = Math.min(30000, 1000 * Math.pow(2, tentativasRestart - 1));
                 if (timerRestart) clearTimeout(timerRestart);
                 timerRestart = setTimeout(() => {
                     if (!ativo || !rec) return;
@@ -832,6 +809,7 @@
         }
 
         // ─── Verifica se o texto acumulado parece comando ───
+        // Se sim, não streama: espera a pausa pra deixar o despachante decidir.
         function ehInicioDeComando(texto) {
             const n = normalize(texto);
             if (PREFIXO_COMANDO.test(n)) return true;
@@ -841,6 +819,8 @@
         }
 
         // ─── Envio contínuo ───
+        // Quando o texto acumulado bate o limite do chat, corta o pedaço que cabe
+        // e envia na hora, guardando o resto pra continuar acumulando.
         function tentarStreaming() {
             if (!config.streaming) return;
             if (enviando) return;
@@ -854,15 +834,20 @@
 
             if (textoFinal.length < maxLen) return;
 
+            // Segura se está claramente começando um comando (a menos que
+            // já tenha passado muito do limite, indicando que não é comando).
             if (ehInicioDeComando(textoFinal) && textoFinal.length < maxLen * 2) return;
 
+            // Corta no último espaço dentro do limite
             let corte = textoFinal.lastIndexOf(' ', maxLen);
             if (corte < Math.floor(maxLen * 0.5)) corte = maxLen;
             const bloco = textoFinal.slice(0, corte).trimEnd();
             if (!bloco) return;
 
+            // Reserva o resto
             textoFinal = textoFinal.slice(bloco.length).trimStart();
 
+            // Marca ANTES de enviar (evita reentrada)
             enviando = true;
             ultimoStreamEm = Date.now();
 
@@ -878,55 +863,86 @@
                 try { pressEnter(inp); } catch {}
                 enviando = false;
                 flashEnvio(bloco.length);
+                // Continua se ainda tem muito texto acumulado
                 tentarStreaming();
             }, 60);
         }
 
         // ─── Formatação via Sang AI ───
-        async function formatarComSangAI(texto) {
+                async function formatarComSangAI(texto) {
             if (!window._apis?.groq || !window._apis.getKey?.('groq')) return texto;
             const ctrl = new AbortController();
             const timer = setTimeout(() => ctrl.abort(), 8000);
             try {
                 const r = await window._apis.groq({
                     mensagens: [
-                        {
-                            role: 'system',
-                            content:
-                                'Você é um formatador inteligente de transcrições de áudio em português brasileiro, ' +
-                                'semelhante à formatação de mensagens de voz de um assistente conversacional.\n\n' +
-                                'Sua tarefa é transformar a transcrição bruta em uma mensagem natural, clara e bem pontuada, ' +
-                                'preservando fielmente o que a pessoa quis dizer.\n\n' +
-                                'Identifique corretamente:\n- Perguntas;\n- Afirmações;\n- Dúvidas;\n- Pedidos;\n- Ordens;\n' +
-                                '- Sugestões;\n- Desabafos;\n- Exclamações;\n- Falas informais.\n\n' +
-                                'Regras:\n' +
-                                '1. Responda SOMENTE com o texto formatado.\n' +
-                                '2. Não responda ao conteúdo da fala.\n' +
-                                '3. Não explique nada.\n' +
-                                '4. Não resuma, expanda, invente ou altere o sentido.\n' +
-                                '5. Preserve o tom informal e as gírias.\n' +
-                                '6. Preserve nomes próprios, nomes de projetos, jogos, empresas e termos técnicos.\n' +
-                                '7. Corrija apenas erros claros de transcrição.\n' +
-                                '8. Use ponto de interrogação quando a fala for uma pergunta.\n' +
-                                '9. Use exclamação somente quando houver entusiasmo, surpresa ou ênfase evidente.\n' +
-                                '10. Use vírgulas em pausas naturais, sem exagerar.\n' +
-                                '11. Separe ideias diferentes em frases distintas.\n' +
-                                '12. Não transforme uma fala informal em texto formal demais.\n' +
-                                '13. Preserve expressões como "tá", "tô", "pra", "pro", "mano", "tipo", "né", "kkkk", "véi" e "pô".\n' +
-                                '14. Se uma palavra parecer um nome próprio, comando ou termo técnico, mantenha-a.\n' +
-                                '15. Retorne somente a versão final da transcrição, sem aspas, markdown ou comentários.\n\n' +
-                                'Exemplos:\n\n' +
-                                'Entrada:\nqual é o melhor jeito de fazer um botão no javascript\n\n' +
-                                'Saída:\nQual é o melhor jeito de fazer um botão no JavaScript?\n\n' +
-                                'Entrada:\nmano que interface bonita\n\n' +
-                                'Saída:\nMano, que interface bonita!\n\n' +
-                                'Entrada:\ntipo assim eu queria saber se você consegue me ajudar\n\n' +
-                                'Saída:\nTipo assim, eu queria saber se você consegue me ajudar.\n\n' +
-                                'Entrada:\neu tava indo pra casa mais aí eu vi ele\n\n' +
-                                'Saída:\nEu tava indo pra casa, mas aí eu vi ele.'
-                        },
-                        { role: 'user', content: texto }
-                    ],
+    {
+        role: 'system',
+        content: `
+Você é um formatador inteligente de transcrições de áudio em português brasileiro, semelhante à formatação de mensagens de voz de um assistente conversacional.
+
+Sua tarefa é transformar a transcrição bruta em uma mensagem natural, clara e bem pontuada, preservando fielmente o que a pessoa quis dizer.
+
+Identifique corretamente:
+- Perguntas;
+- Afirmações;
+- Dúvidas;
+- Pedidos;
+- Ordens;
+- Sugestões;
+- Desabafos;
+- Exclamações;
+- Falas informais.
+
+Regras:
+1. Responda SOMENTE com o texto formatado.
+2. Não responda ao conteúdo da fala.
+3. Não explique nada.
+4. Não resuma, expanda, invente ou altere o sentido.
+5. Preserve o tom informal e as gírias.
+6. Preserve nomes próprios, nomes de projetos, jogos, empresas e termos técnicos.
+7. Corrija apenas erros claros de transcrição.
+8. Use ponto de interrogação quando a fala for uma pergunta.
+9. Use exclamação somente quando houver entusiasmo, surpresa ou ênfase evidente.
+10. Use vírgulas em pausas naturais, sem exagerar.
+11. Separe ideias diferentes em frases distintas.
+12. Não transforme uma fala informal em texto formal demais.
+13. Preserve expressões como "tá", "tô", "pra", "pro", "mano", "tipo", "né", "kkkk", "véi" e "pô".
+14. Se uma palavra parecer um nome próprio, comando ou termo técnico, mantenha-a.
+15. Retorne somente a versão final da transcrição, sem aspas, markdown ou comentários.
+
+Exemplos:
+
+Entrada:
+qual é o melhor jeito de fazer um botão no javascript
+
+Saída:
+Qual é o melhor jeito de fazer um botão no JavaScript?
+
+Entrada:
+mano que interface bonita
+
+Saída:
+Mano, que interface bonita!
+
+Entrada:
+tipo assim eu queria saber se você consegue me ajudar
+
+Saída:
+Tipo assim, eu queria saber se você consegue me ajudar.
+
+Entrada:
+eu tava indo pra casa mais aí eu vi ele
+
+Saída:
+Eu tava indo pra casa, mas aí eu vi ele.
+`,
+    },
+    {
+        role: 'user',
+        content: texto
+    }
+],
                     maxTokens: 600,
                     temperature: 0.15,
                     topP: 0.9
@@ -968,7 +984,7 @@
             return false;
         }
 
-        // ─── Envio final ───
+        // ─── Envio final (pausa, Enter, botão) ───
         async function enviar(forcado) {
             if (enviando) return;
 
@@ -1017,38 +1033,30 @@
                 }
             }
 
-            // Correção importante: só limpa o buffer DEPOIS de confirmar que
-            // o input do chat existe. Edge entra num gap de restart de ~150ms
-            // a cada frase, e se o enviar() for disparado nesse gap, o input
-            // pode não estar visível ainda. Perder o texto nesse caso seria
-            // um bug silencioso.
-            const inp = encontrarInputChat();
-            if (!inp) {
-                avisoEl.textContent = '⚠ chat não encontrado';
-                avisoEl.className = 'aviso cmd';
-                return;
-            }
-
-            textoFinal = '';
-            textoInterim = '';
-            ultimoResultadoEm = 0;
-
             enviando = true;
             const gen = ++enviandoGen;
 
             try {
                 if (config.pontuacao === 'groq' && !forcarPrefixo) {
                     avisoEl.textContent = '✨ formatando…';
-                    avisoEl.className = 'aviso info';
+                    avisoEl.className = 'aviso forcar';
                     const formatado = await formatarComSangAI(texto);
                     if (gen !== enviandoGen) return;
                     if (formatado && formatado !== texto) {
                         texto = formatado;
+                        textoFinal = formatado;
+                        textoInterim = '';
+                        renderPreview();
                     }
                 }
 
+                const inp = encontrarInputChat();
                 const maxLen = maxLenDoInput(inp);
                 const blocos = dividirEmBlocos(texto, maxLen);
+
+                textoFinal = '';
+                textoInterim = '';
+                ultimoResultadoEm = 0;
 
                 for (let i = 0; i < blocos.length; i++) {
                     if (gen !== enviandoGen) return;
@@ -1233,4 +1241,3 @@
     else new MutationObserver((_, o) => {
         if (document.body) { o.disconnect(); init(); }
     }).observe(document.documentElement, { childList: true });
-})();
