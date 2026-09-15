@@ -1,4 +1,3 @@
-// modules/voz.js — fala vira texto no chat do Habbo
 (function() {
     'use strict';
     const UID = '_voz';
