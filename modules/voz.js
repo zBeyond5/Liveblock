@@ -869,29 +869,37 @@
         }
 
         // ─── Formatação via Sang AI ───
-        async function formatarComSangAI(texto) {
+                async function formatarComSangAI(texto) {
             if (!window._apis?.groq || !window._apis.getKey?.('groq')) return texto;
             const ctrl = new AbortController();
-            const timer = setTimeout(() => ctrl.abort(), 4500);
+            const timer = setTimeout(() => ctrl.abort(), 8000);
             try {
                 const r = await window._apis.groq({
                     mensagens: [
                         {
                             role: 'system',
                             content:
-                                'Você é um corretor de texto em português brasileiro. ' +
-                                'Sua tarefa é APENAS corrigir ortografia e adicionar pontuação ' +
-                                '(vírgulas, pontos, interrogações, exclamações) ao texto do usuário. ' +
-                                'Regras: ' +
-                                '1) Responda SOMENTE com o texto corrigido, sem introdução, sem aspas, sem markdown. ' +
-                                '2) Não adicione, remova ou reordene palavras — só pontue e corrija erros. ' +
-                                '3) Mantenha o tom informal e gírias. ' +
-                                '4) Use vírgulas em pausas naturais e pontos ao final de frases.'
+                                'Você é um corretor humano de transcrições em português brasileiro. ' +
+                                'Corrija o texto do usuário como se fosse um revisor revisando o próprio ' +
+                                'pensamento: adicione pontuação (vírgulas em pausas naturais, pontos no fim ' +
+                                'de frase, interrogações/exclamações quando o tom pedir) e corrija palavras ' +
+                                'escritas erradas.\n\n' +
+                                'Regras:\n' +
+                                '1) Se uma palavra parecer errada pelo contexto, corrija para a palavra ' +
+                                'mais provável (ex: "caza" → "casa", "agora eu vou" pode virar "agora, eu vou"). ' +
+                                'Homófonos comuns (mais/mas, há/a, si/se) devem ser corrigidos pelo sentido. ' +
+                                '2) Mantenha gírias, nomes próprios e o tom informal exatamente como estão. ' +
+                                '3) Não resuma, não expanda, não troque a ordem das ideias. ' +
+                                '4) Responda SOMENTE com o texto corrigido, sem aspas, sem markdown, sem ' +
+                                'comentários.\n\n' +
+                                'Exemplo:\n' +
+                                'Entrada: eu tava indo pra casa mais ai eu vi ele na rua e resolvi para pra conversar\n' +
+                                'Saída: Eu tava indo pra casa, mas aí eu vi ele na rua e resolvi parar pra conversar.'
                         },
                         { role: 'user', content: texto }
                     ],
-                    maxTokens: 500,
-                    temperature: 0.1
+                    maxTokens: 800,
+                    temperature: 0.35
                 }, { signal: ctrl.signal, forceRefresh: true });
                 const limpo = String(r || '').trim()
                     .replace(/^["'`]+|["'`]+$/g, '')
