@@ -29,7 +29,7 @@
       "description": "Bloqueador de anúncios",
       "icon": "https://raw.githubusercontent.com/zBeyond5/Liveblock/main/assets/GIF/blocklive.gif",
       "enabled": true,
-      "autoload": true,
+      "autoload": false,
       "instanceKey": "_blocklive",
       "url": "https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/modules/blocklive.js"
     },
@@ -72,7 +72,7 @@
       "description": "Otimizador de FPS",
       "icon": "https://raw.githubusercontent.com/zBeyond5/Liveblock/main/assets/GIF/boosterlive.gif",
       "enabled": true,
-      "autoload": true,
+      "autoload": false,
       "secret": false,
       "instanceKey": "_liveBooster",
       "url": "https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/modules/boosterlive.js"
