@@ -147,6 +147,18 @@
       "misc": true,
       "instanceKey": "_galeria",
       "url": "https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/modules/galeria.js"
+    },
+    {
+    "id": "voz",
+    "name": "VoiceToChat",
+    "description": "Transforma voz em texto",
+    "icon": "https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/assets/GIF/voz.gif",
+    "enabled": true,
+    "autoload": false,
+    "secret": false,
+    "misc": true,   
+    "instanceKey": "_voz",
+    "url": "https://raw.githubusercontent.com/zBeyond5/Liveblock/main/modules/voz.js",
     }
   ]
 }
