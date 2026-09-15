@@ -1,14 +1,15 @@
+// modules/packetlive.js — Sang Analyzer + Sender + IA (v5)
+// v5: Notebook persistente, Correlator OUT↔IN, Fuzzer de bytes, Race Tester,
+// tab PESQUISA com 4 sub-abas, IA com contexto do notebook, cleanup completo.
 (function() {
     'use strict';
     const UID = '_analyzer';
     if (window[UID]) { try { window[UID].kill(); } catch(e) {} }
 
-    // ─── Modelo fixo (único confirmado) ───
     const MODELO_SANGMAX = 'openai/gpt-oss-120b';
 
     // ═══════════════════════════════════════════════════════════════
     // DICIONÁRIO DO PROTOCOLO
-    // OUT = cliente envia | IN = servidor envia
     // ═══════════════════════════════════════════════════════════════
     const PacketNames = {
         OUT: {
@@ -351,7 +352,6 @@
         dicionario: Storage.get('dicionario', {})
     };
 
-    // ─── Utilitários binários ───
     const Utils = {
         bufferToHex(buffer) {
             if (!buffer || buffer.byteLength === 0) return '';
@@ -394,7 +394,6 @@
         }
     };
 
-    // ─── Firewall ───
     const PacketFilter = {
         isVisualBlocked(packet) {
             if (AppState.blIds.has(packet.header)) return true;
@@ -430,6 +429,283 @@
     };
 
     const InboundTransformer = { rules: {}, transform(data) { return data; } };
+
+    // ─── Emitter interno (desacopla camadas) ───
+    const Emitter = {
+        _map: {},
+        on(evt, cb) {
+            (this._map[evt] = this._map[evt] || []).push(cb);
+            return () => { this._map[evt] = this._map[evt].filter(h => h !== cb); };
+        },
+        emit(evt, data) {
+            (this._map[evt] || []).forEach(cb => {
+                try { cb(data); } catch (e) { console.error('[Emitter]', evt, e); }
+            });
+        },
+        clear() { this._map = {}; }
+    };
+
+    // ═══════════════════════════════════════════════════════════════
+    // NOTEBOOK — base de conhecimento por pacote, persistente
+    // ═══════════════════════════════════════════════════════════════
+    const Notebook = {
+        _cache: null,
+        _load() {
+            if (this._cache) return this._cache;
+            this._cache = Storage.get('notebook', {});
+            return this._cache;
+        },
+        _save() {
+            Storage.set('notebook', this._cache);
+            Emitter.emit('notebook:changed');
+        },
+        get(id) { return this._load()[id] || null; },
+        update(id, patch) {
+            const n = this._load();
+            const base = n[id] || { criado: Date.now(), hipoteses: [], resultados: [], notas: [] };
+            base.hipoteses = base.hipoteses || [];
+            base.resultados = base.resultados || [];
+            base.notas = base.notas || [];
+            n[id] = Object.assign(base, patch, { atualizado: Date.now() });
+            this._save();
+            return n[id];
+        },
+        addHipotese(id, texto) {
+            const e = this.get(id) || {};
+            const hipoteses = (e.hipoteses || []).concat([{ texto, criadaEm: Date.now(), testada: false, resultado: null }]);
+            this.update(id, { hipoteses });
+        },
+        addNota(id, texto) {
+            const e = this.get(id) || {};
+            const notas = (e.notas || []).concat([{ texto, em: Date.now() }]);
+            this.update(id, { notas });
+        },
+        addResultado(id, res) {
+            const e = this.get(id) || {};
+            const resultados = (e.resultados || []).concat([Object.assign({ em: Date.now() }, res)]);
+            this.update(id, { resultados });
+        },
+        remover(id) {
+            const n = this._load();
+            delete n[id];
+            this._save();
+        },
+        listar() {
+            const n = this._load();
+            return Object.keys(n).map(id => Object.assign({ id: Number(id) }, n[id]))
+                .sort((a, b) => (b.atualizado || 0) - (a.atualizado || 0));
+        },
+        exportar() { return JSON.stringify(this._load(), null, 2); },
+        importar(json) {
+            try {
+                const dados = JSON.parse(json);
+                if (typeof dados !== 'object' || Array.isArray(dados)) return false;
+                this._cache = Object.assign(this._load(), dados);
+                this._save();
+                return true;
+            } catch (e) { return false; }
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════════
+    // CORRELATOR — pareia OUT (envio) com IN (resposta) por janela temporal
+    // ═══════════════════════════════════════════════════════════════
+    const Correlator = {
+        _pendentes: [],
+        _janelaMs: 800,
+        _pares: null,
+        _envios: null,
+        _persistTimer: null,
+        // IDs que por design não têm resposta — não são suspeitos
+        _noise: new Set([452, 2450, 1312, 1150, 1157, 1706]),
+        _init() {
+            if (this._pares) return;
+            this._pares = Storage.get('correlacao_pares', {});
+            this._envios = Storage.get('correlacao_envios', {});
+        },
+        _agendarPersist() {
+            if (this._persistTimer) return;
+            this._persistTimer = setTimeout(() => {
+                this._persistTimer = null;
+                if (!this._pares) return;
+                Storage.set('correlacao_pares', this._pares);
+                Storage.set('correlacao_envios', this._envios);
+            }, 2000);
+        },
+        _flush() {
+            if (this._persistTimer) { clearTimeout(this._persistTimer); this._persistTimer = null; }
+            if (!this._pares) return;
+            Storage.set('correlacao_pares', this._pares);
+            Storage.set('correlacao_envios', this._envios);
+        },
+        registrarEnvio(packet) {
+            this._init();
+            const id = packet.header;
+            this._envios[id] = (this._envios[id] || 0) + 1;
+            this._pendentes.push({ outId: id, em: Date.now(), consumido: false });
+            if (this._pendentes.length > 100) this._pendentes.shift();
+            this._agendarPersist();
+        },
+        registrarRecebimento(packet) {
+            this._init();
+            const agora = Date.now();
+            // Protocolo sequencial: a resposta corresponde ao pedido mais antigo pendente
+            for (let i = 0; i < this._pendentes.length; i++) {
+                const p = this._pendentes[i];
+                if (p.consumido) continue;
+                if (agora - p.em > this._janelaMs) continue;
+                p.consumido = true;
+                const inId = packet.header;
+                if (!this._pares[p.outId]) this._pares[p.outId] = {};
+                this._pares[p.outId][inId] = (this._pares[p.outId][inId] || 0) + 1;
+                this._agendarPersist();
+                return;
+            }
+        },
+        respostasDe(outId) {
+            this._init();
+            const m = this._pares[outId] || {};
+            return Object.entries(m).map(([inId, count]) => ({
+                inId: Number(inId),
+                inNome: PacketNames.nome(Number(inId), 'RECV'),
+                count
+            })).sort((a, b) => b.count - a.count);
+        },
+        suspeitos() {
+            this._init();
+            const lista = [];
+            for (const outId in this._envios) {
+                const idNum = Number(outId);
+                if (this._noise.has(idNum)) continue;
+                const enviados = this._envios[outId];
+                if (enviados < 5) continue;
+                const respostas = this._pares[outId]
+                    ? Object.values(this._pares[outId]).reduce((a, b) => a + b, 0)
+                    : 0;
+                const taxa = respostas / enviados;
+                if (taxa < 0.3) {
+                    lista.push({
+                        outId: idNum,
+                        outNome: PacketNames.nome(idNum, 'SEND') || '?',
+                        enviados, respostas,
+                        taxa: Math.round(taxa * 100)
+                    });
+                }
+            }
+            return lista.sort((a, b) => a.taxa - b.taxa);
+        },
+        limpar() {
+            this._pares = {};
+            this._envios = {};
+            this._pendentes = [];
+            this._flush();
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════════
+    // FUZZER — itera um byte de um pacote e observa a resposta
+    // ═══════════════════════════════════════════════════════════════
+    const Fuzzer = {
+        _ativo: false,
+        _runId: 0,
+        _log(msg, tipo) { Emitter.emit('fuzzer:log', { msg, tipo }); },
+        async iniciar(cfg) {
+            if (this._ativo) return;
+            if (!window.gameWS) { this._log('Sem conexão WebSocket.', 'erro'); return; }
+            if (!Number.isFinite(cfg.id)) { this._log('ID alvo inválido.', 'erro'); return; }
+
+            this._ativo = true;
+            const myRunId = ++this._runId;
+            const baseLen = cfg.baseLen || 16;
+            const base = new ArrayBuffer(6 + baseLen);
+            const baseView = new DataView(base);
+            baseView.setInt32(0, 2 + baseLen, false);
+            baseView.setInt16(4, cfg.id, false);
+
+            this._log(`Fuzz #${myRunId} — OUT.ID ${cfg.id}, offset ${cfg.offset}, ${cfg.from}..${cfg.to}, delay ${cfg.delay}ms`, 'info');
+            const paresAntes = JSON.parse(JSON.stringify(Correlator._pares || {}));
+
+            for (let v = cfg.from; v <= cfg.to; v++) {
+                if (!this._ativo || myRunId !== this._runId) break;
+                if (!window.gameWS) break;
+                const buf = base.slice(0);
+                new Uint8Array(buf)[6 + cfg.offset] = v & 0xFF;
+                try { window.gameWS.send(buf); }
+                catch (e) { this._log(`Erro: ${e.message || e}`, 'erro'); break; }
+                this._log(`→ offset[${cfg.offset}] = 0x${v.toString(16).padStart(2,'0').toUpperCase()}`, 'envio');
+                await new Promise(r => setTimeout(r, cfg.delay));
+            }
+
+            await new Promise(r => setTimeout(r, 500));
+            const paresDepois = Correlator._pares || {};
+            const novasRespostas = {};
+            for (const outId in paresDepois) {
+                const antes = (paresAntes[outId] || {});
+                for (const inId in paresDepois[outId]) {
+                    const d = (paresDepois[outId][inId] || 0) - (antes[inId] || 0);
+                    if (d > 0) novasRespostas[inId] = (novasRespostas[inId] || 0) + d;
+                }
+            }
+
+            const resumo = {
+                id: cfg.id, offset: cfg.offset,
+                range: `${cfg.from}..${cfg.to}`,
+                enviados: cfg.to - cfg.from + 1,
+                respostasNovas: novasRespostas,
+                momento: Date.now()
+            };
+
+            const totalResp = Object.values(novasRespostas).reduce((a, b) => a + b, 0);
+            if (totalResp === 0) {
+                this._log('✓ Nenhuma resposta nova — campo IGNORADO pelo servidor (candidato a exploit)', 'ok');
+            } else {
+                const nomes = Object.entries(novasRespostas)
+                    .map(([inId, n]) => `${PacketNames.nome(Number(inId), 'RECV') || inId}×${n}`)
+                    .join(', ');
+                this._log(`⚠ Servidor respondeu: ${nomes} — campo VALIDADO`, 'aviso');
+            }
+
+            this._ativo = false;
+            Emitter.emit('fuzzer:done', resumo);
+        },
+        parar() { this._ativo = false; this._runId++; }
+    };
+
+    // ═══════════════════════════════════════════════════════════════
+    // RACE TESTER — envia N pacotes no mesmo tick
+    // ═══════════════════════════════════════════════════════════════
+    const RaceTester = {
+        async enviarSimultaneo(pacotes) {
+            if (!window.gameWS) throw new Error('Sem conexão WebSocket.');
+            const validos = pacotes.filter(p => Number.isFinite(p.id));
+            if (!validos.length) throw new Error('Nenhum pacote válido.');
+            const antes = JSON.parse(JSON.stringify(Correlator._pares || {}));
+            const enviados = [];
+            for (const p of validos) {
+                const buf = Utils.buildPacket(p.id, p.hex || '');
+                try {
+                    window.gameWS.send(buf);
+                    enviados.push(p);
+                } catch (e) {
+                    throw new Error('Falha ao enviar ' + p.id + ': ' + (e.message || e));
+                }
+            }
+            await new Promise(r => setTimeout(r, 800));
+            const depois = Correlator._pares || {};
+            const delta = {};
+            for (const outId in depois) {
+                const a = (antes[outId] || {});
+                for (const inId in depois[outId]) {
+                    const d = (depois[outId][inId] || 0) - (a[inId] || 0);
+                    if (d > 0) {
+                        if (!delta[inId]) delta[inId] = 0;
+                        delta[inId] += d;
+                    }
+                }
+            }
+            return { enviados, respostas: delta };
+        }
+    };
 
     // ═══════════════════════════════════════════════════════════════
     // SANG AI SERVICE — prompts orientados a pesquisa de exploit
@@ -484,6 +760,28 @@
         },
 
         _contextoBase() {
+            const suspeitos = Correlator.suspeitos().slice(0, 5);
+            const nb = Notebook.listar().slice(0, 8);
+
+            let extra = '';
+            if (suspeitos.length) {
+                extra += '\n\nOUTs SUSPEITOS (enviados sem resposta consistente — candidatos a exploit):\n';
+                extra += suspeitos.map(s =>
+                    `  ${s.outNome} (ID ${s.outId}): ${s.enviados} envios, ${s.respostas} respostas (${s.taxa}%)`
+                ).join('\n');
+            }
+            if (nb.length) {
+                extra += '\n\nNOTEBOOK (conhecimento acumulado):\n';
+                extra += nb.map(e => {
+                    const nome = PacketNames.nome(e.id, 'SEND') || PacketNames.nome(e.id, 'RECV') || '?';
+                    const nH = (e.hipoteses || []).length;
+                    const nR = (e.resultados || []).length;
+                    const nota = (e.notas || []).slice(-1)[0];
+                    return `  ID ${e.id} (${nome}): ${nH} hipóteses, ${nR} resultados` +
+                        (nota ? ` — última nota: "${nota.texto.slice(0, 80)}"` : '');
+                }).join('\n');
+            }
+
             return (
                 'Você é Sang AI, pesquisadora de segurança de protocolo numa sessão de jogo online ' +
                 'estilo Habbo Hotel (cliente Habblive/Habblet). Você está analisando o tráfego WebSocket ' +
@@ -494,20 +792,22 @@
                 'VOCABULÁRIO (ID → nome semântico):\n' +
                 '  OUT.xxx = cliente envia pro servidor\n' +
                 '  IN.xxx  = servidor responde\n' +
-                'IDs com potencial de exploit: UNIT_WALK, UNIT_DANCE, UNIT_CHAT, TRADE_*, FURNITURE_PLACE, ' +
-                'FURNITURE_PICKUP, FURNITURE_PICKUP_ALL, ROOM_RIGHTS_*, ROOM_MODEL_SAVE, CATALOG_PURCHASE, ' +
-                'MARKETPLACE_*, WIRED_*, ROOM_ENTER, ROOM_CREATE, GROUP_*, DELETE_ITEM.\n\n' +
+                'IDs com potencial de exploit: UNIT_WALK=2450, UNIT_DANCE=2865, UNIT_CHAT=1678, ' +
+                'TRADE_CONFIRM=351, TRADE_ACCEPT=2487, FURNITURE_PLACE=2761, FURNITURE_PICKUP=1360, ' +
+                'FURNITURE_PICKUP_ALL=10003, ROOM_RIGHTS_GIVE=1003, ROOM_MODEL_SAVE=395, ' +
+                'CATALOG_PURCHASE=3655, DELETE_ITEM=10004, MARKETPLACE_SELL_ITEM=446.\n\n' +
                 'MISSÃO:\n' +
-                'Ajudar o usuário a entender os pacotes e identificar oportunidades de manipulação: ' +
-                'campos sem validação server-side, ações em que o servidor confia no cliente, ordens ' +
-                'de pacote reordenáveis, IDs enviáveis fora de contexto, estados inconsistentes que ' +
-                'geram dupe/glitch. Pense como pesquisador de bug bounty.\n\n' +
+                'Ajudar o usuário a entender pacotes e identificar oportunidades de manipulação: ' +
+                'campos sem validação server-side, ações em que o servidor confia no cliente, ' +
+                'ordens de pacote reordenáveis, IDs enviáveis fora de contexto, estados inconsistentes ' +
+                'que geram dupe/glitch. Pense como pesquisador de bug bounty.\n\n' +
                 'REGRAS:\n' +
                 '- Português brasileiro, direto, específica.\n' +
                 '- Sem introdução, sem "claro", sem "vamos lá".\n' +
                 '- Nunca invente certeza. Se não souber, diga "provavelmente" ou "possivelmente".\n' +
                 '- Mencione IDs e nomes de pacote concretos.\n' +
-                '- Se detectar ângulo explorável, diga: "teste assim: ...".'
+                '- Se detectar ângulo explorável, diga: "teste assim: ...".' +
+                extra
             );
         },
 
@@ -519,7 +819,13 @@
                 ? packet.payloadHex.slice(0, 800) + '…'
                 : packet.payloadHex;
 
-            return this._chamar(
+            const respostas = Correlator.respostasDe(packet.header);
+            const respostaTxt = respostas.length
+                ? '\nRespostas conhecidas (OUT): ' + respostas.slice(0, 3)
+                    .map(r => `${r.inNome || r.inId}×${r.count}`).join(', ')
+                : '';
+
+            const r = await this._chamar(
                 this._contextoBase() +
                 '\n\nESTRUTURA DA RESPOSTA (máx 5 frases):\n' +
                 '1. Propósito provável do pacote\n' +
@@ -529,9 +835,25 @@
                 `ID: ${packet.header} (nome conhecido: ${nome})\n` +
                 `Tamanho total: ${packet.byteLength} bytes | payload: ${packet.payloadLength} bytes\n` +
                 `Hex do payload: ${payloadHexLimitado}\n` +
-                `ASCII: ${packet.ascii || '(binário)'}`,
+                `ASCII: ${packet.ascii || '(binário)'}${respostaTxt}`,
                 { maxTokens: 500 }
             );
+
+            // Auto-save no notebook (sem sobrescrever notas/hipóteses do usuário)
+            try {
+                const existente = Notebook.get(packet.header);
+                if (!existente) {
+                    Notebook.update(packet.header, {
+                        nome,
+                        amostraHex: packet.fullHex.slice(0, 200),
+                        primeiraAnalise: r
+                    });
+                } else {
+                    Notebook.update(packet.header, { ultimaAnalise: r });
+                }
+            } catch (e) { /* silencioso */ }
+
+            return r;
         },
 
         async analisarSequencia(packets) {
@@ -816,14 +1138,14 @@
     const SenderRef = { fill: null };
 
     // ═══════════════════════════════════════════════════════════════
-    // ANALYZER UI
+    // ANALYZER UI (tabs: LOG | FILTROS | PESQUISA | SANG AI)
     // ═══════════════════════════════════════════════════════════════
     const AnalyzerUI = (function() {
         const el = document.createElement('div');
         el.id = 'hl-analyzer';
         Object.assign(el.style, {
             position: 'fixed', top: '50px', left: '10px',
-            width: '740px', height: '660px',
+            width: '760px', height: '680px',
             maxHeight: 'calc(100vh - 70px)',
             background: '#0f0f16', color: '#e1e1e6',
             border: '1px solid #1e1e2e', zIndex: '99998',
@@ -857,6 +1179,7 @@
             <div id="analyzerTabs" style="display:flex;background:#0a0a12;border-bottom:1px solid #1e1e2e;padding:0 8px;gap:2px;">
                 <button class="az-tab active" data-tab="log" style="background:transparent;color:#e1e1e6;border:none;cursor:pointer;padding:10px 16px;font-size:11px;font-family:monospace;letter-spacing:0.05em;position:relative;transition:color 0.15s;outline:none;">📋 LOG</button>
                 <button class="az-tab" data-tab="filtros" style="background:transparent;color:#8a8a9a;border:none;cursor:pointer;padding:10px 16px;font-size:11px;font-family:monospace;letter-spacing:0.05em;position:relative;transition:color 0.15s;outline:none;">🛡️ FILTROS</button>
+                <button class="az-tab" data-tab="pesquisa" style="background:transparent;color:#8a8a9a;border:none;cursor:pointer;padding:10px 16px;font-size:11px;font-family:monospace;letter-spacing:0.05em;position:relative;transition:color 0.15s;outline:none;">🧪 PESQUISA</button>
                 <button class="az-tab" data-tab="ia" style="background:transparent;color:#8a8a9a;border:none;cursor:pointer;padding:10px 16px;font-size:11px;font-family:monospace;letter-spacing:0.05em;position:relative;transition:color 0.15s;outline:none;">✨ SANG AI</button>
             </div>
 
@@ -941,6 +1264,86 @@
                 </div>
             </div>
 
+            <div id="panePesquisa" style="display:none;flex-direction:column;flex:1;overflow:hidden;min-height:0;">
+                <div id="pesquisaSubtabs" style="display:flex;background:#0a0a12;border-bottom:1px solid #1e1e2e;padding:0 12px;gap:4px;">
+                    <button class="pesq-tab active" data-ptab="notebook" style="background:transparent;color:#e1e1e6;border:none;cursor:pointer;padding:8px 14px;font-size:10.5px;font-family:monospace;letter-spacing:0.05em;position:relative;transition:color 0.15s;outline:none;">📓 Notebook</button>
+                    <button class="pesq-tab" data-ptab="correlacao" style="background:transparent;color:#8a8a9a;border:none;cursor:pointer;padding:8px 14px;font-size:10.5px;font-family:monospace;letter-spacing:0.05em;position:relative;transition:color 0.15s;outline:none;">🔗 Correlação</button>
+                    <button class="pesq-tab" data-ptab="fuzz" style="background:transparent;color:#8a8a9a;border:none;cursor:pointer;padding:8px 14px;font-size:10.5px;font-family:monospace;letter-spacing:0.05em;position:relative;transition:color 0.15s;outline:none;">💥 Fuzz</button>
+                    <button class="pesq-tab" data-ptab="race" style="background:transparent;color:#8a8a9a;border:none;cursor:pointer;padding:8px 14px;font-size:10.5px;font-family:monospace;letter-spacing:0.05em;position:relative;transition:color 0.15s;outline:none;">⚡ Race</button>
+                </div>
+
+                <div id="pesqNotebook" style="display:flex;flex-direction:column;flex:1;overflow:hidden;min-height:0;">
+                    <div style="padding:8px 12px;display:flex;gap:6px;background:#0a0a12;border-bottom:1px solid #1e1e2e;">
+                        <button id="nbExportar" style="background:#13131a;color:#00d4aa;border:1px solid #1e1e2e;cursor:pointer;padding:6px 12px;border-radius:6px;font-size:11px;font-family:monospace;">⬇ EXPORTAR</button>
+                        <button id="nbImportar" style="background:#13131a;color:#6c63ff;border:1px solid #6c63ff;cursor:pointer;padding:6px 12px;border-radius:6px;font-size:11px;font-family:monospace;">⬆ IMPORTAR</button>
+                        <button id="nbLimpar" style="background:#13131a;color:#ef4444;border:1px solid #ef4444;cursor:pointer;padding:6px 12px;border-radius:6px;font-size:11px;font-family:monospace;">🗑 LIMPAR</button>
+                        <div style="flex:1"></div>
+                        <span id="nbCounter" style="font-size:10px;color:#8a8a9a;align-self:center;">0 entradas</span>
+                    </div>
+                    <div id="nbLista" style="flex:1;overflow-y:auto;padding:10px;"></div>
+                </div>
+
+                <div id="pesqCorrelacao" style="display:none;flex-direction:column;flex:1;overflow:hidden;min-height:0;">
+                    <div style="padding:8px 12px;display:flex;gap:6px;background:#0a0a12;border-bottom:1px solid #1e1e2e;">
+                        <button id="corrAtualizar" style="background:#13131a;color:#6c63ff;border:1px solid #6c63ff;cursor:pointer;padding:6px 12px;border-radius:6px;font-size:11px;font-family:monospace;">↻ ATUALIZAR</button>
+                        <button id="corrLimpar" style="background:#13131a;color:#ef4444;border:1px solid #ef4444;cursor:pointer;padding:6px 12px;border-radius:6px;font-size:11px;font-family:monospace;">🗑 LIMPAR DADOS</button>
+                        <div style="flex:1"></div>
+                        <span id="corrCounter" style="font-size:10px;color:#8a8a9a;align-self:center;">—</span>
+                    </div>
+                    <div id="corrConteudo" style="flex:1;overflow-y:auto;padding:10px;"></div>
+                </div>
+
+                <div id="pesqFuzz" style="display:none;flex-direction:column;flex:1;overflow:hidden;min-height:0;">
+                    <div style="padding:10px 12px;background:#0a0a12;border-bottom:1px solid #1e1e2e;display:flex;flex-direction:column;gap:8px;">
+                        <div style="font-size:10px;color:#8a8a9a;line-height:1.5;">
+                            Testa um byte por vez de um pacote OUT e observa se o servidor reage.
+                            <strong style="color:#f5b942;">Sem resposta = campo ignorado (candidato a exploit)</strong>.
+                        </div>
+                        <div style="display:flex;gap:6px;flex-wrap:wrap;">
+                            <label style="font-size:10.5px;color:#8a8a9a;">ID alvo
+                                <input id="fuzzId" type="number" placeholder="2865" style="width:70px;background:#13131a;color:#e1e1e6;border:1px solid #1e1e2e;padding:5px 7px;border-radius:4px;font-size:11px;font-family:monospace;outline:none;margin-left:4px;box-sizing:border-box;">
+                            </label>
+                            <label style="font-size:10.5px;color:#8a8a9a;">Offset
+                                <input id="fuzzOffset" type="number" value="0" style="width:50px;background:#13131a;color:#e1e1e6;border:1px solid #1e1e2e;padding:5px 7px;border-radius:4px;font-size:11px;font-family:monospace;outline:none;margin-left:4px;box-sizing:border-box;">
+                            </label>
+                            <label style="font-size:10.5px;color:#8a8a9a;">De
+                                <input id="fuzzDe" type="number" value="0" style="width:50px;background:#13131a;color:#e1e1e6;border:1px solid #1e1e2e;padding:5px 7px;border-radius:4px;font-size:11px;font-family:monospace;outline:none;margin-left:4px;box-sizing:border-box;">
+                            </label>
+                            <label style="font-size:10.5px;color:#8a8a9a;">Até
+                                <input id="fuzzAte" type="number" value="10" style="width:50px;background:#13131a;color:#e1e1e6;border:1px solid #1e1e2e;padding:5px 7px;border-radius:4px;font-size:11px;font-family:monospace;outline:none;margin-left:4px;box-sizing:border-box;">
+                            </label>
+                            <label style="font-size:10.5px;color:#8a8a9a;">Delay
+                                <input id="fuzzDelay" type="number" value="400" style="width:60px;background:#13131a;color:#e1e1e6;border:1px solid #1e1e2e;padding:5px 7px;border-radius:4px;font-size:11px;font-family:monospace;outline:none;margin-left:4px;box-sizing:border-box;">
+                            </label>
+                            <button id="fuzzIniciar" style="background:linear-gradient(135deg,#a855f7,#6c63ff);color:#fff;border:none;cursor:pointer;padding:6px 16px;border-radius:6px;font-size:11px;font-weight:bold;font-family:monospace;">▶ INICIAR</button>
+                            <button id="fuzzParar" style="background:#13131a;color:#ef4444;border:1px solid #ef4444;cursor:pointer;padding:6px 16px;border-radius:6px;font-size:11px;font-weight:bold;font-family:monospace;display:none;">⏹ PARAR</button>
+                        </div>
+                    </div>
+                    <div id="fuzzLog" style="flex:1;overflow-y:auto;padding:10px;font-size:11px;line-height:1.6;"></div>
+                </div>
+
+                <div id="pesqRace" style="display:none;flex-direction:column;flex:1;overflow:hidden;min-height:0;">
+                    <div style="padding:10px 12px;background:#0a0a12;border-bottom:1px solid #1e1e2e;display:flex;flex-direction:column;gap:8px;">
+                        <div style="font-size:10px;color:#8a8a9a;line-height:1.5;">
+                            Envia <strong>N pacotes no mesmo tick</strong> (sem delay). Útil pra testar race conditions —
+                            ex: <code style="background:#1e1e2e;padding:1px 5px;border-radius:3px;">TRADE_CONFIRM ×2</code>.
+                        </div>
+                        <div style="display:flex;gap:6px;">
+                            <input id="raceId" type="number" placeholder="ID" style="width:70px;background:#13131a;color:#e1e1e6;border:1px solid #1e1e2e;padding:6px 8px;border-radius:5px;font-size:11px;font-family:monospace;outline:none;box-sizing:border-box;">
+                            <input id="raceHex" type="text" placeholder="Payload HEX" style="flex:1;background:#13131a;color:#e1e1e6;border:1px solid #1e1e2e;padding:6px 8px;border-radius:5px;font-size:11px;font-family:monospace;outline:none;min-width:0;box-sizing:border-box;">
+                            <input id="raceQtd" type="number" value="2" min="2" max="10" style="width:50px;background:#13131a;color:#e1e1e6;border:1px solid #1e1e2e;padding:6px 8px;border-radius:5px;font-size:11px;font-family:monospace;outline:none;box-sizing:border-box;">
+                            <button id="raceAdd" style="background:#13131a;color:#6c63ff;border:1px solid #6c63ff;cursor:pointer;padding:6px 12px;border-radius:5px;font-size:11px;font-weight:bold;">+</button>
+                        </div>
+                        <div id="raceLista" style="background:#13131a;border:1px solid #1e1e2e;border-radius:6px;padding:6px;min-height:40px;max-height:140px;overflow-y:auto;font-size:11px;"></div>
+                        <div style="display:flex;gap:6px;">
+                            <button id="raceEnviar" style="flex:1;background:linear-gradient(135deg,#ef4444,#b91c1c);color:#fff;border:none;cursor:pointer;padding:10px;border-radius:6px;font-size:12px;font-weight:bold;font-family:monospace;">⚡ ENVIAR AGORA</button>
+                            <button id="raceLimpar" style="background:#13131a;color:#ef4444;border:1px solid #ef4444;cursor:pointer;padding:10px 14px;border-radius:6px;font-size:11px;font-family:monospace;">LIMPAR</button>
+                        </div>
+                    </div>
+                    <div id="raceLog" style="flex:1;overflow-y:auto;padding:10px;font-size:11px;line-height:1.6;"></div>
+                </div>
+            </div>
+
             <div id="paneIA" style="display:none;flex-direction:column;flex:1;overflow:hidden;min-height:0;">
                 <div id="iaChat" style="flex:1;overflow-y:auto;padding:14px;display:flex;flex-direction:column;gap:10px;min-height:0;"></div>
                 <div style="padding:8px 12px;background:#0a0a12;border-top:1px solid #1e1e2e;display:flex;gap:6px;flex-wrap:wrap;">
@@ -964,10 +1367,14 @@
         `;
 
         makeDraggable(el.querySelector('.drag-header'), el, 'analyzer');
-        makeResizable(el, { minW: 540, minH: 440, maxW: 1300, maxH: 1000, storageKey: 'analyzer' });
+        makeResizable(el, { minW: 540, minH: 440, maxW: 1400, maxH: 1000, storageKey: 'analyzer' });
 
         const closeBtn = createCloseButton(() => Toolbar.setAnalyzerVisible(false));
         el.querySelector('#analyzerHeaderBtns').appendChild(closeBtn);
+
+        const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({
+            '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+        }[c]));
 
         const logArea = el.querySelector('#logArea');
         logArea.style.fontSize = AppState.fontSize + 'px';
@@ -976,11 +1383,12 @@
         const chkSend = el.querySelector('#chkSend');
         const chkRecv = el.querySelector('#chkRecv');
 
-        // Tabs
+        // ─── Tabs principais ───
         const tabs = el.querySelectorAll('.az-tab');
         const panes = {
             log: el.querySelector('#paneLog'),
             filtros: el.querySelector('#paneFiltros'),
+            pesquisa: el.querySelector('#panePesquisa'),
             ia: el.querySelector('#paneIA')
         };
         const tabUnderlineCss = 'position:absolute;left:0;right:0;bottom:-1px;height:2px;background:linear-gradient(90deg,#a855f7,#6c63ff);border-radius:2px;';
@@ -993,12 +1401,19 @@
                 else if (!isActive && u) u.remove();
             });
             Object.keys(panes).forEach(k => { panes[k].style.display = (k === name) ? 'flex' : 'none'; });
-            if (name === 'ia' && !panes.ia.dataset.iniciado) { panes.ia.dataset.iniciado = '1'; iaInit(); }
+            if (name === 'pesquisa' && !panes.pesquisa.dataset.iniciado) {
+                panes.pesquisa.dataset.iniciado = '1';
+                pesquisaInit();
+            }
+            if (name === 'ia' && !panes.ia.dataset.iniciado) {
+                panes.ia.dataset.iniciado = '1';
+                iaInit();
+            }
         }
         tabs.forEach(t => on(t, 'click', () => setActiveTab(t.dataset.tab)));
         setTimeout(() => setActiveTab('log'), 0);
 
-        // Fonte
+        // ─── Fonte ───
         on(el.querySelector('#btnFontPlus'), 'click', () => {
             AppState.fontSize = Math.min(24, AppState.fontSize + 1);
             logArea.style.fontSize = AppState.fontSize + 'px';
@@ -1010,7 +1425,7 @@
             Storage.set('font_size', AppState.fontSize);
         });
 
-        // Kill switch
+        // ─── Kill switch ───
         const btnKill = el.querySelector('#btnKillSwitch');
         on(btnKill, 'click', () => {
             AppState.killSwitchActive = !AppState.killSwitchActive;
@@ -1023,7 +1438,7 @@
             }
         });
 
-        // Pause
+        // ─── Pause ───
         const btnPause = el.querySelector('#btnPauseLogs');
         on(btnPause, 'click', () => {
             AppState.isPaused = !AppState.isPaused;
@@ -1063,7 +1478,7 @@
         on(chkRecv, 'change', () => { AppState.showRecv = chkRecv.checked; refreshVisibility(); });
         on(searchInp, 'input', refreshVisibility);
 
-        // Tags de filtro
+        // ─── Tags de filtro ───
         function createTag(type, act, rawVal, displayVal, cor) {
             const d = document.createElement('div');
             Object.assign(d.style, {
@@ -1110,7 +1525,7 @@
         on(el.querySelector('#btnAddDStr'), 'click', () => { PacketFilter.manageList('DROP', 'ADD_STR', el.querySelector('#dStr').value); el.querySelector('#dStr').value = ''; renderFilters(); });
         on(el.querySelector('#btnClrD'), 'click', () => { PacketFilter.manageList('DROP', 'CLEAR'); renderFilters(); });
 
-        // Filtro NL
+        // ─── Filtro NL ───
         const nlInput = el.querySelector('#nlFiltro');
         const nlBtn = el.querySelector('#btnNlFiltro');
         const nlResult = el.querySelector('#nlFiltroResultado');
@@ -1126,7 +1541,7 @@
                 const amostras = AppState.logs.slice(-15).map(l => l.packet);
                 const r = await SangAI.criarFiltroLinguagemNatural(desc, amostras);
                 if (!r.ids.length && !r.strings.length) {
-                    nlResult.innerHTML = '<span style="color:#f5b942;">⚠ Não consegui extrair filtros concretos.</span>' + (r.motivo ? `<br><span style="color:#8a8a9a;">${r.motivo}</span>` : '');
+                    nlResult.innerHTML = '<span style="color:#f5b942;">⚠ Não consegui extrair filtros concretos.</span>' + (r.motivo ? `<br><span style="color:#8a8a9a;">${esc(r.motivo)}</span>` : '');
                     return;
                 }
                 r.ids.forEach(id => PacketFilter.manageList('VISUAL', 'ADD_ID', String(id)));
@@ -1134,12 +1549,12 @@
                 renderFilters();
                 nlResult.innerHTML =
                     `<span style="color:#00d4aa;">✓ Aplicado em OCULTAR DO LOG</span>` +
-                    (r.motivo ? `<br><span style="color:#8a8a9a;">${r.motivo}</span>` : '') +
+                    (r.motivo ? `<br><span style="color:#8a8a9a;">${esc(r.motivo)}</span>` : '') +
                     (r.ids.length ? `<br><span style="color:#6c63ff;">IDs: ${r.ids.join(', ')}</span>` : '') +
-                    (r.strings.length ? `<br><span style="color:#6c63ff;">Strings: ${r.strings.join(', ')}</span>` : '');
+                    (r.strings.length ? `<br><span style="color:#6c63ff;">Strings: ${esc(r.strings.join(', '))}</span>` : '');
                 nlInput.value = '';
             } catch (e) {
-                nlResult.innerHTML = `<span style="color:#ef4444;">Erro: ${e.message || e}</span>`;
+                nlResult.innerHTML = `<span style="color:#ef4444;">Erro: ${esc(e.message || e)}</span>`;
             } finally {
                 SangAI._busy = false; nlBtn.disabled = false; nlBtn.textContent = 'GERAR';
             }
@@ -1147,7 +1562,7 @@
         on(nlBtn, 'click', gerarFiltroNL);
         on(nlInput, 'keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); gerarFiltroNL(); } });
 
-        // IA chat
+        // ─── IA chat ───
         const iaChat = el.querySelector('#iaChat');
         const iaInput = el.querySelector('#iaInput');
         const iaSendBtn = el.querySelector('#iaSend');
@@ -1200,8 +1615,7 @@
                 div.style.padding = '6px 12px';
                 div.style.borderRadius = '20px';
             }
-            const html = String(texto)
-                .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+            const html = esc(texto)
                 .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
                 .replace(/`([^`]+)`/g, '<code style="background:rgba(168,85,247,0.15);padding:1px 5px;border-radius:4px;font-size:11px;color:#e9d5ff;">$1</code>');
             div.innerHTML = html;
@@ -1213,7 +1627,7 @@
         function iaAddLoading(texto) {
             const div = document.createElement('div');
             div.style.cssText = 'align-self:flex-start;background:rgba(168,85,247,0.08);border:1px solid rgba(168,85,247,0.2);border-radius:12px;border-bottom-left-radius:4px;padding:11px 16px;display:flex;align-items:center;gap:8px;animation:iaMsgIn 0.28s;font-size:11px;color:#c4b5fd;';
-            div.innerHTML = `<span class="ia-dot"></span><span class="ia-dot"></span><span class="ia-dot"></span><span style="margin-left:6px;">${texto || 'pensando…'}</span>`;
+            div.innerHTML = `<span class="ia-dot"></span><span class="ia-dot"></span><span class="ia-dot"></span><span style="margin-left:6px;">${esc(texto || 'pensando…')}</span>`;
             iaChat.appendChild(div);
             iaChat.scrollTop = iaChat.scrollHeight;
             return div;
@@ -1253,7 +1667,6 @@
             iaInput.style.height = Math.min(100, iaInput.scrollHeight) + 'px';
         });
 
-        // Quick actions
         el.querySelectorAll('.ia-quick').forEach(btn => {
             on(btn, 'click', async () => {
                 const q = btn.dataset.q;
@@ -1281,9 +1694,8 @@
                         'Olhando os últimos pacotes capturados, quais são candidatos a exploit? ' +
                         'Procura por: campos que o cliente controla e o servidor não valida, ' +
                         'IDs que faz sentido reenviar fora de ordem, ações em que a validação pode ' +
-                        'estar no cliente em vez do servidor, sequências onde resposta demora (o que ' +
-                        'indica possível race condition). Lista curta com ângulo de teste concreto ' +
-                        'de cada um.'
+                        'estar no cliente em vez do servidor, sequências onde a resposta demora. ' +
+                        'Lista curta com ângulo de teste concreto de cada um.'
                     );
                 } else if (q === 'anomalias') {
                     iaEnviar('Olhando os últimos pacotes, tem algo anormal? Tamanho incomum, IDs raros, sequências estranhas, respostas ausentes.');
@@ -1293,7 +1705,7 @@
             });
         });
 
-        // Botões em pacotes
+        // ─── Botões em pacotes ───
         function createSendButton(packet) {
             const btn = document.createElement('button');
             btn.textContent = '↗'; btn.title = 'Enviar pro Sender';
@@ -1441,7 +1853,7 @@
             const idLine = document.createElement('div');
             idLine.style.cssText = `color:${idColor};font-weight:bold;font-size:0.95em;`;
             idLine.innerHTML = `${dirLabel} · ID ${packet.header}` +
-                (nomePktRaw ? ` <span style="color:#8a8a9a;font-weight:normal;font-size:0.9em;">(${nomePktRaw})</span>` : '') +
+                (nomePktRaw ? ` <span style="color:#8a8a9a;font-weight:normal;font-size:0.9em;">(${esc(nomePktRaw)})</span>` : '') +
                 ` · ${packet.byteLength} bytes`;
             idWrap.appendChild(idLine);
             const analyzeBtn = createAnalyzeButton(packet, item);
@@ -1476,6 +1888,325 @@
             const isBottom = logArea.scrollHeight - logArea.clientHeight <= logArea.scrollTop + 40;
             if (isBottom) logArea.scrollTop = logArea.scrollHeight;
             logCounter.textContent = AppState.logs.length + ' logs';
+        }
+
+        // ═══ Sub-tabs PESQUISA ═══
+        const pesqTabs = el.querySelectorAll('.pesq-tab');
+        const pesqPanes = {
+            notebook: el.querySelector('#pesqNotebook'),
+            correlacao: el.querySelector('#pesqCorrelacao'),
+            fuzz: el.querySelector('#pesqFuzz'),
+            race: el.querySelector('#pesqRace')
+        };
+        function setActivePesqTab(name) {
+            pesqTabs.forEach(t => {
+                const ativo = t.dataset.ptab === name;
+                t.style.color = ativo ? '#e1e1e6' : '#8a8a9a';
+                let u = t.querySelector('.az-underline');
+                if (ativo && !u) { u = document.createElement('span'); u.className = 'az-underline'; u.style.cssText = tabUnderlineCss; t.appendChild(u); }
+                else if (!ativo && u) u.remove();
+            });
+            Object.keys(pesqPanes).forEach(k => { pesqPanes[k].style.display = (k === name) ? 'flex' : 'none'; });
+            if (name === 'notebook') pesquisarRender();
+            if (name === 'correlacao') correlacaoRender();
+        }
+        pesqTabs.forEach(t => on(t, 'click', () => setActivePesqTab(t.dataset.ptab)));
+
+        // ─── Notebook UI ───
+        function pesquisarRender() {
+            const lista = Notebook.listar();
+            const container = el.querySelector('#nbLista');
+            el.querySelector('#nbCounter').textContent = lista.length + ' entradas';
+            container.innerHTML = '';
+            if (!lista.length) {
+                const vazio = document.createElement('div');
+                vazio.style.cssText = 'color:#5a5a6a;font-size:11px;text-align:center;padding:24px;font-style:italic;';
+                vazio.textContent = 'Notebook vazio. Clique no 🧠 de um pacote no log pra começar.';
+                container.appendChild(vazio);
+                return;
+            }
+            lista.forEach(entry => {
+                const nome = entry.nome || PacketNames.nome(entry.id, 'SEND') || PacketNames.nome(entry.id, 'RECV') || '?';
+                const div = document.createElement('div');
+                div.style.cssText = 'background:#13131a;border:1px solid #1e1e2e;border-radius:8px;padding:10px 12px;margin-bottom:8px;';
+                const hipoteses = (entry.hipoteses || []);
+                const resultados = (entry.resultados || []);
+                const notas = (entry.notas || []);
+                const analise = entry.ultimaAnalise || entry.primeiraAnalise || '';
+                div.innerHTML = `
+                    <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px;">
+                        <div style="display:flex;align-items:center;gap:8px;">
+                            <span style="background:#1e1e2e;color:#a855f7;padding:2px 8px;border-radius:4px;font-weight:bold;font-size:11px;">ID ${entry.id}</span>
+                            <span style="color:#e1e1e6;font-weight:bold;font-size:11.5px;">${esc(nome)}</span>
+                        </div>
+                        <button class="nb-del" style="background:transparent;color:#ef4444;border:none;cursor:pointer;font-size:12px;">✕</button>
+                    </div>
+                    <div style="font-size:10px;color:#6a6a7a;margin-bottom:6px;">
+                        ${hipoteses.length} hipóteses · ${resultados.length} resultados · ${notas.length} notas
+                        · atualizado ${new Date(entry.atualizado || entry.criado).toLocaleString('pt-BR')}
+                    </div>
+                    ${analise ? `
+                        <div style="background:rgba(168,85,247,0.06);border-left:2px solid #a855f7;padding:6px 10px;border-radius:0 4px 4px 0;font-size:10.5px;color:#c4b5fd;line-height:1.5;margin-bottom:6px;white-space:pre-wrap;">
+                            ${esc(analise.slice(0, 400))}${analise.length > 400 ? '…' : ''}
+                        </div>
+                    ` : ''}
+                    <div class="nb-hipoteses" style="font-size:10.5px;color:#8a8a9a;margin-bottom:4px;"></div>
+                    <div class="nb-notas" style="font-size:10.5px;color:#8a8a9a;"></div>
+                    <div style="display:flex;gap:4px;margin-top:8px;">
+                        <input class="nb-input-hip" type="text" placeholder="adicionar hipótese…" style="flex:1;background:#0a0a12;color:#e1e1e6;border:1px solid #1e1e2e;padding:5px 8px;border-radius:4px;font-size:10.5px;font-family:monospace;outline:none;min-width:0;box-sizing:border-box;">
+                        <button class="nb-add-hip" style="background:#13131a;color:#a855f7;border:1px solid #a855f7;cursor:pointer;padding:5px 10px;border-radius:4px;font-size:10.5px;">+ hip</button>
+                        <button class="nb-add-nota" style="background:#13131a;color:#00d4aa;border:1px solid #00d4aa;cursor:pointer;padding:5px 10px;border-radius:4px;font-size:10.5px;">+ nota</button>
+                    </div>
+                `;
+                const hipEl = div.querySelector('.nb-hipoteses');
+                if (hipoteses.length) {
+                    hipEl.innerHTML = '<div style="color:#a855f7;font-weight:bold;margin-bottom:3px;">Hipóteses:</div>' +
+                        hipoteses.map(h => `<div style="padding-left:8px;">• ${esc(h.texto)}${h.testada ? ' <span style="color:#00d4aa;">[testada]</span>' : ''}</div>`).join('');
+                }
+                const notaEl = div.querySelector('.nb-notas');
+                if (notas.length) {
+                    notaEl.innerHTML = '<div style="color:#00d4aa;font-weight:bold;margin-bottom:3px;margin-top:6px;">Notas:</div>' +
+                        notas.map(n => `<div style="padding-left:8px;">• ${esc(n.texto)}</div>`).join('');
+                }
+                const inp = div.querySelector('.nb-input-hip');
+                div.querySelector('.nb-add-hip').addEventListener('click', () => {
+                    const v = inp.value.trim();
+                    if (!v) return;
+                    Notebook.addHipotese(entry.id, v);
+                    pesquisarRender();
+                });
+                div.querySelector('.nb-add-nota').addEventListener('click', () => {
+                    const v = inp.value.trim();
+                    if (!v) return;
+                    Notebook.addNota(entry.id, v);
+                    pesquisarRender();
+                });
+                inp.addEventListener('keydown', (e) => {
+                    if (e.key === 'Enter') { e.preventDefault(); div.querySelector('.nb-add-hip').click(); }
+                });
+                div.querySelector('.nb-del').addEventListener('click', () => {
+                    if (confirm('Remover entrada ' + entry.id + ' do notebook?')) {
+                        Notebook.remover(entry.id);
+                        pesquisarRender();
+                    }
+                });
+                container.appendChild(div);
+            });
+        }
+
+        on(el.querySelector('#nbExportar'), 'click', () => {
+            const json = Notebook.exportar();
+            const blob = new Blob([json], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'sang-notebook-' + new Date().toISOString().slice(0, 10) + '.json';
+            document.body.appendChild(a); a.click(); a.remove();
+            setTimeout(() => URL.revokeObjectURL(url), 2000);
+        });
+        on(el.querySelector('#nbImportar'), 'click', () => {
+            const inp = document.createElement('input');
+            inp.type = 'file'; inp.accept = '.json,application/json';
+            inp.onchange = (e) => {
+                const f = e.target.files[0];
+                if (!f) return;
+                const r = new FileReader();
+                r.onload = () => {
+                    if (Notebook.importar(r.result)) pesquisarRender();
+                    else alert('Arquivo inválido.');
+                };
+                r.readAsText(f);
+            };
+            inp.click();
+        });
+        on(el.querySelector('#nbLimpar'), 'click', () => {
+            if (!confirm('Apagar TODO o notebook? Isso não pode ser desfeito.')) return;
+            Storage.set('notebook', {});
+            Notebook._cache = null;
+            Emitter.emit('notebook:changed');
+            pesquisarRender();
+        });
+
+        // ─── Correlação UI ───
+        function correlacaoRender() {
+            const container = el.querySelector('#corrConteudo');
+            const suspeitos = Correlator.suspeitos();
+            const pares = Correlator._pares || {};
+            const totalPares = Object.keys(pares).length;
+
+            el.querySelector('#corrCounter').textContent = totalPares + ' OUTs mapeados';
+
+            let html = '';
+            html += '<div style="background:linear-gradient(135deg,rgba(239,68,68,0.08),rgba(168,85,247,0.04));border:1px solid rgba(239,68,68,0.25);border-radius:8px;padding:12px;margin-bottom:14px;">';
+            html += '<div style="color:#ffb3b3;font-weight:bold;font-size:11.5px;margin-bottom:8px;letter-spacing:0.04em;">⚠ OUTS SEM RESPOSTA CONSISTENTE</div>';
+            html += '<div style="font-size:10px;color:#6a6a7a;margin-bottom:8px;line-height:1.5;">Enviados com frequência mas raramente geram resposta do servidor. Candidatos fortes a exploit — o cliente age sem validação.</div>';
+            if (!suspeitos.length) {
+                html += '<div style="color:#5a5a6a;font-size:10.5px;font-style:italic;">Nenhum suspeito ainda. Precisa de mais tráfego.</div>';
+            } else {
+                html += '<div style="display:flex;flex-direction:column;gap:4px;">';
+                suspeitos.slice(0, 12).forEach(s => {
+                    html += `<div style="background:#0a0a12;border:1px solid #1e1e2e;border-radius:6px;padding:7px 10px;font-size:11px;display:flex;justify-content:space-between;align-items:center;gap:8px;">
+                        <span style="color:#e1e1e6;font-weight:bold;">${esc(s.outNome)} <span style="color:#6a6a7a;font-weight:normal;">(ID ${s.outId})</span></span>
+                        <span style="color:#ffb3b3;font-size:10px;">${s.enviados} env · ${s.respostas} resp · <strong>${s.taxa}%</strong></span>
+                    </div>`;
+                });
+                html += '</div>';
+            }
+            html += '</div>';
+
+            html += '<div style="background:#13131a;border:1px solid #1e1e2e;border-radius:8px;padding:12px;">';
+            html += '<div style="color:#6c63ff;font-weight:bold;font-size:11.5px;margin-bottom:8px;letter-spacing:0.04em;">🔗 RESPOSTAS CONHECIDAS</div>';
+            const outs = Object.keys(pares).map(Number).sort((a, b) => a - b);
+            if (!outs.length) {
+                html += '<div style="color:#5a5a6a;font-size:10.5px;font-style:italic;">Sem correlações ainda. Envie pacotes pelo Sender e observe.</div>';
+            } else {
+                html += '<div style="display:flex;flex-direction:column;gap:5px;">';
+                outs.slice(0, 50).forEach(outId => {
+                    const respostas = Correlator.respostasDe(outId);
+                    const outNome = PacketNames.nome(outId, 'SEND') || '?';
+                    html += `<div style="background:#0a0a12;border:1px solid #1e1e2e;border-radius:6px;padding:7px 10px;font-size:11px;">
+                        <div style="color:#e1e1e6;font-weight:bold;margin-bottom:3px;">OUT.${esc(outNome)} <span style="color:#6a6a7a;font-weight:normal;">(ID ${outId})</span></div>
+                        <div style="color:#8a8a9a;font-size:10px;padding-left:8px;">
+                            ${respostas.slice(0, 5).map(r => `→ ${esc(r.inNome || String(r.inId))} ×${r.count}`).join('<br>')}
+                        </div>
+                    </div>`;
+                });
+                html += '</div>';
+            }
+            html += '</div>';
+            container.innerHTML = html;
+        }
+        on(el.querySelector('#corrAtualizar'), 'click', correlacaoRender);
+        on(el.querySelector('#corrLimpar'), 'click', () => {
+            if (!confirm('Apagar todos os dados de correlação?')) return;
+            Correlator.limpar();
+            correlacaoRender();
+        });
+
+        // ─── Fuzz UI ───
+        const fuzzLogEl = el.querySelector('#fuzzLog');
+        function fuzzLog(msg, tipo) {
+            const cor = tipo === 'erro' ? '#ef4444' : tipo === 'ok' ? '#00d4aa' : tipo === 'aviso' ? '#f5b942' : tipo === 'envio' ? '#8a8a9a' : '#e1e1e6';
+            const div = document.createElement('div');
+            div.style.cssText = `color:${cor};margin-bottom:3px;padding-left:8px;border-left:2px solid ${cor}40;`;
+            div.textContent = msg;
+            fuzzLogEl.appendChild(div);
+            fuzzLogEl.scrollTop = fuzzLogEl.scrollHeight;
+        }
+        on(el.querySelector('#fuzzIniciar'), 'click', () => {
+            const cfg = {
+                id: Number(el.querySelector('#fuzzId').value),
+                offset: Number(el.querySelector('#fuzzOffset').value),
+                from: Number(el.querySelector('#fuzzDe').value),
+                to: Number(el.querySelector('#fuzzAte').value),
+                delay: Number(el.querySelector('#fuzzDelay').value) || 400
+            };
+            if (!Number.isFinite(cfg.id)) { fuzzLog('ID inválido.', 'erro'); return; }
+            if (cfg.to < cfg.from) { fuzzLog('Range inválido.', 'erro'); return; }
+            fuzzLogEl.innerHTML = '';
+            el.querySelector('#fuzzIniciar').style.display = 'none';
+            el.querySelector('#fuzzParar').style.display = 'inline-block';
+            Fuzzer.iniciar(cfg);
+        });
+        on(el.querySelector('#fuzzParar'), 'click', () => {
+            Fuzzer.parar();
+            fuzzLog('Fuzz interrompido pelo usuário.', 'aviso');
+            el.querySelector('#fuzzIniciar').style.display = 'inline-block';
+            el.querySelector('#fuzzParar').style.display = 'none';
+        });
+
+        // ─── Race UI ───
+        const raceLogEl = el.querySelector('#raceLog');
+        const raceListaEl = el.querySelector('#raceLista');
+        const raceFila = [];
+
+        function raceLog(msg, cor) {
+            const div = document.createElement('div');
+            div.style.cssText = `color:${cor || '#e1e1e6'};margin-bottom:3px;padding-left:8px;border-left:2px solid ${(cor || '#e1e1e6')}40;`;
+            div.textContent = msg;
+            raceLogEl.appendChild(div);
+            raceLogEl.scrollTop = raceLogEl.scrollHeight;
+        }
+        function raceRender() {
+            raceListaEl.innerHTML = '';
+            if (!raceFila.length) {
+                const vazio = document.createElement('div');
+                vazio.style.cssText = 'color:#5a5a6a;font-size:10.5px;text-align:center;padding:12px;font-style:italic;';
+                vazio.textContent = 'Fila vazia. Adicione pacotes acima.';
+                raceListaEl.appendChild(vazio);
+                return;
+            }
+            raceFila.forEach((p, i) => {
+                const linha = document.createElement('div');
+                linha.style.cssText = 'display:flex;justify-content:space-between;align-items:center;padding:4px 6px;background:#0a0a12;border-radius:4px;margin-bottom:3px;';
+                const nome = PacketNames.nome(p.id, 'SEND') || '?';
+                const span = document.createElement('span');
+                span.style.color = '#e1e1e6';
+                span.textContent = `${i+1}. ${nome} (ID ${p.id})${p.hex ? ' — ' + p.hex.slice(0, 40) : ''}`;
+                linha.appendChild(span);
+                const rm = document.createElement('button');
+                rm.textContent = '✕';
+                rm.style.cssText = 'background:transparent;color:#ef4444;border:none;cursor:pointer;padding:0 4px;';
+                rm.addEventListener('click', () => { raceFila.splice(i, 1); raceRender(); });
+                linha.appendChild(rm);
+                raceListaEl.appendChild(linha);
+            });
+        }
+        on(el.querySelector('#raceAdd'), 'click', () => {
+            const id = Number(el.querySelector('#raceId').value);
+            const hex = el.querySelector('#raceHex').value || '';
+            const qtd = Math.max(1, Math.min(10, Number(el.querySelector('#raceQtd').value) || 1));
+            if (!Number.isFinite(id)) return;
+            for (let i = 0; i < qtd; i++) raceFila.push({ id, hex });
+            el.querySelector('#raceId').value = '';
+            el.querySelector('#raceHex').value = '';
+            raceRender();
+        });
+        on(el.querySelector('#raceEnviar'), 'click', async () => {
+            if (!raceFila.length) { raceLog('Fila vazia.', '#ef4444'); return; }
+            raceLogEl.innerHTML = '';
+            raceLog(`Enviando ${raceFila.length} pacotes no mesmo tick…`, '#6c63ff');
+            try {
+                const r = await RaceTester.enviarSimultaneo(raceFila);
+                r.enviados.forEach((p, i) => {
+                    const nome = PacketNames.nome(p.id, 'SEND') || '?';
+                    raceLog(`➡ ${i+1}. ${nome} (ID ${p.id})`, '#00d4aa');
+                });
+                const respostas = Object.entries(r.respostas);
+                if (!respostas.length) {
+                    raceLog('⚠ Nenhuma resposta do servidor. Suspeito — pode ter processado em lote ou ignorado.', '#f5b942');
+                } else {
+                    respostas.forEach(([inId, count]) => {
+                        const nome = PacketNames.nome(Number(inId), 'RECV') || '?';
+                        raceLog(`⬅ ${nome} (ID ${inId}) ×${count}`, '#6c63ff');
+                    });
+                    raceLog('✓ Teste concluído. Mais respostas que o normal pode indicar processamento duplo.', '#00d4aa');
+                }
+            } catch (e) {
+                raceLog('Erro: ' + (e.message || e), '#ef4444');
+            }
+        });
+        on(el.querySelector('#raceLimpar'), 'click', () => {
+            raceFila.length = 0;
+            raceRender();
+        });
+        raceRender();
+
+        // ─── Pesquisa: init único + wiring de emissores ───
+        let emissoresRegistrados = false;
+        function pesquisaInit() {
+            if (!emissoresRegistrados) {
+                emissoresRegistrados = true;
+                Emitter.on('notebook:changed', () => {
+                    if (pesqPanes.notebook.style.display !== 'none') pesquisarRender();
+                });
+                Emitter.on('fuzzer:log', ({ msg, tipo }) => fuzzLog(msg, tipo));
+                Emitter.on('fuzzer:done', () => {
+                    el.querySelector('#fuzzIniciar').style.display = 'inline-block';
+                    el.querySelector('#fuzzParar').style.display = 'none';
+                });
+            }
+            setActivePesqTab('notebook');
         }
 
         function setVisible(show) {
@@ -1689,7 +2420,6 @@
             }
         });
 
-        // Geração de JS via IA
         const nlJs = el.querySelector('#nlJs');
         const btnNlJs = el.querySelector('#btnNlJs');
         const nlJsResultado = el.querySelector('#nlJsResultado');
@@ -1905,7 +2635,7 @@
         });
     });
 
-    // WebSocket via Hub
+    // ─── WebSocket via Hub ───
     if (!window._hubSocket) {
         console.error('[Analyzer] window._hubSocket não encontrado. Carregue via Sang Hub.');
         while (cleanup.length) { const fn = cleanup.pop(); try { fn(); } catch(e) {} }
@@ -1941,6 +2671,13 @@
         if (dir === 'RECV' && isDuplicate(data)) return;
         const packet = Utils.parseData(data);
         if (!packet) return;
+
+        // Alimenta o correlator com tráfego real (não droppado)
+        if (!isDropped) {
+            if (dir === 'SEND') Correlator.registrarEnvio(packet);
+            else Correlator.registrarRecebimento(packet);
+        }
+
         if (!PacketFilter.isVisualBlocked(packet)) {
             AnalyzerUI.addLog(packet, dir, !!isDropped);
         }
@@ -1977,10 +2714,13 @@
     window._hubSocket.onConnect((ws) => { if (!_alive) return; window.gameWS = ws; wrapSend(ws); });
     window._hubSocket.onMessage((event, ws) => { if (!_alive) return; if (ws !== window.gameWS) return; handleInbound(event); });
 
-    // API pública
+    // ─── API pública ───
     function kill() {
         _alive = false;
         try { delete window[UID]; } catch(e) {}
+        Fuzzer.parar();
+        try { Correlator._flush(); } catch(e) {}
+        Emitter.clear();
         try {
             if (window.gameWS && window.gameWS._analyzerSendWrapped) {
                 if (window.gameWS._analyzerOriginalSend) window.gameWS.send = window.gameWS._analyzerOriginalSend;
