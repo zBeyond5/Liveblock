@@ -438,10 +438,10 @@
             <div class="campo">
                 <label>Pausa antes de enviar</label>
                 <select id="cfgSilencio">
+                    <option value="1000">1 segundo</option>
                     <option value="1800">1,8 segundos</option>
                     <option value="2500">2,5 segundos</option>
                     <option value="3500">3,5 segundos</option>
-                    <option value="5000">5 segundos</option>
                 </select>
             </div>
             <div class="campo">
