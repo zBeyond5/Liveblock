@@ -45,7 +45,6 @@
             return true;
         }
 
-        // Retry
         let attempts = 0;
         const captureInterval = setInterval(() => {
             attempts++;
@@ -91,7 +90,9 @@
         yt:          ['youtube'],
         iptv:        ['iptv', 'tv'],
         prozilla:    ['prozilla'],
-        galeria:     ['galeria']
+        galeria:     ['galeria'],
+        voz:         ['voz', 'microfone', 'mic'],
+        groq:        ['sang', 'sang ai', 'chat ia', 'ia']
     };
 
     const normalize = s => s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
@@ -278,7 +279,6 @@
         return playtime.baseTotalMs + sessionElapsedMs();
     }
 
-    // Flush
     function flushPlaytime() {
         saveTotalPlaytimeMs(currentTotalMs());
     }
@@ -413,7 +413,7 @@
             state.lastSyncAt = new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
 
             manifest.modules
-                .filter(m => m.enabled !== false && m.autoload === true && m.secret !== true && state.moduleStates[m.id] !== STATUS.LOADED)
+                .filter(m => m.enabled !== false && m.autoload === true && state.moduleStates[m.id] !== STATUS.LOADED)
                 .forEach(mod => activateModule(mod));
         } catch(e) {
             HERR('❌ Falha no manifesto:', e);
@@ -508,28 +508,73 @@
         return best;
     }
 
+    // Retorna true se consumiu (comando de menu/módulo), false se não bateu em nada.
+    // Regras: verbo de ação precisa estar na PRIMEIRA palavra, e sem verbo só alterna
+    // em frases curtas (nome/apelido do módulo). Evita falsos positivos no chat.
     function handleVoiceCommand(raw) {
         const transcript = normalize(raw);
-        if (!transcript) return;
+        if (!transcript) return false;
 
-        if (transcript.includes('menu')) {
-            if (VOICE_CLOSE.some(w => transcript.includes(w))) { showPillFn?.(); return; }
-            if (VOICE_OPEN.some(w => transcript.includes(w)))  { showPanelFn?.(); return; }
+        // Menu — exige frase inteira (aceita "o menu" opcional)
+        if (/^(mostrar?|mostra|esconder?|esconde|abrir?|abre|abra|fechar?|fecha|feche)\s+(o\s+)?menu$/.test(transcript)) {
+            if (/^(mostrar?|mostra|abrir?|abre|abra)/.test(transcript)) showPanelFn?.();
+            else showPillFn?.();
+            return true;
         }
 
         const mod = matchModule(transcript);
-        if (!mod) return; // não bateu com nada -> ignora em silêncio (mic sempre ligado gera muito ruído)
+        if (!mod) return false;
 
+        const palavras = transcript.split(/\s+/);
+        const primeira = palavras[0];
         const status = state.moduleStates[mod.id] || STATUS.UNLOADED;
-        if (VOICE_CLOSE.some(w => transcript.includes(w))) {
+
+        // Verbo de ação precisa estar na PRIMEIRA palavra (aceita forma no infinitivo)
+        const ehFechar = VOICE_CLOSE.includes(primeira)
+            || VOICE_CLOSE.includes(primeira + 'r');
+        const ehAbrir = VOICE_OPEN.includes(primeira)
+            || VOICE_OPEN.includes(primeira + 'r');
+
+        if (ehFechar) {
             if (status === STATUS.LOADED) deactivateModule(mod);
-            return;
+            return true;
         }
-        if (VOICE_OPEN.some(w => transcript.includes(w))) {
+        if (ehAbrir) {
             if (status !== STATUS.LOADED) activateModule(mod);
-            return;
+            return true;
         }
-        handleModuleClick(mod); // só o nome/apelido, sem verbo -> alterna
+
+        // Sem verbo — só alterna se for frase curta (nome/apelido)
+        if (palavras.length <= 3) {
+            handleModuleClick(mod);
+            return true;
+        }
+
+        return false;
+    }
+
+    // ─── VOZ: registro no despachante do voz.js ───
+    // Quando voz.js está ativo, ele chama este handler (prioridade -1, abaixo dos módulos).
+    let vozHandlerRegistrado = null;
+
+    function tentarRegistrarHandlerVoz() {
+        if (!window._voiceCommands?.registrar) return false;
+        if (vozHandlerRegistrado) return true;
+        vozHandlerRegistrado = (texto) => handleVoiceCommand(texto);
+        window._voiceCommands.registrar(/.*/, vozHandlerRegistrado, -1);
+        HLOG('🎤 handler de voz registrado no voz.js');
+        return true;
+    }
+
+    function limparHandlerVoz() {
+        if (vozHandlerRegistrado && window._voiceCommands?.remover) {
+            window._voiceCommands.remover(vozHandlerRegistrado);
+            vozHandlerRegistrado = null;
+        }
+    }
+
+    if (!tentarRegistrarHandlerVoz()) {
+        window.addEventListener('sang:voz-ready', tentarRegistrarHandlerVoz, { once: true });
     }
 
     function setupGifIcon(item, canvas, liveImg, originalUrl) {
@@ -647,6 +692,7 @@
         #${UID} .hub-hbtn.spin svg{animation:hubSpin .6s linear infinite}
         #${UID} .hub-hbtn.listening{color:#0b0b10;background:var(--hub-grad);border-color:transparent;box-shadow:0 0 10px rgba(34,211,238,.5)}
         #${UID} .hub-hbtn.hearing{animation:hubPulse .35s ease-in-out}
+        #${UID} .hub-hbtn.cedido{opacity:.4;pointer-events:none}
 
         #${UID} .hub-tabs{display:flex;gap:4px;padding:0 12px;flex-shrink:0;border-bottom:1px solid rgba(255,255,255,0.06)}
         #${UID} .hub-tab{flex:1;text-align:center;padding:9px 6px 10px;font-size:10.5px;font-weight:800;letter-spacing:.05em;
@@ -954,12 +1000,17 @@
         btnUpdate.addEventListener('click', onUpdateClick, { signal: ac.signal });
         btnUpdate.addEventListener('keydown', onKeyActivate(onUpdateClick), { signal: ac.signal });
 
-        // ─── VOZ: reconhecimento contínuo ───
+        // ─── VOZ: reconhecimento próprio (fallback quando voz.js está off) ───
         let recognition = null, voiceActive = false, lastVoiceAt = 0;
+        // vozHabilitado: true quando o voz.js está no comando. Consulta inicial no boot.
+        let vozHabilitado = !!(window._voz && window._voz.habilitado);
 
         function updateVoiceBtn() {
             btnVoice.classList.toggle('listening', voiceActive);
-            btnVoice.title = voiceActive ? 'Escutando… (clique para desativar)' : 'Ativar controle por voz';
+            btnVoice.classList.toggle('cedido', vozHabilitado);
+            btnVoice.title = vozHabilitado
+                ? 'Mic cedido ao voz.js (desligue o voz.js para usar)'
+                : (voiceActive ? 'Escutando… (clique para desativar)' : 'Ativar controle por voz');
         }
 
         function ensureRecognition() {
@@ -984,7 +1035,12 @@
                     toastFn('Permissão de microfone negada', 'error');
                 }
             };
-            recognition.onend = () => { if (voiceActive) { try { recognition.start(); } catch(e) {} } };
+            recognition.onend = () => {
+                if (!voiceActive) return;
+                // voz.js assumiu — não reinicia
+                if (vozHabilitado) return;
+                try { recognition.start(); } catch(e) {}
+            };
             return recognition;
         }
 
@@ -993,7 +1049,13 @@
             updateVoiceBtn();
             try { localStorage.setItem(VOICE_KEY, on ? '1' : '0'); } catch(e) {}
             const rec = ensureRecognition();
-            try { on ? rec.start() : rec.stop(); } catch(e) {}
+            if (on) {
+                // Se voz.js está no comando, guarda a intenção mas não inicia captura
+                if (vozHabilitado) return;
+                try { rec.start(); } catch(e) {}
+            } else {
+                try { rec.stop(); } catch(e) {}
+            }
         }
 
         if (!SpeechRecognitionAPI) {
@@ -1003,7 +1065,26 @@
             btnVoice.addEventListener('click', toggleVoice, { signal: ac.signal });
             btnVoice.addEventListener('keydown', onKeyActivate(toggleVoice), { signal: ac.signal });
 
+            // Coordenação com voz.js: cede/retoma o mic quando o estado dele muda
+            window.addEventListener('sang:voz-state', (e) => {
+                const novo = !!e?.detail?.habilitado;
+                if (novo === vozHabilitado) return;
+                vozHabilitado = novo;
+
+                if (vozHabilitado) {
+                    if (voiceActive && recognition) {
+                        try { recognition.stop(); } catch(_) {}
+                    }
+                    HLOG('🎤 mic cedido ao voz.js');
+                } else if (voiceActive && recognition) {
+                    try { recognition.start(); } catch(_) {}
+                    HLOG('🎤 mic retomado (voz.js desligado)');
+                }
+                updateVoiceBtn();
+            }, { signal: ac.signal });
+
             if (localStorage.getItem(VOICE_KEY) === '1') setVoiceActive(true);
+            updateVoiceBtn();
         }
 
         const tabsEl = root.querySelector('#' + UID + 'tabs');
@@ -1131,6 +1212,7 @@
         if (cached) applyPlayerData(cached);
 
         function kill() {
+            limparHandlerVoz();
             state.killFlag = true;
             voiceActive = false;
             if (recognition) { try { recognition.stop(); } catch(e) {} }
