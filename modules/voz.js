@@ -1,3 +1,7 @@
+// modules/voz.js — fala vira texto no chat do Habbo
+// v3: comandos ancorados (só match exato), prefixo "digitar" para forçar
+// texto ao chat, backoff de reconexão, feedback de escuta, limpeza total
+// no kill, modo manual como default, detector de frases cortadas.
 (function() {
     'use strict';
     const UID = '_voz';
@@ -5,77 +9,94 @@
 
     const SpeechRecognitionAPI = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SpeechRecognitionAPI) {
-        console.warn('[Voz] Web Speech API não suportada.');
+        console.warn('[Voz] Web Speech API não suportada neste navegador.');
         return;
     }
 
     const STATE_KEY = 'sang_voz_state';
     const DEFAULT_CONFIG = {
-        modo: 'manual',      // 'auto' | 'manual' — manual é mais seguro como default
-        silencioMs: 2500,    // pausa antes de enviar (auto)
+        modo: 'manual',
+        silencioMs: 2500,
         minChars: 2,
         lang: 'pt-BR',
         left: null,
-        top: null,
-        atalho: 'Alt+V'
+        top: null
     };
 
+    // ─── Persistência ───
     function loadConfig() {
         try {
             const raw = localStorage.getItem(STATE_KEY);
-            return raw ? {...DEFAULT_CONFIG, ...JSON.parse(raw)} : {...DEFAULT_CONFIG};
-        } catch (_) { return {...DEFAULT_CONFIG}; }
+            return raw ? { ...DEFAULT_CONFIG, ...JSON.parse(raw) } : { ...DEFAULT_CONFIG };
+        } catch (_) { return { ...DEFAULT_CONFIG }; }
     }
     function saveConfig(c) {
         try { localStorage.setItem(STATE_KEY, JSON.stringify(c)); } catch (_) {}
     }
+
+    // ─── Utilidades ───
     function escapeHtml(str) {
         return String(str ?? '').replace(/[&<>"']/g, c => ({
             '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
         }[c]));
     }
     function normalize(s) {
-        return String(s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
+        return String(s || '')
+            .normalize('NFD')
+            .replace(/[\u0300-\u036f]/g, '')
+            .toLowerCase()
+            .trim();
     }
 
     // ═══════════════════════════════════════════════════════════════
-    // FILTRO DE COMANDOS RESERVADOS
+    // COMANDOS
     // ═══════════════════════════════════════════════════════════════
-    // Cada padrão é testado contra o texto normalizado. Se bater,
-    // o texto NÃO vai pro chat — é consumido por outro módulo (hub,
-    // print, notas, etc.).
 
-    const COMANDOS_DO_VOZ = [
-        // Comandos locais do próprio módulo voz.js
-        { re: /^(enviar?|envia|manda(r)?(\s+isso)?|manda)$/, acao: 'enviar' },
-        { re: /^(cancelar?|cancela|apagar?|apaga|limpar?|limpa)(\s+isso)?$/, acao: 'cancelar' }
+    // Prefixo para forçar QUALQUER texto a ir ao chat, mesmo sendo comando.
+    // Uso: "digitar enviar" → chat recebe "enviar"
+    const PREFIXO_FORCAR_CHAT = /^(ditar|digitar|escrever|escreve|falar|fala)\s+(.+)$/i;
+
+    // Comandos consumidos pelo PRÓPRIO módulo (não vão pro chat, não acionam outros)
+    const COMANDOS_VOZ = [
+        {
+            re: /^(enviar?|envia|mandar?|manda|manda\s+isso|manda\s+essa|envia\s+isso|envia\s+essa|pode\s+enviar|pode\s+mandar)$/,
+            acao: 'enviar'
+        },
+        {
+            re: /^(cancelar?|cancela|apagar?|apaga|limpar?|limpa|limpa\s+isso|apaga\s+isso|descarta(r)?|descarta|deixa\s+pra\s+la|deixa\s+pra\s+lá)$/,
+            acao: 'cancelar'
+        }
     ];
 
+    // Comandos pertencentes a OUTROS módulos. Se casarem, o texto é
+    // silenciosamente descartado — o hub/módulo correspondente age.
+    // Todos ancorados (^...$) para não capturar frases longas por engano.
     const COMANDOS_RESERVADOS = [
-        // ─── Hub: abrir/fechar módulos ───
-        /^(abrir?|abre|abra|ativar?|ativa|ligar?|liga|iniciar?|inicia|fechar?|feche|fecha|desativar?|desativa|desligar?|desliga|parar?|para)\s+(o\s+|a\s+|os\s+|as\s+)?(menu|iptv|tv|youtube|yt|packet|blocklive|liveblock|adblock|bloqueador|booster|jogos|games|gameslive|photoswap|fotoswap|foto|prozilla|galeria|voz|chat|groq|gemini)\b/,
-        /^(mostrar?|mostra|esconder?|esconde|abrir?|abre|fechar?|fecha)\s+menu\b/,
+        // Hub: abrir/fechar módulos
+        /^(abrir?|abre|abra|ativar?|ativa|ligar?|liga|iniciar?|inicia|fechar?|feche|fecha|desativar?|desativa|desligar?|desliga|parar?|para)\s+(o\s+|a\s+|os\s+|as\s+)?(menu|iptv|tv|youtube|yt|packet|blocklive|liveblock|adblock|bloqueador|booster|jogos|games|gameslive|photoswap|fotoswap|foto|prozilla|galeria|voz|chat|groq|gemini)$/,
+        /^(mostrar?|mostra|esconder?|esconde|abrir?|abre|fechar?|fecha)\s+menu$/,
         /^menu$/,
-        /^(modo\s+)?(voz|microfone|mic)\b/,
+        /^(modo\s+)?(voz|microfone|mic)$/,
 
-        // ─── Print / captura ───
-        /^(tirar?|tira)\s+print\b/,
-        /^(capturar?|captura)\s+(a\s+)?tela\b/,
-        /^print\b/,
-        /^(salvar?|salva)\s+(na\s+pasta|solto|solta)\b/,
+        // Print / captura
+        /^(tirar?|tira)\s+print$/,
+        /^(capturar?|captura)\s+(a\s+)?tela$/,
+        /^print$/,
+        /^(salvar?|salva)\s+(na\s+pasta|solto|solta)$/,
 
-        // ─── Notas ───
-        /^(criar?|cria|nova?|novo)\s+(anotacao|anotacaozinha|nota)\b/,
-        /^(salvar?|salva)\s+nota\b/,
-        /^(concluir?|conclui|finalizar?|finaliza)\s+(nota|anotacao)?$/,
-        /^anotacao\b/,
-        /^nota\b/,
+        // Notas
+        /^(criar?|cria|nova?|novo)\s+(anotacao|anotação|nota)$/,
+        /^(salvar?|salva)\s+nota$/,
+        /^(concluir?|conclui|finalizar?|finaliza)(\s+(nota|anotacao|anotação))?$/,
+        /^anotacao$/,
+        /^anotação$/,
+        /^nota$/,
 
-        // ─── Genéricos que aparecem em vários módulos ───
-        /^(fechar?|fecha|confirmar?|confirma|voltar?|volta)\s+(isso|tudo|janela|painel)?$/
+        // Genéricos
+        /^(fechar?|fecha|confirmar?|confirma|voltar?|volta)(\s+(isso|tudo|janela|painel))?$/
     ];
 
-    // Registro compartilhado — outros módulos podem adicionar seus padrões
+    // Registro compartilhado — outros módulos podem adicionar padrões
     window._voiceCommands = window._voiceCommands || {
         _extras: [],
         adicionar(re) {
@@ -86,18 +107,23 @@
             return COMANDOS_RESERVADOS.some(r => r.test(n))
                 || this._extras.some(r => r.test(n));
         },
-        ehLocal(texto) {
+        acaoLocal(texto) {
             const n = normalize(texto);
-            for (const cmd of COMANDOS_DO_VOZ) {
+            for (const cmd of COMANDOS_VOZ) {
                 if (cmd.re.test(n)) return cmd.acao;
             }
             return null;
+        },
+        extrairForcarChat(texto) {
+            const m = String(texto || '').match(PREFIXO_FORCAR_CHAT);
+            return m ? m[2].trim() : null;
         }
     };
 
     // ═══════════════════════════════════════════════════════════════
+    // CHAT DO JOGO
+    // ═══════════════════════════════════════════════════════════════
 
-    // Procura o input do chat
     function encontrarInputChat() {
         const candidatos = [
             'input[placeholder*="onversa"]',
@@ -114,7 +140,6 @@
             const el = document.querySelector(sel);
             if (el && el.offsetParent !== null) return el;
         }
-        // Fallback: input mais próximo do rodapé
         const inputs = [...document.querySelectorAll('input[type="text"], textarea')];
         return inputs.find(el => {
             const r = el.getBoundingClientRect();
@@ -122,6 +147,7 @@
         }) || null;
     }
 
+    // React-safe: dispara setter nativo + eventos sintéticos
     function setInputValue(el, texto) {
         if (el.isContentEditable) {
             el.focus();
@@ -137,11 +163,8 @@
             ? HTMLTextAreaElement.prototype
             : HTMLInputElement.prototype;
         const desc = Object.getOwnPropertyDescriptor(proto, 'value');
-        if (desc && desc.set) {
-            desc.set.call(el, texto);
-        } else {
-            el.value = texto;
-        }
+        if (desc && desc.set) desc.set.call(el, texto);
+        else el.value = texto;
         el.dispatchEvent(new Event('input', { bubbles: true }));
         el.dispatchEvent(new Event('change', { bubbles: true }));
     }
@@ -155,6 +178,10 @@
         el.dispatchEvent(new KeyboardEvent('keypress', opts));
         el.dispatchEvent(new KeyboardEvent('keyup', opts));
     }
+
+    // ═══════════════════════════════════════════════════════════════
+    // MÓDULO
+    // ═══════════════════════════════════════════════════════════════
 
     function init() {
         const config = loadConfig();
@@ -186,23 +213,21 @@
             border-color: #fca5a5; color: #fff;
             animation: pulse 1.5s ease-in-out infinite;
         }
-        .fab.ativo.hearing {
-            animation: pulse 1.5s ease-in-out infinite, hear .3s ease-out;
-        }
+        .fab.hearing { animation: pulse 1.5s ease-in-out infinite, hear .35s ease-out; }
         @keyframes pulse {
             0%,100% { box-shadow: 0 6px 20px rgba(239,68,68,.4), 0 0 0 0 rgba(239,68,68,.6); }
             50% { box-shadow: 0 6px 20px rgba(239,68,68,.6), 0 0 0 14px rgba(239,68,68,0); }
         }
-        @keyframes hear { 0% { transform: scale(1.08); } 100% { transform: scale(1); } }
+        @keyframes hear { 0% { transform: scale(1.14); } 100% { transform: scale(1); } }
         .fab svg { width: 22px; height: 22px; pointer-events: none; }
 
         .nivel {
-            position: absolute; bottom: 2px; left: 50%; transform: translateX(-50%);
+            position: absolute; bottom: 4px; left: 50%; transform: translateX(-50%);
             width: 3px; height: 3px; border-radius: 2px; background: #fca5a5;
-            opacity: 0; transition: opacity .2s;
+            opacity: 0; transition: opacity .2s, height .15s;
         }
         .fab.ativo .nivel { opacity: 1; }
-        .nivel.on { height: 10px; }
+        .nivel.pico { height: 11px; }
 
         .preview {
             position: fixed;
@@ -218,7 +243,6 @@
             display: none;
             backdrop-filter: blur(10px);
             z-index: 2147483000;
-            pointer-events: auto;
         }
         .preview.visivel { display: block; }
         .preview-hdr {
@@ -230,8 +254,17 @@
         .preview-hdr .dot.interim { background: #f5b942; animation: pulse 1s infinite; }
         .preview-hdr .dot.final   { background: #34d399; }
         .preview-hdr .aviso {
-            margin-left: auto; font-size: 9px; font-weight: 600;
-            color: #f5b942; text-transform: none; letter-spacing: 0;
+            margin-left: auto; font-size: 9px; font-weight: 700;
+            padding: 2px 6px; border-radius: 4px;
+            text-transform: none; letter-spacing: 0;
+        }
+        .preview-hdr .aviso.cmd {
+            color: #f5b942; background: rgba(245,185,66,.12);
+            border: 1px solid rgba(245,185,66,.3);
+        }
+        .preview-hdr .aviso.forcar {
+            color: #22d3ee; background: rgba(34,211,238,.12);
+            border: 1px solid rgba(34,211,238,.3);
         }
         .preview-texto { line-height: 1.4; word-break: break-word; min-height: 1.4em; }
         .preview-texto .interim { color: #8b8fa3; font-style: italic; }
@@ -242,6 +275,7 @@
             background: rgba(255,255,255,.08); border: 1px solid rgba(255,255,255,.12);
             color: #e8e8f0; border-radius: 6px; padding: 4px 12px;
             font-size: 11px; cursor: pointer; font-family: inherit; font-weight: 600;
+            transition: background .15s;
         }
         .preview-acoes button:hover { background: rgba(255,255,255,.16); }
         .preview-acoes button.primario {
@@ -259,31 +293,43 @@
             color: #e8e8f0;
             font-size: 12px;
             font-family: -apple-system, system-ui, sans-serif;
-            width: 260px;
+            width: 270px;
             box-shadow: 0 12px 32px rgba(0,0,0,.8);
             display: none;
             z-index: 2147483001;
         }
         .popover.visivel { display: block; }
-        .popover h3 { margin: 0 0 12px; font-size: 11px; font-weight: 800;
-            text-transform: uppercase; letter-spacing: .08em; color: #a78bfa; }
+        .popover h3 {
+            margin: 0 0 12px; font-size: 11px; font-weight: 800;
+            text-transform: uppercase; letter-spacing: .08em; color: #a78bfa;
+        }
         .campo { margin-bottom: 11px; }
-        .campo:last-child { margin-bottom: 0; }
-        .campo label { display: block; font-size: 9.5px; color: #8b8fa3;
-            text-transform: uppercase; letter-spacing: .05em; margin-bottom: 4px; font-weight: 700; }
-        .campo select, .campo input {
+        .campo:last-of-type { margin-bottom: 0; }
+        .campo label {
+            display: block; font-size: 9.5px; color: #8b8fa3;
+            text-transform: uppercase; letter-spacing: .05em;
+            margin-bottom: 4px; font-weight: 700;
+        }
+        .campo select {
             width: 100%; background: #14141e; border: 1px solid rgba(255,255,255,.12);
             border-radius: 6px; padding: 7px 9px; color: #e8e8f0;
             font-size: 12px; font-family: inherit; outline: none; cursor: pointer;
         }
-        .campo select:focus, .campo input:focus { border-color: #8b5cf6; }
-        .ajuda { font-size: 10px; color: #8b8fa3; line-height: 1.5;
-            border-top: 1px solid rgba(255,255,255,.06); padding-top: 10px; margin-top: 10px; }
-        .ajuda code { background: rgba(255,255,255,.06); padding: 1px 4px;
-            border-radius: 3px; font-size: 10px; }
+        .campo select:focus { border-color: #8b5cf6; }
+        .ajuda {
+            font-size: 10px; color: #8b8fa3; line-height: 1.55;
+            border-top: 1px solid rgba(255,255,255,.06);
+            padding-top: 10px; margin-top: 12px;
+        }
+        .ajuda code {
+            background: rgba(255,255,255,.06); padding: 1px 4px;
+            border-radius: 3px; font-size: 9.5px;
+            font-family: ui-monospace, Menlo, Consolas, monospace;
+        }
         `;
         root.appendChild(style);
 
+        // ─── FAB ───
         const fab = document.createElement('div');
         fab.className = 'fab';
         fab.title = 'Voz → Chat (Alt+V) · clique direito = opções';
@@ -304,6 +350,7 @@
         fab.style.top = Math.max(0, Math.min(window.innerHeight - 56, posIni.top)) + 'px';
         root.appendChild(fab);
 
+        // ─── Preview ───
         const preview = document.createElement('div');
         preview.className = 'preview';
         preview.innerHTML = `
@@ -320,6 +367,7 @@
         `;
         root.appendChild(preview);
 
+        // ─── Popover ───
         const popover = document.createElement('div');
         popover.className = 'popover';
         popover.innerHTML = `
@@ -350,10 +398,12 @@
                 </select>
             </div>
             <div class="ajuda">
-                Dica: fale <code>enviar</code> para forçar o envio ou
-                <code>cancelar</code> para limpar. Comandos do menu
-                (<code>abrir iptv</code>, <code>tirar print</code>, etc.)
-                são automaticamente ignorados.
+                Fale <code>enviar</code> para forçar envio, <code>cancelar</code> para limpar.
+                Se um texto bater exatamente com um comando do hub
+                (<code>abrir iptv</code>, <code>tirar print</code>…), ele é filtrado
+                e o outro módulo age.<br><br>
+                Para forçar qualquer texto ao chat, use o prefixo
+                <code>digitar</code>. Ex: <code>digitar enviar</code>.
             </div>
         `;
         root.appendChild(popover);
@@ -380,7 +430,6 @@
         let timerSilencio = null;
         let tentativasRestart = 0;
         let timerRestart = null;
-        let ultimaFalaEm = 0;
 
         // ═══ Reconhecimento ═══
         function criarRecognition() {
@@ -405,11 +454,14 @@
                 }
                 textoInterim = interim;
                 ultimoResultadoEm = Date.now();
-                ultimaFalaEm = Date.now();
 
-                // Feedback visual de "está ouvindo"
+                // Feedback visual
                 fab.classList.add('hearing');
-                setTimeout(() => fab.classList.remove('hearing'), 300);
+                nivelEl.classList.add('pico');
+                setTimeout(() => {
+                    fab.classList.remove('hearing');
+                    nivelEl.classList.remove('pico');
+                }, 350);
 
                 renderPreview();
                 posicionarPreview();
@@ -420,14 +472,13 @@
                 if (tipo === 'no-speech' || tipo === 'aborted') return;
 
                 if (tipo === 'not-allowed' || tipo === 'service-not-allowed') {
-                    console.warn('[Voz] Permissão negada:', tipo);
+                    console.warn('[Voz] Permissão de microfone negada.');
                     desligar();
                     return;
                 }
 
                 if (tipo === 'network') {
-                    console.warn('[Voz] Erro de rede no reconhecimento');
-                    // Não desativa — deixa o onend reagendar com backoff
+                    console.warn('[Voz] Erro de rede — vai tentar reconectar.');
                     return;
                 }
 
@@ -439,10 +490,9 @@
                     fab.classList.remove('ativo');
                     return;
                 }
-                // Backoff exponencial: 1s, 2s, 4s, 8s, 16s, 30s (teto)
                 tentativasRestart++;
                 if (tentativasRestart > 8) {
-                    console.warn('[Voz] Muitas falhas seguidas, desativando');
+                    console.warn('[Voz] Muitas falhas seguidas — desativando.');
                     desligar();
                     return;
                 }
@@ -466,9 +516,12 @@
             tentativasRestart = 0;
             ativo = true;
             reconhecimento = criarRecognition();
-            try { reconhecimento.start(); } catch (e) {
+            try {
+                reconhecimento.start();
+            } catch (e) {
                 console.error('[Voz] Falha ao iniciar:', e);
                 ativo = false;
+                reconhecimento = null;
                 return;
             }
             fab.classList.add('ativo');
@@ -479,12 +532,16 @@
             ativo = false;
             if (timerRestart) { clearTimeout(timerRestart); timerRestart = null; }
             if (reconhecimento) {
-                try { reconhecimento.onend = null; reconhecimento.stop(); } catch (_) {}
+                try {
+                    reconhecimento.onend = null;
+                    reconhecimento.stop();
+                } catch (_) {}
                 reconhecimento = null;
             }
             pararTimerSilencio();
             fab.classList.remove('ativo');
             fab.classList.remove('hearing');
+            nivelEl.classList.remove('pico');
             textoFinal = '';
             textoInterim = '';
             renderPreview();
@@ -495,54 +552,60 @@
             if (ativo) desligar(); else ligar();
         }
 
-        // ═══ Timer de silêncio (auto-envio) ═══
+        // ═══ Timer de silêncio (auto) ═══
         function iniciarTimerSilencio() {
             if (timerSilencio) return;
             timerSilencio = setInterval(() => {
                 if (!ativo || config.modo !== 'auto') return;
                 const texto = (textoFinal + textoInterim).trim();
                 if (!texto || texto.length < config.minChars) return;
-                // Não envia se a última palavra é conector (frase inacabada)
                 if (terminaComConector(texto)) return;
-                if (Date.now() - ultimoResultadoEm >= config.silencioMs) enviar();
+                if (Date.now() - ultimoResultadoEm >= config.silencioMs) enviar(false);
             }, 220);
         }
         function pararTimerSilencio() {
             if (timerSilencio) { clearInterval(timerSilencio); timerSilencio = null; }
         }
 
-        // Evita enviar frases cortadas no meio
+        // Evita envio de frase cortada no meio
         const CONECTORES = new Set([
-            'e', 'ou', 'mas', 'que', 'porque', 'pois', 'então', 'entao',
-            'também', 'tambem', 'ainda', 'já', 'ja', 'se', 'quando', 'como',
+            'e', 'ou', 'mas', 'que', 'porque', 'pois', 'entao', 'então',
+            'tambem', 'também', 'ainda', 'ja', 'já', 'se', 'quando', 'como',
             'para', 'pra', 'de', 'do', 'da', 'no', 'na', 'em', 'com', 'sem',
-            'por', 'ao', 'aos', 'às', 'as', 'os', 'um', 'uma', 'uns', 'umas'
+            'por', 'ao', 'aos', 'as', 'às', 'os', 'um', 'uma', 'uns', 'umas'
         ]);
         function terminaComConector(texto) {
-            const palavras = texto.toLowerCase().split(/\s+/);
+            const palavras = normalize(texto).split(/\s+/);
             const ultima = palavras[palavras.length - 1];
             return CONECTORES.has(ultima);
         }
 
-        // ═══ Render ═══
+        // ═══ Render do preview ═══
         function renderPreview() {
-            const tem = (textoFinal + textoInterim).trim().length > 0;
-            if (!tem || !ativo) {
+            const textoCompleto = (textoFinal + textoInterim).trim();
+            if (!textoCompleto || !ativo) {
                 preview.classList.remove('visivel');
                 avisoEl.textContent = '';
+                avisoEl.className = 'aviso';
                 return;
             }
+
             txtEl.innerHTML = escapeHtml(textoFinal) +
                 (textoInterim ? `<span class="interim">${escapeHtml(textoInterim)}</span>` : '');
             const dot = preview.querySelector('.dot');
             dot.className = 'dot ' + (textoInterim ? 'interim' : 'final');
 
-            // Aviso se o texto atual bater com um comando reservado
-            const textoAtual = (textoFinal + textoInterim).trim();
-            if (textoAtual && window._voiceCommands.tem(textoAtual)) {
+            // Aviso dinâmico
+            const forcar = window._voiceCommands.extrairForcarChat(textoCompleto);
+            if (forcar) {
+                avisoEl.textContent = '→ vai pro chat';
+                avisoEl.className = 'aviso forcar';
+            } else if (window._voiceCommands.tem(textoCompleto)) {
                 avisoEl.textContent = '⚠ comando reservado';
+                avisoEl.className = 'aviso cmd';
             } else {
                 avisoEl.textContent = '';
+                avisoEl.className = 'aviso';
             }
 
             preview.classList.add('visivel');
@@ -565,25 +628,47 @@
 
         // ═══ Envio ═══
         let tentativasEnvio = 0;
+
         function enviar(forcado) {
             if (tentativasEnvio >= 3) {
                 tentativasEnvio = 0;
                 console.warn('[Voz] Input do chat não apareceu após 3 tentativas.');
                 avisoEl.textContent = '⚠ chat não encontrado';
+                avisoEl.className = 'aviso cmd';
                 return;
             }
 
             let texto = (textoFinal + textoInterim).trim();
             if (texto.length < config.minChars) return;
 
-            // Se o texto é um comando reservado, consome silenciosamente
-            if (window._voiceCommands.tem(texto) && !forcado) {
-                console.log('[Voz] Comando reservado ignorado:', texto);
-                textoFinal = '';
-                textoInterim = '';
-                ultimoResultadoEm = 0;
-                renderPreview();
-                return;
+            // Prefixo "digitar X" força X ao chat, ignorando o filtro de comandos
+            const forcar = window._voiceCommands.extrairForcarChat(texto);
+            if (forcar) {
+                texto = forcar;
+            } else if (!forcado) {
+                // Comando local do módulo?
+                const acaoLocal = window._voiceCommands.acaoLocal(texto);
+                if (acaoLocal === 'enviar') {
+                    // Não é o caso — estamos já dentro de enviar. Só limpa e sai.
+                    textoFinal = '';
+                    textoInterim = '';
+                    ultimoResultadoEm = 0;
+                    renderPreview();
+                    return;
+                }
+                if (acaoLocal === 'cancelar') {
+                    cancelar();
+                    return;
+                }
+                // Comando reservado de outro módulo?
+                if (window._voiceCommands.tem(texto)) {
+                    console.log('[Voz] Comando reservado filtrado:', texto);
+                    textoFinal = '';
+                    textoInterim = '';
+                    ultimoResultadoEm = 0;
+                    renderPreview();
+                    return;
+                }
             }
 
             const inputAlvo = encontrarInputChat();
@@ -600,11 +685,13 @@
                 : 200;
             if (texto.length > maxLen) texto = texto.slice(0, maxLen);
 
-            // Aviso se o input já tem texto (usuário estava digitando)
+            // Não sobrescreve o que o usuário já estava digitando
             if (inputAlvo.value && inputAlvo.value.trim()) {
-                // Não sobrescreve silenciosamente — concatena com espaço
-                texto = inputAlvo.value.trim() + ' ' + texto;
-                if (texto.length > maxLen) texto = texto.slice(-maxLen);
+                const atual = inputAlvo.value.trim();
+                const combinado = atual + ' ' + texto;
+                texto = combinado.length > maxLen
+                    ? combinado.slice(-maxLen)
+                    : combinado;
             }
 
             setInputValue(inputAlvo, texto);
@@ -614,7 +701,6 @@
             textoFinal = '';
             textoInterim = '';
             ultimoResultadoEm = 0;
-            tentativasEnvio = 0;
             renderPreview();
         }
 
@@ -627,15 +713,24 @@
         }
 
         // ═══ Eventos do preview ═══
-        btnEnviar.addEventListener('click', (e) => { e.stopPropagation(); enviar(true); });
-        btnCancelar.addEventListener('click', (e) => { e.stopPropagation(); cancelar(); });
+        btnEnviar.addEventListener('click', (e) => {
+            e.stopPropagation();
+            enviar(true);
+        });
+        btnCancelar.addEventListener('click', (e) => {
+            e.stopPropagation();
+            cancelar();
+        });
 
         // ═══ Eventos do FAB ═══
         let fabDrag = null, fabMoved = false;
         fab.addEventListener('pointerdown', (e) => {
             if (e.button !== 0) return;
-            fabDrag = { sx: e.clientX, sy: e.clientY,
-                left: parseInt(fab.style.left, 10), top: parseInt(fab.style.top, 10) };
+            fabDrag = {
+                sx: e.clientX, sy: e.clientY,
+                left: parseInt(fab.style.left, 10),
+                top: parseInt(fab.style.top, 10)
+            };
             fabMoved = false;
             try { fab.setPointerCapture(e.pointerId); } catch (_) {}
         });
@@ -666,8 +761,8 @@
         fab.addEventListener('contextmenu', (e) => {
             e.preventDefault();
             const r = fab.getBoundingClientRect();
-            popover.style.left = Math.max(10, Math.min(r.left - 270, window.innerWidth - 280)) + 'px';
-            popover.style.top = Math.min(r.top, window.innerHeight - 320) + 'px';
+            popover.style.left = Math.max(10, Math.min(r.left - 280, window.innerWidth - 290)) + 'px';
+            popover.style.top = Math.min(r.top, window.innerHeight - 360) + 'px';
             popover.classList.toggle('visivel');
         });
 
@@ -684,13 +779,12 @@
             config.lang = cfgLang.value;
             saveConfig(config);
             if (ativo) {
-                const eraAtivo = ativo;
                 desligar();
-                if (eraAtivo) setTimeout(ligar, 300);
+                setTimeout(ligar, 300);
             }
         });
 
-        // ═══ Fecha popover clicando fora ═══
+        // ═══ Fecha popover ao clicar fora ═══
         function fecharPopoverAoClicarFora(e) {
             if (!popover.classList.contains('visivel')) return;
             const path = e.composedPath ? e.composedPath() : [];
@@ -708,20 +802,19 @@
         }
 
         function onKeydown(e) {
-            // Alt+V — só dispara se não estiver digitando num input
+            // Alt+V — toggle. Não dispara dentro de input
             if (e.altKey && e.key.toLowerCase() === 'v' && !estaDigitandoEmInput()) {
                 e.preventDefault();
                 e.stopPropagation();
                 toggle();
                 return;
             }
-            // Escape — só cancela se houver texto no preview
+            // Escape — cancela o buffer (sem preventDefault, deixa o jogo processar)
             if (e.key === 'Escape' && ativo && (textoFinal || textoInterim)) {
-                // Não previne default — deixa o jogo processar também
                 cancelar();
                 return;
             }
-            // Enter no modo manual — só se o preview estiver visível
+            // Enter no modo manual — envia, mas só se não estiver digitando
             if (e.key === 'Enter' && ativo && config.modo === 'manual'
                 && (textoFinal || textoInterim) && !estaDigitandoEmInput()) {
                 e.preventDefault();
@@ -733,7 +826,6 @@
 
         // ═══ Resize ═══
         function onWindowResize() {
-            // Reclamp FAB
             const l = parseInt(fab.style.left, 10);
             const t = parseInt(fab.style.top, 10);
             fab.style.left = Math.max(0, Math.min(window.innerWidth - 56, l)) + 'px';
@@ -744,17 +836,18 @@
 
         // ═══ API pública ═══
         window[UID] = {
-            kill: () => {
+            kill() {
                 desligar();
                 document.removeEventListener('keydown', onKeydown, true);
                 document.removeEventListener('pointerdown', fecharPopoverAoClicarFora, true);
                 window.removeEventListener('resize', onWindowResize);
                 if (timerRestart) clearTimeout(timerRestart);
+                if (timerSilencio) clearInterval(timerSilencio);
                 host.remove();
                 delete window[UID];
             },
-            show: () => { fab.style.display = 'flex'; },
-            hide: () => { fab.style.display = 'none'; },
+            show() { fab.style.display = 'flex'; },
+            hide() { fab.style.display = 'none'; },
             toggle,
             get ativo() { return ativo; }
         };
