@@ -158,7 +158,7 @@
     "secret": false,
     "misc": true,   
     "instanceKey": "_voz",
-    "url": "https://raw.githubusercontent.com/zBeyond5/Liveblock/main/modules/voz.js",
+    "url": "https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/modules/voz.js",
     }
   ]
 }
