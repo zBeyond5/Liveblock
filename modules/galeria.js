@@ -259,14 +259,12 @@ input[type=file]{display:none}
   const toastEl = $('.toast');
 
   // ---------- Bloqueia teclas/entrada de vazar para a página (jogo) SEM quebrar os listeners internos ----------
-  // Importante: isso fica no bubble do próprio host, então o alvo real (ex.: textarea da nota) já processou
-  // o evento antes de ser bloqueado de continuar subindo para a página.
   ['keydown', 'keyup', 'keypress', 'input', 'beforeinput'].forEach((t) => on(host, t, (e) => e.stopPropagation()));
 
   let currentFolderId = null, toastTimer = null;
   let selectionMode = false, selectedIds = new Set();
   let hiddenPhotoIds = new Set(), hiddenFolderIds = new Set();
-  let pending = null; // { commit, undo, timer } — exclusão pendente com "Desfazer"
+  let pending = null;
   let currentVisiblePhotos = [], lightboxIndex = -1;
 
   function showToast(msg, opts = {}) {
@@ -559,7 +557,7 @@ input[type=file]{display:none}
       try {
         const dataUrl = await compressImage(file);
         await dbPutPhoto({ id: uid(), dataUrl, name: file.name || ('foto-' + Date.now()), createdAt: Date.now(), folderId });
-      } catch (e) { /* ignora arquivo com falha e segue */ }
+      } catch (e) {}
     }
     uploadLabelText.textContent = originalText;
     uploadLabel.classList.remove('processing');
@@ -608,7 +606,6 @@ input[type=file]{display:none}
     else if (e.key === 'Escape') { e.preventDefault(); lightbox.classList.remove('open'); }
   });
 
-  // Cola imagem (Ctrl+V) — só quando a aba Fotos está ativa e o painel aberto
   const onPaste = async (e) => {
     if (!panel.classList.contains('open')) return;
     const activeTab = shadow.querySelector('.tab.active');
@@ -717,6 +714,250 @@ input[type=file]{display:none}
   on($('.import-btn'), 'click', () => $('.import-input').click());
   on($('.import-input'), 'change', (e) => { const f = e.target.files[0]; if (f) importBackup(f); e.target.value = ''; });
 
+  // ═══════════════════════════════════════════════════════════════
+  // Comandos de voz + helpers de UI reaproveitados
+  // ═══════════════════════════════════════════════════════════════
+  function abrirPainel() {
+    if (!panel.classList.contains('open')) {
+      panel.classList.add('open');
+      positionPanel();
+    }
+  }
+  function fecharPainel() { panel.classList.remove('open'); }
+  function irParaAba(nome) {
+    const tab = [...tabs].find(t => t.dataset.tab === nome);
+    if (tab) tab.click();
+  }
+  function novaNotaRapida() {
+    abrirPainel();
+    irParaAba('notes');
+    addNoteBtn.click();
+  }
+
+  // Feedback auditivo: silencia o voz.js por 2s antes de falar,
+  // para o próprio TTS não ser reconhecido como fala do usuário.
+  function falar(texto) {
+    if (!window.speechSynthesis) return;
+    try {
+      window.dispatchEvent(new CustomEvent('sang:voz-silenciar', { detail: { ms: 2000 } }));
+      speechSynthesis.cancel();
+      const u = new SpeechSynthesisUtterance(texto);
+      u.lang = 'pt-BR';
+      u.rate = 1.2;
+      u.pitch = 1.05;
+      u.volume = 0.9;
+      speechSynthesis.speak(u);
+    } catch (e) {}
+  }
+
+  // ─── Print ───
+  const normalizarNome = s => String(s || '')
+    .toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
+
+  async function encontrarPastaPorNome(nome) {
+    const alvo = normalizarNome(nome);
+    if (!alvo) return null;
+    const pastas = await dbGetAllFolders();
+    const nomeExato = String(nome).toLowerCase().trim();
+    let p = pastas.find(x => x.name.toLowerCase().trim() === nomeExato);
+    if (p) return p;
+    p = pastas.find(x => normalizarNome(x.name) === alvo);
+    if (p) return p;
+    return pastas.find(x => normalizarNome(x.name).includes(alvo)) || null;
+  }
+
+  function capturarCanvas() {
+    const canvases = [...document.querySelectorAll('canvas')]
+      .filter(c => c.offsetWidth > 100 && c.offsetHeight > 100)
+      .sort((a, b) => (b.width * b.height) - (a.width * a.height));
+    for (const c of canvases) {
+      try {
+        const d = c.toDataURL('image/png');
+        if (d && d.length > 200) return d;
+      } catch (e) {}
+    }
+    return null;
+  }
+
+  async function salvarPrintNaPasta(folderId, folderNome) {
+    const dataUrl = capturarCanvas();
+    if (!dataUrl) {
+      falar('Falha ao capturar');
+      showToast('Nenhum canvas capturável');
+      return;
+    }
+    const nome = 'print-' + new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19) + '.png';
+    try {
+      await dbPutPhoto({ id: uid(), dataUrl, name: nome, createdAt: Date.now(), folderId });
+      renderGallery();
+      falar('Captura feita');
+      showToast(folderNome ? `Print salvo em "${folderNome}"` : 'Print salvo');
+    } catch (e) {
+      falar('Falha ao salvar');
+      showToast('Falha ao salvar print');
+    }
+  }
+
+  function comandoPrint()      { salvarPrintNaPasta(currentFolderId, null); }
+  function comandoPrintRaiz()  { salvarPrintNaPasta(null, null); }
+  async function comandoPrintNaPasta(nome) {
+    const pasta = await encontrarPastaPorNome(nome);
+    if (!pasta) { falar('Pasta não encontrada'); showToast(`Pasta "${nome}" não existe`); return; }
+    salvarPrintNaPasta(pasta.id, pasta.name);
+  }
+
+  // ─── Registro ───
+  const voiceHandlers = [];
+
+  function registrarComandosVoz() {
+    if (!window._voiceCommands?.registrar) return false;
+    if (voiceHandlers.length) return true;
+
+    const R = (re, cb) => {
+      const wrapped = (texto, norm) => {
+        try { cb(texto, norm); }
+        catch (e) { console.error('[Galeria] handler voz:', e); }
+        return true;
+      };
+      window._voiceCommands.registrar(re, wrapped, 0);
+      voiceHandlers.push(wrapped);
+    };
+
+    // Painel / abas
+    R(/^(abrir?|abre|abra|ativar?|ativa|ligar?|liga|mostrar?|mostra)\s+(a\s+)?(galeria|fotos)$/,
+      () => { abrirPainel(); irParaAba('gallery'); });
+
+    R(/^(abrir?|abre|abra|ativar?|ativa|ligar?|liga|mostrar?|mostra)\s+(a\s+)?(notas|anotacoes|anotações)$/,
+      () => { abrirPainel(); irParaAba('notes'); });
+
+    R(/^(fechar?|feche|fecha|esconder?|esconde|desativar?|desativa|desligar?|desliga)\s+(a\s+)?(galeria|fotos|notas|anotacoes|anotações)$/,
+      () => fecharPainel());
+
+    // Pasta: criar (só abre input)
+    R(/^(criar?|cria|nova?|novo|adicionar?|adiciona)\s+pasta$/,
+      () => { abrirPainel(); irParaAba('gallery'); newFolderBtn.click(); newFolderInput.focus(); });
+
+    // Pasta: criar com nome
+    R(/^(criar?|cria|nova?|novo|adicionar?|adiciona)\s+pasta\s+.+$/,
+      async (texto) => {
+        const m = texto.match(/pasta\s+(?:chamada\s+|com\s+nome\s+)?(.+)$/i);
+        const nome = m ? m[1].trim().slice(0, 40) : '';
+        if (!nome) return;
+        await dbPutFolder({ id: uid(), name: nome, createdAt: Date.now() });
+        showToast(`Pasta "${nome}" criada`);
+        renderGallery();
+      });
+
+    // Pasta: abrir por nome
+    R(/^(abrir?|abre|abra|entrar?|entra|ir\s+para)\s+(?:na\s+)?pasta\s+.+$/,
+      async (texto) => {
+        const m = texto.match(/pasta\s+(.+)$/i);
+        const nome = m ? m[1].trim() : '';
+        const pasta = await encontrarPastaPorNome(nome);
+        if (!pasta) { showToast(`Pasta "${nome}" não existe`); return; }
+        currentFolderId = pasta.id;
+        abrirPainel(); irParaAba('gallery');
+        renderGallery();
+        showToast(`Pasta "${pasta.name}" aberta`);
+      });
+
+    // Pasta: voltar para o início
+    R(/^(voltar?|volta)\s+(para\s+)?(o\s+)?(inicio|início|raiz|home)$/,
+      () => { currentFolderId = null; renderGallery(); showToast('Voltando para o início'); });
+
+    // Pasta: listar
+    R(/^listar?\s+pastas$/,
+      async () => {
+        const pastas = await dbGetAllFolders();
+        if (!pastas.length) { showToast('Nenhuma pasta'); return; }
+        const nomes = pastas.slice(0, 5).map(p => `"${p.name}"`).join(', ');
+        showToast(pastas.length + (pastas.length === 1 ? ' pasta: ' : ' pastas: ') + nomes + (pastas.length > 5 ? '…' : ''));
+      });
+
+    // Pasta: excluir atual
+    R(/^(excluir?|apagar?|deletar?|remover?)\s+(a\s+)?pasta\s+atual$/,
+      async () => {
+        if (currentFolderId === null) { showToast('Nenhuma pasta aberta'); return; }
+        const pastas = await dbGetAllFolders();
+        const f = pastas.find(x => x.id === currentFolderId);
+        if (f) softDeleteFolder(f);
+      });
+
+    // Seleção
+    R(/^(selecionar?|seleciona|marcar?|marca)\s+tudo$/,
+      () => {
+        if (!currentVisiblePhotos.length) { showToast('Nenhuma foto para selecionar'); return; }
+        if (!selectionMode) selectionMode = true;
+        selectedIds = new Set(currentVisiblePhotos.map(p => p.id));
+        renderGallery();
+        showToast(selectedIds.size + ' fotos selecionadas');
+      });
+
+    R(/^(desmarcar?|desmarca|limpar?|limpa|cancelar?|cancela)\s+(selecao|seleção|tudo)$/,
+      () => { selectedIds = new Set(); renderGallery(); showToast('Seleção limpa'); });
+
+    R(/^(mover?|move)\s+(a\s+)?(selecao|seleção|selecionadas?)$/,
+      () => {
+        if (!selectedIds.size) { showToast('Nada selecionado'); return; }
+        abrirPainel(); irParaAba('gallery');
+        openMoveMenu(selMoveBtn, null, (targetId) => bulkMoveSelected(targetId));
+      });
+
+    R(/^(excluir?|exclui|apagar?|apaga|deletar?|deleta|remover?|remove)\s+(a\s+)?(selecao|seleção|selecionadas?)$/,
+      () => { if (!selectedIds.size) { showToast('Nada selecionado'); return; } bulkSoftDeleteSelected(); });
+
+    // Lightbox
+    R(/^(proxima|próxima|avancar?|avanca|avança|proximo|próximo)\s*(foto|imagem)?$/,
+      () => { if (!lightbox.classList.contains('open')) { showToast('Nenhuma imagem aberta'); return; } lbNext.click(); });
+
+    R(/^(anterior|retroceder?|retrocede)\s*(foto|imagem)?$/,
+      () => { if (!lightbox.classList.contains('open')) { showToast('Nenhuma imagem aberta'); return; } lbPrev.click(); });
+
+    R(/^(fechar?|feche|fecha)\s+(a\s+)?(imagem|foto|lightbox)$/,
+      () => { if (lightbox.classList.contains('open')) lightbox.classList.remove('open'); });
+
+    // Notas
+    R(/^(criar?|cria|nova?|novo|adicionar?|adiciona)\s+(anotacao|anotação|nota)$/,
+      () => novaNotaRapida());
+
+    R(/^(salvar?|salva)\s+nota$/,
+      () => { abrirPainel(); irParaAba('notes'); showToast('Notas salvam automaticamente'); });
+
+    R(/^(concluir?|conclui|finalizar?|finaliza)(\s+(nota|anotacao|anotação))?$/,
+      () => { abrirPainel(); irParaAba('notes'); showToast('Notas salvam automaticamente'); });
+
+    // Print
+    R(/^(tirar?|tira)\s+print$/, comandoPrint);
+    R(/^(capturar?|captura)\s+(a\s+)?tela$/, comandoPrint);
+    R(/^print$/, comandoPrint);
+    R(/^(salvar?|salva)\s+(solto|solta|na\s+raiz|no\s+inicio|no\s+início)$/, comandoPrintRaiz);
+
+    R(/^(salvar?|salva|tirar?|tira|capturar?|captura)\s+(?:print\s+)?na\s+pasta\s+.+$/,
+      async (texto) => {
+        const m = texto.match(/pasta\s+(.+)$/i);
+        await comandoPrintNaPasta(m ? m[1].trim() : '');
+      });
+
+    // Backup
+    R(/^(exportar?|exporta|fazer?|faz|salvar?|salva)\s+(backup|backup\s+da\s+galeria)$/,
+      () => exportBackup());
+
+    R(/^(exportar?|exporta)\s+(galeria|fotos|notas)$/,
+      () => exportBackup());
+
+    return true;
+  }
+
+  function limparComandosVoz() {
+    if (!window._voiceCommands?.remover) return;
+    voiceHandlers.forEach(h => window._voiceCommands.remover(h));
+    voiceHandlers.length = 0;
+  }
+
+  if (!registrarComandosVoz()) {
+    window.addEventListener('sang:voz-ready', registrarComandosVoz, { once: true });
+  }
+
   initPosition();
   renderGallery();
   renderNotes();
@@ -725,6 +966,8 @@ input[type=file]{display:none}
     kill() {
       if (pending) commitPending();
       closeMoveMenu();
+      limparComandosVoz();
+      if (window.speechSynthesis) { try { speechSynthesis.cancel(); } catch (e) {} }
       cleanup.forEach((fn) => { try { fn(); } catch (e) {} });
       host.remove();
       delete window[_galeria];
