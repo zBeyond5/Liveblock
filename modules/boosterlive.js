@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LiveBooster [by SANG]
 // @namespace    livebooster-sang
-// @version      5.0.0
+// @version      5.0.1
 // @description  Otimizador de performance
 // @match        *://*.habblive.in/*
 // @match        *://habblive.in/*
@@ -16,14 +16,10 @@
   const STORAGE_KEY = 'livebooster-settings';
   let alive = true;
 
-  // Reinjeção
   if (window[INSTANCE_KEY]?.kill) {
-    try { window[INSTANCE_KEY].kill(); } catch (e) { /* instância anterior corrompida, ignora */ }
+    try { window[INSTANCE_KEY].kill(); } catch (e) {}
   }
 
-  // ==========================================================
-  // Configurações
-  // ==========================================================
   const DEFAULTS = {
     liteMode: false,
     autoLite: true,
@@ -74,9 +70,6 @@
     catch (e) { console.warn('[LiveBooster] falha ao salvar settings:', e); }
   }
 
-  // ==========================================================
-  // GPU Boost
-  // ==========================================================
   const GpuBoost = {
     originalGetContext: null,
     observer: null,
@@ -110,7 +103,6 @@
       const main = canvases.reduce((a, b) => (a.width * a.height >= b.width * b.height ? a : b));
       if (this.boostedCanvases.has(main)) return;
 
-      // Remove boost de qualquer canvas antigo que não seja mais o principal
       canvases.forEach(c => {
         if (c !== main && this.boostedCanvases.has(c)) {
           this.unboostCanvas(c);
@@ -142,14 +134,11 @@
     }
   };
 
-  // ==========================================================
-  // Force FPS Manager
-  // ==========================================================
   const FPSManager = {
     timeoutId: null,
     forced: false,
     attempt: 0,
-    delays: [1000, 2000, 3000, 5000, 8000, 13000, 20000], // backoff, depois para
+    delays: [1000, 2000, 3000, 5000, 8000, 13000, 20000],
 
     start() {
       if (this.timeoutId || this.forced) return;
@@ -164,7 +153,7 @@
 
     scheduleNext() {
       if (this.attempt >= this.delays.length) {
-        console.warn('[LiveBooster] Não foi possível localizar um controle de FPS. Ajuste manual pode ser necessário.');
+        console.warn('[LiveBooster] Não foi possível localizar um controle de FPS.');
         return;
       }
       const delay = this.delays[this.attempt++];
@@ -226,7 +215,7 @@
           el.click();
           return true;
         }
-      } catch (e) { /* elemento hostil/inacessível, ignora */ }
+      } catch (e) {}
       return false;
     },
 
@@ -282,7 +271,7 @@
               obj[prop] = 120;
               return true;
             }
-          } catch (e) { /* getter/setter hostil, ignora */ }
+          } catch (e) {}
         }
       }
       return false;
@@ -295,13 +284,10 @@
     }
   };
 
-  // ==========================================================
-  // Upscaling
-  // ==========================================================
   const Upscale = {
     observer: null,
     originalData: new WeakMap(),
-    remapRegistry: new WeakMap(), // canvas -> { addEventListener, removeEventListener, map }
+    remapRegistry: new WeakMap(),
 
     createRemappedEvent(e, scaleX, scaleY) {
       const COORD_PROPS_X = ['clientX', 'pageX', 'screenX', 'offsetX'];
@@ -396,8 +382,6 @@
       document.querySelectorAll('canvas').forEach(c => this.applyToCanvas(c));
     },
 
-    trackedCanvases: new Set(),
-
     startObserver() {
       if (this.observer) return;
       this.observer = new MutationObserver(mutations => {
@@ -436,9 +420,16 @@
     }
   };
 
-  // ==========================================================
-  // Lite Mode
-  // ==========================================================
+  // ============================================================
+  // LiteMode — exclui o Hub e seus filhos das regras pesadas
+  // IDs do hub: #_hub, #_hubpill (panel e pill do hub2.js)
+  // ============================================================
+  const HUB_EXCLUDE = [
+    '#_hub', '#_hub *',
+    '#_hubpill', '#_hubpill *',
+    '#lb-panel', '#lb-panel *'
+  ].map(s => ':not(' + s + ')').join('');
+
   const LiteMode = {
     styleEl: null,
 
@@ -447,7 +438,7 @@
       const el = document.createElement('style');
       el.id = 'lb-lite-style';
       el.textContent = `
-        *, *::before, *::after {
+        *${HUB_EXCLUDE} {
           animation: none !important;
           transition: none !important;
           box-shadow: none !important;
@@ -457,7 +448,7 @@
           background-attachment: initial !important;
         }
         img, canvas, video { image-rendering: optimizeSpeed !important; }
-        *:not(#lb-panel):not(#lb-panel *) { will-change: auto !important; }
+        *${HUB_EXCLUDE} { will-change: auto !important; }
       `;
       this.styleEl = el;
       return el;
@@ -476,14 +467,11 @@
     }
   };
 
-  // ==========================================================
-  // Otimização de canvas
-  // ==========================================================
   function optimizeCanvas(c) {
     try {
       const ctx = c.getContext('2d');
       if (ctx) ctx.imageSmoothingEnabled = false;
-    } catch (e) { /* contexto pode já estar em uso por webgl, ignora */ }
+    } catch (e) {}
   }
 
   let canvasObserver = null;
@@ -531,9 +519,6 @@
     throttledEvents.clear();
   }
 
-  // ==========================================================
-  // Loop de medição de FPS
-  // ==========================================================
   let rafId = null;
   let lastTime = performance.now(), frames = 0, lastFpsUpdate = lastTime;
   let currentFps = 60, lastFrameTime = 16.67;
@@ -557,11 +542,6 @@
     rafId = requestAnimationFrame(fpsLoop);
   }
 
-  // ==========================================================
-  // UI — LiveBooster [by SANG]
-  // Construída com Shadow DOM (isolamento total de CSS do host,
-  // sem depender de CDN externo — mais robusto e mais rápido).
-  // ==========================================================
   const UI = {
     host: null,
     shadow: null,
@@ -809,7 +789,6 @@
           color: rgba(255,255,255,0.25); border-top: 1px solid rgba(255,255,255,0.05);
         }
 
-        /* ---------- Modo mini (overlay estilo "in-game") ---------- */
         .lb-mini {
           display: none;
           align-items: baseline;
@@ -834,7 +813,6 @@
           text-shadow: 0 1px 2px rgba(0,0,0,0.9);
         }
 
-        /* Quando minimizado: some o card, aparece só o overlay mini */
         :host(.lb-mini-mode) .lb-card { display: none; }
         :host(.lb-mini-mode) .lb-mini { display: flex; }
       `;
@@ -859,7 +837,6 @@
     },
 
     bindEvents() {
-      // Tabs
       this.refs.tabs.forEach(tab => {
         tab.addEventListener('click', () => {
           this.refs.tabs.forEach(t => t.classList.remove('active'));
@@ -869,7 +846,6 @@
         });
       });
 
-      // Toggles booleanos genéricos
       this.refs.toggles.forEach(input => {
         input.addEventListener('change', (e) => {
           const key = e.target.dataset.setting;
@@ -877,27 +853,22 @@
         });
       });
 
-      // Upscale factor
       this.refs.upscaleFactor.value = String(settings.upscaleFactor);
       this.refs.upscaleFactor.addEventListener('change', (e) => {
         Upscale.changeFactor(parseFloat(e.target.value));
       });
 
-      // Cores
       this.refs.swatches.forEach(btn => {
         btn.addEventListener('click', () => this.setAccent(btn.dataset.color));
       });
       this.refs.colorInput.addEventListener('input', (e) => this.setAccent(e.target.value));
 
-      // Collapse -> modo mini
       this.refs.collapseBtn.addEventListener('click', () => this.setMiniMode(true));
       this.refs.mini.addEventListener('dblclick', () => this.setMiniMode(false));
 
-      // Drag
       this.attachDragHandle(this.refs.header);
       this.attachDragHandle(this.refs.mini);
 
-      // Atalho global
       this._onKeyDown = (e) => {
         if (e.altKey && e.shiftKey && e.key.toLowerCase() === 'o') {
           e.preventDefault();
@@ -956,7 +927,6 @@
       if (fps < 25) color = '#fb7185';
       else if (fps < 50) color = '#fbbf24';
 
-      // Painel completo (anel)
       this.refs.fpsValue.textContent = fps;
       this.refs.frameTime.textContent = frameTime.toFixed(1) + ' ms';
       this.refs.ringFill.style.stroke = color;
@@ -964,7 +934,6 @@
       const pct = Math.min(1, fps / 60);
       this.refs.ringFill.style.strokeDashoffset = String(264 * (1 - pct));
 
-      // Overlay mini (modo minimizado)
       if (this.refs.miniFps) {
         this.refs.miniFps.textContent = fps;
         this.refs.mini.style.setProperty('--lb-fps-color', color);
@@ -1051,9 +1020,6 @@
     }
   };
 
-  // ==========================================================
-  // Inicialização
-  // ==========================================================
   function init() {
     if (settings.gpuBoost) GpuBoost.apply();
     if (settings.force120Fps) FPSManager.start();
