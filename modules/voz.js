@@ -20,7 +20,7 @@
         pontuacao: 'pausa',
         pausaVirgulaMs: 250,
         modoComando: 'prefixo',
-        maxCharsFallback: 180,
+        maxCharsFallback: 100,
         delayEntreBlocos: 320
     };
 
