@@ -20,9 +20,12 @@
         pontuacao: 'pausa',
         pausaVirgulaMs: 250,
         modoComando: 'prefixo',
+        streaming: true,
         maxCharsFallback: 100,
         delayEntreBlocos: 320
     };
+
+    const MIN_INTERVALO_STREAM = 350;  // ms entre envios contínuos
 
     // ─── Persistência ───
     const loadConfig = () => {
@@ -188,21 +191,20 @@
     }
 
     // Divide texto em blocos que caibam no limite do chat, cortando em espaços
-    // quando possível. Sempre tenta cortar em 60% do limite pra não deixar
-    // blocos curtos demais no fim.
+    // quando possível. Não fatia palavra no meio; evita deixar conector solto
+    // no fim do bloco pra continuar a frase naturalmente no próximo.
     function dividirEmBlocos(texto, maxLen) {
         const t = String(texto || '').trim();
         if (!t) return [];
         if (t.length <= maxLen) return [t];
         const blocos = [];
         let resto = t;
+        const CONECTORES_BLOCO = new Set(['e','ou','mas','que','porque','pois','de','do','da','no','na','em','com','por','pra','para','a','o']);
         while (resto.length > maxLen) {
             let corte = resto.lastIndexOf(' ', maxLen);
             if (corte < Math.floor(maxLen * 0.6)) corte = maxLen;
             let bloco = resto.slice(0, corte).trimEnd();
-            // Evita terminar em conector solto (o próximo bloco continua a frase)
             const ultima = bloco.split(/\s+/).pop()?.toLowerCase();
-            const CONECTORES_BLOCO = new Set(['e','ou','mas','que','porque','pois','de','do','da','no','na','em','com','por','pra','para','a','o']);
             if (ultima && CONECTORES_BLOCO.has(ultima) && bloco.length > 20) {
                 bloco = bloco.slice(0, bloco.length - ultima.length).trimEnd();
             }
@@ -294,7 +296,7 @@
         .preview-hdr .dot { width: 7px; height: 7px; border-radius: 50%; }
         .preview-hdr .dot.interim { background: #f5b942; animation: pulse 1s infinite; }
         .preview-hdr .dot.final   { background: #34d399; }
-        .preview-hdr .dot.envio   { background: #22d3ee; animation: pulse .8s infinite; }
+        .preview-hdr .dot.envio   { background: #22d3ee; animation: pulse .6s infinite; }
         .preview-hdr .aviso {
             margin-left: auto; font-size: 9px; font-weight: 700;
             padding: 2px 6px; border-radius: 4px;
@@ -309,8 +311,8 @@
             border: 1px solid rgba(34,211,238,.3);
         }
         .preview-hdr .aviso.envio {
-            color: #22d3ee; background: rgba(34,211,238,.18);
-            border: 1px solid rgba(34,211,238,.4);
+            color: #22d3ee; background: rgba(34,211,238,.2);
+            border: 1px solid rgba(34,211,238,.45);
         }
         .preview-texto { line-height: 1.4; word-break: break-word; min-height: 1.4em; }
         .preview-texto .interim { color: #8b8fa3; font-style: italic; }
@@ -329,10 +331,6 @@
             border-color: transparent;
         }
         .preview-acoes button.primario:hover { filter: brightness(1.15); }
-        .preview-acoes button.stop {
-            background: linear-gradient(135deg, #ef4444, #b91c1c);
-            border-color: transparent;
-        }
 
         .popover {
             position: fixed;
@@ -343,12 +341,16 @@
             color: #e8e8f0;
             font-size: 12px;
             font-family: -apple-system, system-ui, sans-serif;
-            width: 280px;
+            width: 290px;
             box-shadow: 0 12px 32px rgba(0,0,0,.8);
             display: none;
             z-index: 2147483001;
+            max-height: 90vh;
+            overflow-y: auto;
         }
         .popover.visivel { display: block; }
+        .popover::-webkit-scrollbar { width: 5px; }
+        .popover::-webkit-scrollbar-thumb { background: rgba(139,92,246,.4); border-radius: 3px; }
         .popover h3 {
             margin: 0 0 12px; font-size: 11px; font-weight: 800;
             text-transform: uppercase; letter-spacing: .08em; color: #a78bfa;
@@ -465,17 +467,25 @@
                     <option value="livre">Livre (atual)</option>
                 </select>
             </div>
+            <div class="campo">
+                <label>Envio contínuo</label>
+                <select id="cfgStreaming">
+                    <option value="on">Ativado (envia enquanto fala)</option>
+                    <option value="off">Desativado (junta tudo)</option>
+                </select>
+            </div>
             <div class="ajuda">
                 <strong>Modo prefixado:</strong> comandos começam com
                 <code>menu</code>, <code>sang</code>, <code>comando</code> ou <code>catapimbas</code>.
                 Ex: <code>sang abrir iptv</code>.<br><br>
                 <strong>Exceção:</strong> <code>abrir menu</code> e <code>fechar menu</code>
                 funcionam sem prefixo.<br><br>
+                <strong>Envio contínuo:</strong> quando a transcrição bate no limite do
+                chat, ela é enviada na hora e o restante continua acumulando. Desligue
+                se preferir mandar tudo de uma vez no fim.<br><br>
                 <strong>Modo livre:</strong> comandos disparam direto, como antes.
                 <code>enviar</code> força envio, <code>cancelar</code> limpa.
-                Use <code>digitar</code> para forçar texto ao chat.<br><br>
-                <strong>Textos longos:</strong> o módulo divide automaticamente em blocos
-                que caibam no chat e envia em sequência.
+                Use <code>digitar</code> para forçar texto ao chat.
                 <div class="dica-foco">💡 Pausa sozinho quando você troca de aba ou janela.</div>
             </div>
         `;
@@ -489,12 +499,14 @@
         const cfgLang = popover.querySelector('#cfgLang');
         const cfgPontuacao = popover.querySelector('#cfgPontuacao');
         const cfgModoComando = popover.querySelector('#cfgModoComando');
+        const cfgStreaming = popover.querySelector('#cfgStreaming');
 
         cfgModo.value = config.modo;
         cfgSilencio.value = String(config.silencioMs);
         cfgLang.value = config.lang;
         cfgPontuacao.value = config.pontuacao;
         cfgModoComando.value = config.modoComando;
+        cfgStreaming.value = config.streaming ? 'on' : 'off';
 
         // ─── Estado ───
         let rec = null;
@@ -510,6 +522,8 @@
         let enviando = false;
         let enviandoGen = 0;
         let silencioAte = 0;
+        let ultimoStreamEm = 0;
+        let flashTimer = null;
 
         window.addEventListener('sang:voz-silenciar', (e) => {
             silencioAte = Date.now() + (e?.detail?.ms || 1500);
@@ -572,6 +586,9 @@
                     nivelEl.classList.remove('pico');
                 }, 350);
 
+                // Tenta enviar em pedaços antes mesmo da pausa
+                tentarStreaming();
+
                 renderPreview();
                 posicionarPreview();
             };
@@ -621,6 +638,7 @@
             enviandoGen++;
             ativo = false;
             if (timerRestart) { clearTimeout(timerRestart); timerRestart = null; }
+            if (flashTimer) { clearTimeout(flashTimer); flashTimer = null; }
             if (rec) {
                 try { rec.onend = null; rec.stop(); } catch {}
                 rec = null;
@@ -687,7 +705,7 @@
             if (!pausado) return;
             pausado = false;
             fab.classList.remove('pausado');
-            if (habilitado) _iniciarCaptura();
+            if (habilitado) _iniciarCaptapa();
         }
 
         function verificarFoco() {
@@ -709,7 +727,7 @@
             if (timerSilencio) return;
             timerSilencio = setInterval(() => {
                 if (!ativo || config.modo !== 'auto') return;
-                if (enviando) return; // já estamos mandando blocos
+                if (enviando) return;
                 const t = (textoFinal + textoInterim).trim();
                 if (!t || t.length < config.minChars) return;
                 if (terminaComConector(t)) return;
@@ -732,8 +750,7 @@
 
         // ─── Preview ───
         function renderPreview() {
-            if (enviando && preview.dataset.modoEnvio === '1') return; // não sobrescreve o contador
-
+            if (preview.dataset.busy === '1') return;
             const completo = (textoFinal + textoInterim).trim();
             if (!completo || !ativo) {
                 preview.classList.remove('visivel');
@@ -763,18 +780,17 @@
             preview.classList.add('visivel');
         }
 
-        function mostrarEnvio(i, total, bloco) {
-            if (total <= 1) return;
-            txtEl.textContent = bloco;
-            preview.querySelector('.dot').className = 'dot envio';
-            avisoEl.textContent = `📤 ${i}/${total}`;
+        function flashEnvio(len) {
+            preview.dataset.busy = '1';
+            avisoEl.textContent = `📤 ${len} enviados`;
             avisoEl.className = 'aviso envio';
-            preview.dataset.modoEnvio = '1';
-            preview.classList.add('visivel');
-        }
-
-        function limparModoEnvio() {
-            delete preview.dataset.modoEnvio;
+            preview.querySelector('.dot').className = 'dot envio';
+            if (flashTimer) clearTimeout(flashTimer);
+            flashTimer = setTimeout(() => {
+                flashTimer = null;
+                delete preview.dataset.busy;
+                renderPreview();
+            }, 550);
         }
 
         function posicionarPreview() {
@@ -790,6 +806,66 @@
             }
             preview.style.left = Math.min(left, window.innerWidth - 470) + 'px';
             preview.style.top = Math.min(top, window.innerHeight - 140) + 'px';
+        }
+
+        // ─── Verifica se o texto acumulado parece comando ───
+        // Se sim, não streama: espera a pausa pra deixar o despachante decidir.
+        function ehInicioDeComando(texto) {
+            const n = normalize(texto);
+            if (PREFIXO_COMANDO.test(n)) return true;
+            if (COMANDO_MENU_SEM_PREFIXO.test(n)) return true;
+            if (config.modoComando === 'livre' && window._voiceCommands.tem(n)) return true;
+            return false;
+        }
+
+        // ─── Envio contínuo ───
+        // Quando o texto acumulado bate o limite do chat, corta o pedaço que cabe
+        // e envia na hora, guardando o resto pra continuar acumulando.
+        function tentarStreaming() {
+            if (!config.streaming) return;
+            if (enviando) return;
+            if (!ativo) return;
+            if (textoFinal.length < 20) return;
+            if (Date.now() - ultimoStreamEm < MIN_INTERVALO_STREAM) return;
+
+            const inp = encontrarInputChat();
+            if (!inp) return;
+            const maxLen = maxLenDoInput(inp);
+
+            if (textoFinal.length < maxLen) return;
+
+            // Segura se está claramente começando um comando (a menos que
+            // já tenha passado muito do limite, indicando que não é comando).
+            if (ehInicioDeComando(textoFinal) && textoFinal.length < maxLen * 2) return;
+
+            // Corta no último espaço dentro do limite
+            let corte = textoFinal.lastIndexOf(' ', maxLen);
+            if (corte < Math.floor(maxLen * 0.5)) corte = maxLen;
+            const bloco = textoFinal.slice(0, corte).trimEnd();
+            if (!bloco) return;
+
+            // Reserva o resto
+            textoFinal = textoFinal.slice(bloco.length).trimStart();
+
+            // Marca ANTES de enviar (evita reentrada)
+            enviando = true;
+            ultimoStreamEm = Date.now();
+
+            try {
+                setInputValue(inp, bloco);
+                inp.focus();
+            } catch (e) {
+                enviando = false;
+                return;
+            }
+
+            setTimeout(() => {
+                try { pressEnter(inp); } catch {}
+                enviando = false;
+                flashEnvio(bloco.length);
+                // Continua se ainda tem muito texto acumulado
+                tentarStreaming();
+            }, 60);
         }
 
         // ─── Formatação via Sang AI ───
@@ -833,7 +909,7 @@
             }
         }
 
-        // ─── Envio de UM bloco (retorna true se conseguiu) ───
+        // ─── Envio de um bloco ───
         async function enviarBloco(bloco, combinavel) {
             for (let tentativa = 0; tentativa < 3; tentativa++) {
                 const inp = encontrarInputChat();
@@ -854,7 +930,7 @@
             return false;
         }
 
-        // ─── Envio ───
+        // ─── Envio final (pausa, Enter, botão) ───
         async function enviar(forcado) {
             if (enviando) return;
 
@@ -920,37 +996,33 @@
                     }
                 }
 
-                // Descobre o limite do chat
                 const inp = encontrarInputChat();
                 const maxLen = maxLenDoInput(inp);
-
-                // Divide em blocos
                 const blocos = dividirEmBlocos(texto, maxLen);
 
-                // Limpa buffer ANTES de enviar — se o usuário falar mais, entra nos próximos
                 textoFinal = '';
                 textoInterim = '';
                 ultimoResultadoEm = 0;
 
-                // Envia bloco por bloco
                 for (let i = 0; i < blocos.length; i++) {
-                    if (gen !== enviandoGen) { limparModoEnvio(); return; }
-
-                    if (blocos.length > 1) mostrarEnvio(i + 1, blocos.length, blocos[i]);
-
+                    if (gen !== enviandoGen) return;
+                    if (blocos.length > 1) {
+                        preview.dataset.busy = '1';
+                        txtEl.textContent = blocos[i];
+                        avisoEl.textContent = `📤 ${i + 1}/${blocos.length}`;
+                        avisoEl.className = 'aviso envio';
+                    }
                     const ok = await enviarBloco(blocos[i], i === 0);
                     if (!ok) {
                         avisoEl.textContent = '⚠ chat não encontrado';
                         avisoEl.className = 'aviso cmd';
                         break;
                     }
-
                     if (i < blocos.length - 1) {
                         await new Promise(r => setTimeout(r, config.delayEntreBlocos));
                     }
                 }
-
-                limparModoEnvio();
+                delete preview.dataset.busy;
                 renderPreview();
             } finally {
                 enviando = false;
@@ -962,7 +1034,8 @@
             textoFinal = '';
             textoInterim = '';
             ultimoResultadoEm = 0;
-            limparModoEnvio();
+            if (flashTimer) { clearTimeout(flashTimer); flashTimer = null; }
+            delete preview.dataset.busy;
             renderPreview();
         }
 
@@ -1011,8 +1084,8 @@
         fab.addEventListener('contextmenu', e => {
             e.preventDefault();
             const r = fab.getBoundingClientRect();
-            popover.style.left = Math.max(10, Math.min(r.left - 290, window.innerWidth - 300)) + 'px';
-            popover.style.top = Math.min(r.top, window.innerHeight - 500) + 'px';
+            popover.style.left = Math.max(10, Math.min(r.left - 300, window.innerWidth - 310)) + 'px';
+            popover.style.top = Math.min(r.top, window.innerHeight - 540) + 'px';
             popover.classList.toggle('visivel');
         });
 
@@ -1036,6 +1109,10 @@
             config.modoComando = cfgModoComando.value;
             saveConfig(config);
             renderPreview();
+        });
+        cfgStreaming.addEventListener('change', () => {
+            config.streaming = cfgStreaming.value === 'on';
+            saveConfig(config);
         });
 
         // ─── Popover fecha ao clicar fora ───
@@ -1091,6 +1168,7 @@
                 window.removeEventListener('resize', onResize);
                 if (timerRestart) clearTimeout(timerRestart);
                 if (timerSilencio) clearInterval(timerSilencio);
+                if (flashTimer) clearTimeout(flashTimer);
                 host.remove();
                 delete window[UID];
             },
