@@ -1,3 +1,4 @@
+// modules/voz.js — fala vira texto no chat do Habbo
 (function() {
     'use strict';
     const UID = '_voz';
@@ -48,7 +49,7 @@
     ];
 
     const COMANDOS_RESERVADOS = [
-        /^(abrir?|abre|abra|ativar?|ativa|ligar?|liga|iniciar?|inicia|fechar?|feche|fecha|desativar?|desativa|desligar?|desliga|parar?|para)\s+(o\s+|a\s+|os\s+|as\s+)?(menu|iptv|tv|youtube|yt|packet|blocklive|liveblock|adblock|bloqueador|booster|jogos|games|gameslive|photoswap|fotoswap|foto|prozilla|galeria|voz|chat|groq|gemini)$/,
+        /^(abrir?|abre|abra|ativar?|ativa|ligar?|liga|iniciar?|inicia|fechar?|feche|fecha|desativar?|desativa|desligar?|desliga|parar?|para)\s+(o\s+|a\s+|os\s+|as\s+)?(menu|iptv|tv|youtube|yt|packet|blocklive|liveblock|adblock|bloqueador|booster|jogos|games|gameslive|photoswap|fotoswap|foto|prozilla|galeria|voz|chat|groq|gemini|sang)$/,
         /^(mostrar?|mostra|esconder?|esconde|abrir?|abre|fechar?|fecha)\s+menu$/,
         /^menu$/,
         /^(modo\s+)?(voz|microfone|mic)$/,
@@ -152,7 +153,7 @@
             display: flex; align-items: center; justify-content: center;
             cursor: pointer; user-select: none; touch-action: none;
             box-shadow: 0 6px 20px rgba(0,0,0,.5);
-            transition: transform .15s, background .15s, border-color .15s;
+            transition: transform .15s, background .15s, border-color .15s, opacity .2s;
             color: #b8b8d0;
         }
         .fab:hover { transform: scale(1.08); color: #fff; }
@@ -162,6 +163,16 @@
             animation: pulse 1.5s ease-in-out infinite;
         }
         .fab.hearing { animation: pulse 1.5s ease-in-out infinite, hear .35s ease-out; }
+        .fab.pausado { opacity: .55; }
+        .fab.pausado::after {
+            content: '⏸';
+            position: absolute; top: -3px; right: -3px;
+            background: #f5b942; color: #1a1410;
+            font-size: 9px; font-weight: 900;
+            width: 14px; height: 14px; border-radius: 50%;
+            display: flex; align-items: center; justify-content: center;
+            box-shadow: 0 2px 6px rgba(0,0,0,.5);
+        }
         @keyframes pulse {
             0%,100% { box-shadow: 0 6px 20px rgba(239,68,68,.4), 0 0 0 0 rgba(239,68,68,.6); }
             50% { box-shadow: 0 6px 20px rgba(239,68,68,.6), 0 0 0 14px rgba(239,68,68,0); }
@@ -273,6 +284,10 @@
             border-radius: 3px; font-size: 9.5px;
             font-family: ui-monospace, Menlo, Consolas, monospace;
         }
+        .ajuda .dica-foco {
+            display: flex; align-items: flex-start; gap: 6px;
+            color: #f5b942; margin-top: 8px;
+        }
         `;
         root.appendChild(style);
 
@@ -349,7 +364,7 @@
                 <select id="cfgPontuacao">
                     <option value="off">Nenhuma</option>
                     <option value="pausa">Vírgula nas pausas</option>
-                    <option value="groq">Formatar com Groq</option>
+                    <option value="groq">Formatar com Sang AI</option>
                 </select>
             </div>
             <div class="ajuda">
@@ -358,6 +373,7 @@
                 filtrados automaticamente.<br><br>
                 Para forçar qualquer texto ao chat, use <code>digitar</code>.
                 Ex: <code>digitar enviar</code>.
+                <div class="dica-foco">💡 Pausa sozinho quando você troca de aba ou janela.</div>
             </div>
         `;
         root.appendChild(popover);
@@ -377,7 +393,8 @@
 
         // ─── Estado ───
         let rec = null;
-        let ativo = false;
+        let ativo = false;         // está escutando agora
+        let pausado = false;       // foi pausado por perda de foco (retoma quando voltar)
         let textoFinal = '';
         let textoInterim = '';
         let ultimoResultadoEm = 0;
@@ -399,6 +416,7 @@
                 tentativasRestart = 0;
                 ativo = true;
                 fab.classList.add('ativo');
+                fab.classList.remove('pausado');
             };
 
             r.onresult = (event) => {
@@ -443,7 +461,8 @@
                 if (tipo === 'no-speech' || tipo === 'aborted') return;
                 if (tipo === 'not-allowed' || tipo === 'service-not-allowed') {
                     console.warn('[Voz] Permissão de microfone negada.');
-                    desligar();
+                    _parar();
+                    pausado = false;
                     return;
                 }
                 if (tipo === 'network') {
@@ -458,7 +477,8 @@
                 tentativasRestart++;
                 if (tentativasRestart > 8) {
                     console.warn('[Voz] Muitas falhas seguidas — desativando.');
-                    desligar();
+                    _parar();
+                    pausado = false;
                     return;
                 }
                 const espera = Math.min(30000, 1000 * Math.pow(2, tentativasRestart - 1));
@@ -472,27 +492,8 @@
             return r;
         }
 
-        // ─── Controle ───
-        function ligar() {
-            if (ativo) return;
-            textoFinal = '';
-            textoInterim = '';
-            ultimoResultadoEm = 0;
-            tentativasRestart = 0;
-            ativo = true;
-            rec = criarRecognition();
-            try { rec.start(); }
-            catch (e) {
-                console.error('[Voz] Falha ao iniciar:', e);
-                ativo = false;
-                rec = null;
-                return;
-            }
-            fab.classList.add('ativo');
-            iniciarTimerSilencio();
-        }
-
-        function desligar() {
+        // ─── Parada interna (sem mexer em `pausado`) ───
+        function _parar() {
             enviandoGen++;
             ativo = false;
             if (timerRestart) { clearTimeout(timerRestart); timerRestart = null; }
@@ -509,7 +510,67 @@
             preview.classList.remove('visivel');
         }
 
-        function toggle() { if (ativo) desligar(); else ligar(); }
+        // ─── Controle ───
+        function ligar() {
+            if (ativo) return;
+            pausado = false;
+            textoFinal = '';
+            textoInterim = '';
+            ultimoResultadoEm = 0;
+            tentativasRestart = 0;
+            ativo = true;
+            rec = criarRecognition();
+            try { rec.start(); }
+            catch (e) {
+                console.error('[Voz] Falha ao iniciar:', e);
+                ativo = false;
+                rec = null;
+                return;
+            }
+            fab.classList.add('ativo');
+            fab.classList.remove('pausado');
+            iniciarTimerSilencio();
+        }
+
+        function desligar() {
+            pausado = false;
+            _parar();
+        }
+
+        function toggle() {
+            if (ativo) desligar(); else ligar();
+        }
+
+        // ─── Foco / Visibilidade ───
+        // Pausa quando a aba fica oculta ou a janela perde foco.
+        // Retoma quando volta, se o usuário tinha ligado manualmente.
+        function _pausarPorFoco() {
+            if (!ativo) return;
+            pausado = true;
+            _parar();
+            fab.classList.add('pausado');
+        }
+
+        function _retomarDoFoco() {
+            if (!pausado) return;
+            pausado = false;
+            fab.classList.remove('pausado');
+            ligar();
+        }
+
+        function verificarFoco() {
+            const focado = !document.hidden && document.hasFocus();
+            if (!focado && ativo) _pausarPorFoco();
+            else if (focado && pausado) _retomarDoFoco();
+        }
+
+        function onVisibility() { verificarFoco(); }
+        function onFocus()      { verificarFoco(); }
+        function onBlur()       { setTimeout(verificarFoco, 60); }
+
+        document.addEventListener('visibilitychange', onVisibility);
+        window.addEventListener('focus', onFocus);
+        window.addEventListener('blur', onBlur);
 
         // ─── Timer de silêncio ───
         function iniciarTimerSilencio() {
@@ -579,8 +640,8 @@
             preview.style.top = Math.min(top, window.innerHeight - 140) + 'px';
         }
 
-        // ─── Formatação via Groq ───
-        async function formatarComGroq(texto) {
+        // ─── Formatação via Sang AI ───
+        async function formatarComSangAI(texto) {
             if (!window._apis?.groq || !window._apis.getKey?.('groq')) return texto;
             try {
                 const r = await window._apis.groq({
@@ -594,7 +655,7 @@
                 });
                 return (r && r.trim()) ? r.trim().replace(/^["']|["']$/g, '') : texto;
             } catch (e) {
-                console.warn('[Voz] Formatação Groq falhou:', e);
+                console.warn('[Voz] Formatação Sang AI falhou:', e);
                 return texto;
             }
         }
@@ -630,7 +691,7 @@
                 if (config.pontuacao === 'groq' && !forcarPrefixo) {
                     avisoEl.textContent = '✨ formatando…';
                     avisoEl.className = 'aviso forcar';
-                    const formatado = await formatarComGroq(texto);
+                    const formatado = await formatarComSangAI(texto);
                     if (gen !== enviandoGen) return;
                     if (formatado && formatado !== texto) {
                         texto = formatado;
@@ -727,7 +788,7 @@
             e.preventDefault();
             const r = fab.getBoundingClientRect();
             popover.style.left = Math.max(10, Math.min(r.left - 280, window.innerWidth - 290)) + 'px';
-            popover.style.top = Math.min(r.top, window.innerHeight - 420) + 'px';
+            popover.style.top = Math.min(r.top, window.innerHeight - 440) + 'px';
             popover.classList.toggle('visivel');
         });
 
@@ -791,6 +852,9 @@
                 desligar();
                 document.removeEventListener('keydown', onKeydown, true);
                 document.removeEventListener('pointerdown', fecharPopoverFora, true);
+                document.removeEventListener('visibilitychange', onVisibility);
+                window.removeEventListener('focus', onFocus);
+                window.removeEventListener('blur', onBlur);
                 window.removeEventListener('resize', onResize);
                 if (timerRestart) clearTimeout(timerRestart);
                 if (timerSilencio) clearInterval(timerSilencio);
@@ -800,7 +864,8 @@
             show() { fab.style.display = 'flex'; },
             hide() { fab.style.display = 'none'; },
             toggle,
-            get ativo() { return ativo; }
+            get ativo() { return ativo; },
+            get pausado() { return pausado; }
         };
     }
 
