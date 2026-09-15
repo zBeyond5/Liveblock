@@ -65,12 +65,38 @@
         /^(fechar?|fecha|confirmar?|confirma|voltar?|volta)(\s+(isso|tudo|janela|painel))?$/
     ];
 
+    // API compartilhada entre módulos — despachante + filtro
     window._voiceCommands = window._voiceCommands || {
         _extras: [],
+        _handlers: [],
         adicionar(re) { if (re instanceof RegExp) this._extras.push(re); },
+        registrar(re, cb, prioridade) {
+            if (!(re instanceof RegExp) || typeof cb !== 'function') return false;
+            this._handlers.push({ re, cb, prioridade: prioridade || 0 });
+            return true;
+        },
+        remover(cb) {
+            const antes = this._handlers.length;
+            this._handlers = this._handlers.filter(h => h.cb !== cb);
+            return this._handlers.length < antes;
+        },
         tem(texto) {
             const n = normalize(texto);
             return COMANDOS_RESERVADOS.some(r => r.test(n)) || this._extras.some(r => r.test(n));
+        },
+        despachar(texto) {
+            const n = normalize(texto);
+            const ordenados = [...this._handlers].sort((a, b) => b.prioridade - a.prioridade);
+            for (const h of ordenados) {
+                if (!h.re.test(n)) continue;
+                try {
+                    const r = h.cb(texto, n);
+                    if (r !== false) return true;
+                } catch (e) {
+                    console.error('[Voz] handler error:', e);
+                }
+            }
+            return false;
         },
         acaoLocal(texto) {
             const n = normalize(texto);
@@ -369,7 +395,7 @@
             <div class="ajuda">
                 Fale <code>enviar</code> para forçar envio, <code>cancelar</code> para limpar.
                 Comandos do hub (<code>abrir iptv</code>, <code>tirar print</code>…) são
-                filtrados automaticamente.<br><br>
+                roteados automaticamente para os módulos.<br><br>
                 Para forçar qualquer texto ao chat, use <code>digitar</code>.
                 Ex: <code>digitar enviar</code>.
                 <div class="dica-foco">💡 Pausa sozinho quando você troca de aba ou janela.</div>
@@ -391,9 +417,13 @@
         cfgPontuacao.value = config.pontuacao;
 
         // ─── Estado ───
+        // habilitado: usuário quer o voz.js no comando (toggle)
+        // ativo: captando agora (false quando pausado por foco)
+        // pausado: pausa por foco, sem perder a intenção
         let rec = null;
-        let ativo = false;         // está escutando agora
-        let pausado = false;       // foi pausado por perda de foco (retoma quando voltar)
+        let habilitado = false;
+        let ativo = false;
+        let pausado = false;
         let textoFinal = '';
         let textoInterim = '';
         let ultimoResultadoEm = 0;
@@ -402,6 +432,13 @@
         let timerRestart = null;
         let enviando = false;
         let enviandoGen = 0;
+
+        // ─── Notificação de estado ───
+        function dispararEstadoVoz() {
+            window.dispatchEvent(new CustomEvent('sang:voz-state', {
+                detail: { habilitado }
+            }));
+        }
 
         // ─── Reconhecimento ───
         function criarRecognition() {
@@ -460,8 +497,10 @@
                 if (tipo === 'no-speech' || tipo === 'aborted') return;
                 if (tipo === 'not-allowed' || tipo === 'service-not-allowed') {
                     console.warn('[Voz] Permissão de microfone negada.');
-                    _parar();
+                    habilitado = false;
                     pausado = false;
+                    _parar();
+                    dispararEstadoVoz();
                     return;
                 }
                 if (tipo === 'network') {
@@ -476,8 +515,10 @@
                 tentativasRestart++;
                 if (tentativasRestart > 8) {
                     console.warn('[Voz] Muitas falhas seguidas — desativando.');
-                    _parar();
+                    habilitado = false;
                     pausado = false;
+                    _parar();
+                    dispararEstadoVoz();
                     return;
                 }
                 const espera = Math.min(30000, 1000 * Math.pow(2, tentativasRestart - 1));
@@ -491,7 +532,7 @@
             return r;
         }
 
-        // ─── Parada interna (sem mexer em `pausado`) ───
+        // ─── Parada interna (não mexe em habilitado/pausado, não emite) ───
         function _parar() {
             enviandoGen++;
             ativo = false;
@@ -509,10 +550,9 @@
             preview.classList.remove('visivel');
         }
 
-        // ─── Controle ───
-        function ligar() {
-            if (ativo) return;
-            pausado = false;
+        // ─── Iniciar captura (privado; não mexe em habilitado, não emite) ───
+        function _iniciarCaptura() {
+            if (ativo) return true;
             textoFinal = '';
             textoInterim = '';
             ultimoResultadoEm = 0;
@@ -524,25 +564,37 @@
                 console.error('[Voz] Falha ao iniciar:', e);
                 ativo = false;
                 rec = null;
-                return;
+                return false;
             }
             fab.classList.add('ativo');
             fab.classList.remove('pausado');
             iniciarTimerSilencio();
+            return true;
+        }
+
+        // ─── Controle ───
+        function ligar() {
+            if (habilitado && ativo) return;
+            habilitado = true;
+            pausado = false;
+            if (!_iniciarCaptura()) habilitado = false;
+            dispararEstadoVoz();
         }
 
         function desligar() {
+            if (!habilitado && !ativo) return;
+            habilitado = false;
             pausado = false;
             _parar();
+            dispararEstadoVoz();
         }
 
         function toggle() {
-            if (ativo) desligar(); else ligar();
+            if (habilitado) desligar(); else ligar();
         }
 
         // ─── Foco / Visibilidade ───
-        // Pausa quando a aba fica oculta ou a janela perde foco.
-        // Retoma quando volta, se o usuário tinha ligado manualmente.
+        // Pausa por foco NÃO mexe em `habilitado` nem emite evento.
         function _pausarPorFoco() {
             if (!ativo) return;
             pausado = true;
@@ -554,7 +606,7 @@
             if (!pausado) return;
             pausado = false;
             fab.classList.remove('pausado');
-            ligar();
+            if (habilitado) _iniciarCaptura();
         }
 
         function verificarFoco() {
@@ -670,14 +722,24 @@
             if (forcarPrefixo) {
                 texto = forcarPrefixo;
             } else if (!forcado) {
+                // 1. Handlers registrados (módulos específicos, depois hub)
+                if (window._voiceCommands.despachar(texto)) {
+                    textoFinal = '';
+                    textoInterim = '';
+                    ultimoResultadoEm = 0;
+                    renderPreview();
+                    return;
+                }
+                // 2. Ações locais (enviar / cancelar)
                 const acao = window._voiceCommands.acaoLocal(texto);
                 if (acao === 'enviar') {
                     textoFinal = ''; textoInterim = ''; ultimoResultadoEm = 0;
                     renderPreview(); return;
                 }
                 if (acao === 'cancelar') { cancelar(); return; }
+                // 3. Reservado sem handler — descarta silenciosamente
                 if (window._voiceCommands.tem(texto)) {
-                    console.log('[Voz] Comando reservado filtrado:', texto);
+                    console.log('[Voz] Comando reservado sem handler:', texto);
                     textoFinal = ''; textoInterim = ''; ultimoResultadoEm = 0;
                     renderPreview(); return;
                 }
@@ -797,7 +859,11 @@
         cfgLang.addEventListener('change', () => {
             config.lang = cfgLang.value;
             saveConfig(config);
-            if (ativo) { desligar(); setTimeout(ligar, 300); }
+            if (ativo) {
+                const eraHabilitado = habilitado;
+                _parar();
+                if (eraHabilitado) setTimeout(() => _iniciarCaptura(), 300);
+            }
         });
         cfgPontuacao.addEventListener('change', () => {
             config.pontuacao = cfgPontuacao.value;
@@ -848,7 +914,7 @@
         // ─── API ───
         window[UID] = {
             kill() {
-                desligar();
+                desligar(); // emite sang:voz-state { habilitado: false } se estava ligado
                 document.removeEventListener('keydown', onKeydown, true);
                 document.removeEventListener('pointerdown', fecharPopoverFora, true);
                 document.removeEventListener('visibilitychange', onVisibility);
@@ -864,8 +930,12 @@
             hide() { fab.style.display = 'none'; },
             toggle,
             get ativo() { return ativo; },
+            get habilitado() { return habilitado; },
             get pausado() { return pausado; }
         };
+
+        // Sinaliza que a API está pronta para receber handlers
+        window.dispatchEvent(new CustomEvent('sang:voz-ready'));
     }
 
     if (document.body) init();
