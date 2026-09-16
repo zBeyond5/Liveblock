@@ -83,7 +83,7 @@
 
     // Wake words do modo prefixo. `youtube`/`yt` roteiam pro handler do YT.
     const PALAVRAS_COMANDO = ['menu', 'sang', 'comando', 'comandar', 'catapimbas', 'youtube', 'yt'];
-    const PREFIXO_COMANDO = new RegExp('^(' + PALAVRAS_COMANDO.join('|') + ')\\s+(.+)$', 'i');
+    const PREFIXO_COMANDO = new RegExp('^(' + PALAVRAS_COMANDO.join('|') + ')[,\\s]+(.+)$', 'i');
     const COMANDO_MENU_SEM_PREFIXO = /^(mostrar?|mostra|abrir?|abre|abra|fechar?|fecha|feche|esconder?|esconde)\s+(o\s+)?menu$/;
 
     const COMANDOS_VOZ = [
