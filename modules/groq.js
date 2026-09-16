@@ -15,6 +15,36 @@
         { id: 'openai/gpt-oss-20b',  nome: 'Padrão',  tag: 'equilibrado' }
     ];
 
+    // ─── Persona da Sang AI ───
+    const SYSTEM_PROMPT = `Você é a Sang AI, assistente integrada ao Sang Hub — um gerenciador de módulos para Habbo/Habblet criado pelo Sang.
+
+# Identidade
+- Assistente brasileira, informal, direta e prestativa.
+- Fala português brasileiro natural, com leve toque gamer.
+- Trata o usuário por "você".
+
+# O que você faz
+- Ajuda a usar os módulos do Hub: Packet Manager, LiveBlock, Booster FPS, PhotoSwap, YouTube, IPTV, Galeria, VoiceChat, GamesLive, ProzillaOS.
+- Explica comandos de voz (abrir/fechar menu, ativar/desativar módulos).
+- Formata transcrições de voz em texto limpo e pontuado.
+- Responde dúvidas gerais sobre Habbo, programação e outros assuntos.
+
+# Como responder
+- Curto por padrão: 1 a 3 frases. Só expande se o usuário pedir detalhe.
+- Sem markdown pesado em resposta curta. Texto direto.
+- Listas no máximo com 5 itens.
+- Nunca inventa funcionalidade que o Hub não tem.
+- Se não souber, diz "não tenho essa informação" em vez de chutar.
+- Sem disclaimers óbvios ("como uma IA...", "não sou humano...").
+
+# Estilo
+- Tom direto: "blz, abri o IPTV pra você".
+- No máximo 1 emoji por resposta.
+- Confirma ações quando o usuário pede comando (ex: "abrir iptv" → "feito, IPTV tá aberto").`;
+
+    // Limite de pares user/assistant no histórico — mantém a janela de contexto enxuta.
+    const MAX_PARES_HISTORICO = 12;
+
     const loadGeom = () => {
         try {
             const s = JSON.parse(localStorage.getItem(GEOM_KEY) || 'null');
@@ -54,12 +84,15 @@
         if (cells.length < 2) return '';
         const header = cells[0];
         const body = cells.slice(2);
+        const colCount = header.length;
         let html = '<table><thead><tr>';
         header.forEach(h => { html += `<th>${mdInline(h)}</th>`; });
         html += '</tr></thead><tbody>';
         body.forEach(row => {
             html += '<tr>';
-            row.forEach(c => { html += `<td>${mdInline(c)}</td>`; });
+            for (let c = 0; c < colCount; c++) {
+                html += `<td>${mdInline(row[c] ?? '')}</td>`;
+            }
             html += '</tr>';
         });
         html += '</tbody></table>';
@@ -628,7 +661,7 @@
         geom.height = Math.max(MIN_H, geom.height);
 
         const state = {
-            mensagens: [],
+            mensagens: [{ role: 'system', content: SYSTEM_PROMPT }],
             modelo: loadModel(),
             enviando: false,
             abortController: null,
@@ -813,7 +846,7 @@
 
         function limparConversa() {
             logEl.innerHTML = '';
-            state.mensagens = [];
+            state.mensagens = [{ role: 'system', content: SYSTEM_PROMPT }];
             state.jaTemMensagem = false;
             renderEmpty();
         }
@@ -829,6 +862,16 @@
                     ta.remove();
                 });
             } catch (_) {}
+        }
+
+        // ─── Histórico: mantém system no topo e corta pares antigos ───
+        function trimMensagens() {
+            const system = state.mensagens[0];
+            const resto = state.mensagens.slice(1);
+            const limite = MAX_PARES_HISTORICO * 2;
+            if (resto.length > limite) {
+                state.mensagens = [system, ...resto.slice(-limite)];
+            }
         }
 
         // ─── Modal key ───
@@ -864,6 +907,17 @@
 
         // ─── Chamada da API ───
         async function chamarAPI() {
+            if (!window._apis?.groq) {
+                addMsgErro('Serviço não registrado. Recarregue a página.');
+                return;
+            }
+            if (!window._apis.getKey('groq')) {
+                abrirModal();
+                return;
+            }
+
+            trimMensagens();
+
             const controller = new AbortController();
             state.abortController = controller;
             state.enviando = true;
@@ -884,8 +938,14 @@
                 );
 
                 indicador.remove();
-                addMsgIA(resposta);
-                state.mensagens.push({ role: 'assistant', content: resposta });
+
+                const limpa = typeof resposta === 'string' ? resposta.trim() : '';
+                if (limpa) {
+                    addMsgIA(limpa);
+                    state.mensagens.push({ role: 'assistant', content: limpa });
+                } else {
+                    addMsgSys('Resposta vazia.');
+                }
             } catch (e) {
                 indicador.remove();
                 if (e.name === 'AbortError') {
@@ -909,15 +969,6 @@
             const texto = inputEl.value.trim();
             if (!texto) return;
 
-            if (!window._apis?.groq) {
-                addMsgErro('Serviço não registrado. Recarregue a página.');
-                return;
-            }
-            if (!window._apis.getKey('groq')) {
-                abrirModal();
-                return;
-            }
-
             inputEl.value = '';
             inputEl.style.height = 'auto';
 
@@ -930,13 +981,27 @@
         // ─── Regerar ───
         async function regenerar() {
             if (state.enviando) return;
-            const ultima = state.mensagens[state.mensagens.length - 1];
-            if (ultima?.role === 'assistant') {
-                state.mensagens.pop();
-                const ias = logEl.querySelectorAll('.msg.ia');
-                if (ias.length) ias[ias.length - 1].remove();
+            if (!window._apis?.groq) return;
+
+            // Remove a última resposta IA se existir
+            if (state.mensagens.length > 1) {
+                const ultima = state.mensagens[state.mensagens.length - 1];
+                if (ultima.role === 'assistant') {
+                    state.mensagens.pop();
+                    const ias = logEl.querySelectorAll('.msg.ia');
+                    if (ias.length) ias[ias.length - 1].remove();
+                }
             }
+
+            // Remove avisos finais órfãos (erro/interrupção da tentativa anterior)
+            const ultimoVisivel = logEl.lastElementChild;
+            if (ultimoVisivel && (ultimoVisivel.classList.contains('erro') || ultimoVisivel.classList.contains('sys'))) {
+                ultimoVisivel.remove();
+            }
+
+            // Sem user no histórico, nada a regerar
             if (!state.mensagens.some(m => m.role === 'user')) return;
+
             await chamarAPI();
         }
 
