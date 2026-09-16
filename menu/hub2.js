@@ -210,6 +210,7 @@
     }
 
     async function loadModule(mod) {
+        if (!mod?.url) throw new Error('Módulo sem URL');
         if (mod.instanceKey) {
             killInstance(mod.instanceKey);
         }
@@ -466,6 +467,7 @@
         try {
             await loadModule(mod);
             state.moduleStates[mod.id] = STATUS.LOADED;
+            tentarRegistrarHandlerVoz();
             if (toastFn) toastFn(mod.name + ' carregado', 'ok');
             if (renderListFn) renderListFn();
             flashItem(mod.id, 'ok');
@@ -479,8 +481,12 @@
     }
 
     function deactivateModule(mod) {
-        const ok = tryUnload(mod);
+        // Marca UNLOADED antes do kill: o kill() do módulo pode disparar
+        // sang:module-close, e queremos que esse handler seja no-op aqui.
         state.moduleStates[mod.id] = STATUS.UNLOADED;
+        const ok = tryUnload(mod);
+        // Se o dispatcher de voz foi junto com o módulo, libera o cache do handler.
+        if (!window._voiceCommands?.registrar) vozHandlerRegistrado = null;
         if (toastFn) toastFn(mod.name + (ok ? ' desativado' : ' — recarregue'), ok ? 'ok' : 'warn');
         if (renderListFn) renderListFn();
     }
@@ -569,13 +575,14 @@
     function limparHandlerVoz() {
         if (vozHandlerRegistrado && window._voiceCommands?.remover) {
             window._voiceCommands.remover(vozHandlerRegistrado);
-            vozHandlerRegistrado = null;
         }
+        vozHandlerRegistrado = null;
     }
 
-    if (!tentarRegistrarHandlerVoz()) {
-        window.addEventListener('sang:voz-ready', tentarRegistrarHandlerVoz, { once: true });
-    }
+    // Tenta registrar já no boot (caso voz.js tenha carregado antes do Hub).
+    // Retries acontecem em sang:voz-ready / sang:voz-state / activateModule,
+    // todos amarrados ao ciclo de vida da UI (AbortController).
+    tentarRegistrarHandlerVoz();
 
     function setupGifIcon(item, canvas, liveImg, originalUrl) {
         const ctx = canvas.getContext('2d');
@@ -1002,8 +1009,10 @@
 
         // ─── VOZ: reconhecimento próprio (fallback quando voz.js está off) ───
         let recognition = null, voiceActive = false, lastVoiceAt = 0;
-        // vozHabilitado: true quando o voz.js está no comando. Consulta inicial no boot.
-        let vozHabilitado = !!(window._voz && window._voz.habilitado);
+        // vozHabilitado: true quando o voz.js está no comando.
+        // Boot: best-effort (window._voz se existir; sang:voz-query dispatched abaixo).
+        // Runtime: só muda via sang:voz-state.
+        let vozHabilitado = !!(window._voz?.habilitado);
 
         function updateVoiceBtn() {
             btnVoice.classList.toggle('listening', voiceActive);
@@ -1174,6 +1183,25 @@
                                        state.syncState === 'synced' ? 'sync ' + (state.lastSyncAt || '') : 'falha';
             ftrMid.textContent = state.manifest.version ? 'v' + state.manifest.version : '·';
         };
+
+        // ─── CICLO DE VIDA: módulo fecha sozinho → Hub atualiza ───
+        window.addEventListener('sang:module-close', (e) => {
+            const id = e?.detail?.id;
+            if (!id) return;
+            if (state.moduleStates[id] !== STATUS.LOADED) return;
+            state.moduleStates[id] = STATUS.UNLOADED;
+            HLOG('📴 Módulo fechado externamente: ' + id);
+            if (renderListFn) renderListFn();
+            flashItem(id, 'ok');
+        }, { signal: ac.signal });
+
+        // ─── VOZ: retries de registro do handler ───
+        // voz.js só emite sang:voz-state (não há ready/query hoje). Escutamos ele
+        // pra re-tentar o registro caso voz.js tenha carregado depois do Hub.
+        window.addEventListener('sang:voz-state', tentarRegistrarHandlerVoz, { signal: ac.signal });
+        window.addEventListener('sang:voz-ready', tentarRegistrarHandlerVoz, { signal: ac.signal });
+        // Forward-compat: se voz.js implementar, responde com sang:voz-state.
+        try { window.dispatchEvent(new CustomEvent('sang:voz-query')); } catch(_) {}
 
         // Clock/stats
         const clockEl = pill.querySelector('#' + UID + 'clock');
