@@ -1,4 +1,4 @@
-
+// modules/voz.js — fala vira texto no chat do Habbo
 (function() {
     'use strict';
     const UID = '_voz';
@@ -27,14 +27,20 @@
         delayEntreBlocos: 320
     };
 
-    const MIN_INTERVALO_STREAM = 350;  // ms entre envios contínuos
+    const MIN_INTERVALO_STREAM = 350;
 
     // ─── Whisper (Groq) ───
     const WHISPER_MODEL = 'whisper-large-v3-turbo';
-    const WHISPER_VAD_START = 0.040;    // entra em "falando" (ruído de fundo fica abaixo)
-    const WHISPER_VAD_STOP  = 0.020;    // sai de "falando" (histerese: menor que START)
-    const WHISPER_SILENCIO_MS = 900;    // silêncio contínuo pra fechar o trecho
-    const WHISPER_MIN_FALA_MS = 400;    // descarta tosse/clique/estalo
+    const WHISPER_VAD_START = 0.040;
+    const WHISPER_VAD_STOP  = 0.020;
+    const WHISPER_SILENCIO_MS = 900;
+    const WHISPER_MIN_FALA_MS = 400;
+
+    // ─── Detecção de comando em texto (pro streaming não atropelar) ───
+    const CMD_LINK_RE  = /youtube\.com|youtu\.be/i;
+    const CMD_WAKE_RE  = /^(youtube|yt)\s+/i;
+    const CMD_VERBO_RE = /\b(coloca|colocar|toca|tocar|p[oõ]e|bota|abre|abrir|busca|buscar|pesquisa|pesquisar|procura|procurar|mostra|mostrar)\b/i;
+    const CMD_MIDIA_RE = /\b(v[ií]deo|v[ií]deozinho|clipe|m[uú]sica)\b/i;
 
     // ─── Persistência ───
     const loadConfig = () => {
@@ -47,6 +53,24 @@
         try { localStorage.setItem(STATE_KEY, JSON.stringify(c)); } catch {}
     };
 
+    // Lê a chave Groq do mesmo storage usado pelo resto do ecossistema.
+    // Caminho principal: wrapper `_apis`. Fallback: `sang_api_keys` direto.
+    function getGroqKey() {
+        try {
+            const viaApis = window._apis?.getKey?.('groq');
+            if (viaApis) return viaApis;
+        } catch (_) {}
+        try {
+            const raw = localStorage.getItem('sang_api_keys');
+            if (!raw) return '';
+            const obj = JSON.parse(raw);
+            const v = obj?.groq;
+            if (typeof v === 'string') return v;
+            if (v && typeof v === 'object' && typeof v.key === 'string') return v.key;
+        } catch (_) {}
+        return '';
+    }
+
     // ─── Utilidades ───
     const escapeHtml = s => String(s ?? '').replace(/[&<>"']/g, c => ({
         '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
@@ -57,7 +81,8 @@
     // ═══ COMANDOS ═══
     const PREFIXO_FORCAR_CHAT = /^(ditar|digitar|escrever|escreve|falar|fala)\s+(.+)$/i;
 
-    const PALAVRAS_COMANDO = ['menu', 'sang', 'comando', 'comandar', 'catapimbas'];
+    // Wake words do modo prefixo. `youtube`/`yt` roteiam pro handler do YT.
+    const PALAVRAS_COMANDO = ['menu', 'sang', 'comando', 'comandar', 'catapimbas', 'youtube', 'yt'];
     const PREFIXO_COMANDO = new RegExp('^(' + PALAVRAS_COMANDO.join('|') + ')\\s+(.+)$', 'i');
     const COMANDO_MENU_SEM_PREFIXO = /^(mostrar?|mostra|abrir?|abre|abra|fechar?|fecha|feche|esconder?|esconde)\s+(o\s+)?menu$/;
 
@@ -105,7 +130,7 @@
         adicionar(re) { if (re instanceof RegExp) this._extras.push(re); },
         registrar(re, cb, prioridade) {
             if (!(re instanceof RegExp) || typeof cb !== 'function') return false;
-            this._handlers.push({ re, cb, prioridade: prioridade || 0 });
+            this._handlers.push({ re, cb, prioridade: prioridade ?? 0 });
             return true;
         },
         remover(cb) {
@@ -117,13 +142,20 @@
             const n = normalize(texto);
             return COMANDOS_RESERVADOS.some(r => r.test(n)) || this._extras.some(r => r.test(n));
         },
-        despachar(texto) {
+        // meta.opts:
+        //   wake     — string da wake word que disparou (ex: 'sang', 'youtube')
+        //   fallback — true quando é um despacho de último recurso (só handlers
+        //              com prioridade >= 0 rodam; Hub fica de fora)
+        despachar(texto, meta) {
             const n = normalize(texto);
-            const ordenados = [...this._handlers].sort((a, b) => b.prioridade - a.prioridade);
+            const minPrio = meta?.fallback ? 0 : -Infinity;
+            const ordenados = [...this._handlers]
+                .filter(h => h.prioridade >= minPrio)
+                .sort((a, b) => b.prioridade - a.prioridade);
             for (const h of ordenados) {
                 if (!h.re.test(n)) continue;
                 try {
-                    const r = h.cb(texto, n);
+                    const r = h.cb(texto, n, meta);
                     if (r !== false) return true;
                 } catch (e) {
                     console.error('[Voz] handler error:', e);
@@ -193,17 +225,13 @@
     }
 
     function pressEnter(el) {
-        // Só keydown. Disparar keypress sintético junto faz o chat do Habbo
-        // processar Enter 2x (ele escuta keydown e o keypress cai no mesmo handler).
+        // Só keydown. keypress sintético junto faz o chat do Habbo processar 2x.
         el.dispatchEvent(new KeyboardEvent('keydown', {
             key: 'Enter', code: 'Enter', keyCode: 13, which: 13,
             bubbles: true, cancelable: true
         }));
     }
 
-    // Divide texto em blocos que caibam no limite do chat, cortando em espaços
-    // quando possível. Não fatia palavra no meio; evita deixar conector solto
-    // no fim do bloco pra continuar a frase naturalmente no próximo.
     function dividirEmBlocos(texto, maxLen) {
         const t = String(texto || '').trim();
         if (!t) return [];
@@ -215,7 +243,7 @@
             let corte = resto.lastIndexOf(' ', maxLen);
             if (corte < Math.floor(maxLen * 0.6)) corte = maxLen;
             let bloco = resto.slice(0, corte).trimEnd();
-            if (!bloco) bloco = resto.slice(0, corte); // guard: nunca deixa bloco vazio
+            if (!bloco) bloco = resto.slice(0, corte);
             const ultima = bloco.split(/\s+/).pop()?.toLowerCase();
             if (ultima && CONECTORES_BLOCO.has(ultima) && bloco.length > 20) {
                 const reduzido = bloco.slice(0, bloco.length - ultima.length).trimEnd();
@@ -488,7 +516,7 @@
             <div class="campo">
                 <label>Modo de comando</label>
                 <select id="cfgModoComando">
-                    <option value="prefixo">Prefixado (menu, sang, comando, catapimbas)</option>
+                    <option value="prefixo">Prefixado (menu, sang, youtube…)</option>
                     <option value="livre">Livre (atual)</option>
                 </select>
             </div>
@@ -501,21 +529,20 @@
             </div>
             <div class="ajuda">
                 <strong>Modo prefixado:</strong> comandos começam com
-                <code>menu</code>, <code>sang</code>, <code>comando</code> ou <code>catapimbas</code>.
-                Ex: <code>sang abrir iptv</code>.<br><br>
-                <strong>Exceção:</strong> <code>abrir menu</code> e <code>fechar menu</code>
-                funcionam sem prefixo.<br><br>
+                <code>menu</code>, <code>sang</code>, <code>comando</code>,
+                <code>catapimbas</code>, <code>youtube</code> ou <code>yt</code>.
+                Ex: <code>youtube metallica</code>.<br><br>
+                <strong>Comandos naturais:</strong> frases como
+                <code>coloca o vídeo do leo stronda</code> também são
+                detectadas, mesmo sem wake word.<br><br>
                 <strong>Envio contínuo:</strong> quando a transcrição bate no limite do
-                chat, ela é enviada na hora e o restante continua acumulando. Desligue
-                se preferir mandar tudo de uma vez no fim.<br><br>
-                <strong>Modo livre:</strong> comandos disparam direto, como antes.
+                chat, ela é enviada na hora e o restante continua acumulando.<br><br>
+                <strong>Modo livre:</strong> comandos disparam direto.
                 <code>enviar</code> força envio, <code>cancelar</code> limpa.
                 Use <code>digitar</code> para forçar texto ao chat.<br><br>
                 <strong>Motor:</strong> <code>Navegador</code> usa a Web Speech API
                 (mostra parcial em tempo real, sem custo). <code>Groq</code> usa
-                Whisper large v3 turbo (mais preciso em sotaque e ruído; transcreve
-                por trechos ao detectar silêncio; precisa da chave Groq configurada
-                na Sang AI).
+                Whisper large v3 turbo (mais preciso em sotaque e ruído).
                 <div class="dica-foco">💡 Pausa sozinho quando você troca de aba ou janela — e preserva o texto pendente.</div>
             </div>
         `;
@@ -557,14 +584,13 @@
         let ultimoStreamEm = 0;
         let flashTimer = null;
 
-        // Estado do motor Whisper (nulo/vazio quando não está em uso).
+        // Whisper
         let whisperStream = null, whisperCtx = null, whisperAnalyser = null, whisperRecorder = null;
         let whisperVadTimer = null, whisperChunks = [], whisperFalando = false;
         let whisperSilencioDesde = 0, whisperFalaDesde = 0;
-        let whisperFila = Promise.resolve();  // serializa transcrições (ordem preservada)
-        let whisperGen = 0;                    // invalida transcrições em voo ao desligar
+        let whisperFila = Promise.resolve();
+        let whisperGen = 0;
 
-        // Nomeado pra permitir removeEventListener no kill().
         function onSilenciar(e) {
             silencioAte = Date.now() + (e?.detail?.ms || 1500);
         }
@@ -628,7 +654,6 @@
                 }, 350);
 
                 tentarStreaming();
-
                 renderPreview();
                 posicionarPreview();
             };
@@ -673,9 +698,7 @@
             return r;
         }
 
-        // ─── Reconhecimento via Whisper (Groq) ───
-        // Sem resultado parcial: grava por trechos (VAD por volume) e transcreve
-        // cada trecho ao detectar silêncio, tratando o texto como resultado final.
+        // ─── Whisper (Groq) ───
         async function iniciarWhisper() {
             try {
                 whisperStream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -683,7 +706,7 @@
                 console.warn('[Voz] Permissão de microfone negada (Whisper).');
                 return false;
             }
-            if (!ativo) { // usuário desligou enquanto aguardava a permissão
+            if (!ativo) {
                 whisperStream.getTracks().forEach(t => t.stop());
                 whisperStream = null;
                 return false;
@@ -728,8 +751,6 @@
             }
             const rms = Math.sqrt(soma / buf.length);
             const agora = Date.now();
-            // Histerese: entra em "falando" só acima de START; só considera silêncio
-            // abaixo de STOP. Evita cortar em pausa de respiração e engatar em ruído.
             const limiar = whisperFalando ? WHISPER_VAD_STOP : WHISPER_VAD_START;
 
             if (rms > limiar) {
@@ -762,19 +783,20 @@
             try { recorderAtual.stop(); } catch (e) {}
         }
 
-        // Serializa transcrições: sem fila, um trecho curto pode voltar do Groq
-        // antes de um trecho anterior e bagunçar a ordem do texto final.
+        // Serializa transcrições e captura a geração NO MOMENTO DO ENFILEIRAMENTO.
+        // Sem isso, um trecho enfileirado antes de desligar ainda rodava depois.
         function enfileirarTranscricao(blob) {
+            const gen = whisperGen;
             whisperFila = whisperFila
-                .then(() => transcreverComWhisper(blob))
+                .then(() => transcreverComWhisper(blob, gen))
                 .catch(e => console.warn('[Voz] Fila de transcrição:', e));
         }
 
-        async function transcreverComWhisper(blob) {
-            const gen = whisperGen;
-            const key = window._apis?.getKey?.('groq');
+        async function transcreverComWhisper(blob, gen) {
+            if (gen !== whisperGen) return;
+            const key = getGroqKey();
             if (!key) {
-                console.warn('[Voz] Sem chave Groq configurada — abra a Sang AI e configure a chave.');
+                console.warn('[Voz] Sem chave Groq — configure na Sang AI.');
                 return;
             }
             const form = new FormData();
@@ -790,7 +812,7 @@
                 });
                 if (!res.ok) throw new Error('HTTP ' + res.status);
                 const data = await res.json();
-                if (gen !== whisperGen) return; // desligou durante o await — descarta
+                if (gen !== whisperGen) return;
                 const trecho = (data.text || '').trim();
                 if (!trecho) return;
 
@@ -820,11 +842,12 @@
         }
 
         // ─── Parada interna ───
-        // preservarTexto: usado em pausa por foco (não perde o que o usuário falou).
+        // preservarTexto: pausa por foco NÃO descarta texto, NÃO invalida
+        // transcrições em voo (o usuário só saiu da aba, não pediu pra parar).
         function _parar(opts = {}) {
             const { preservarTexto = false } = opts;
             enviandoGen++;
-            whisperGen++;
+            if (!preservarTexto) whisperGen++;
             ativo = false;
             if (timerRestart) { clearTimeout(timerRestart); timerRestart = null; }
             if (flashTimer) { clearTimeout(flashTimer); flashTimer = null; }
@@ -847,11 +870,15 @@
         function _iniciarCaptura(opts = {}) {
             const { preservarTexto = false } = opts;
             if (ativo) return true;
-            if (!preservarTexto) {
+            if (preservarTexto) {
+                // Empurra o timer pra frente — sem isso a pausa longa dispara
+                // enviar() imediatamente ao retomar.
+                ultimoResultadoEm = Date.now();
+            } else {
                 textoFinal = '';
                 textoInterim = '';
+                ultimoResultadoEm = 0;
             }
-            ultimoResultadoEm = 0;
             tentativasRestart = 0;
 
             if (config.motor === 'whisper') {
@@ -1022,12 +1049,17 @@
             preview.style.top = Math.min(top, window.innerHeight - 140) + 'px';
         }
 
-        // ─── Verifica se o texto acumulado parece comando ───
+        // ─── Heurística de "isso é comando?" ───
+        // Inclui padrões YT pra evitar que o streaming cuspa comandos longos
+        // no chat antes do enviar() ter chance de despachar.
         function ehInicioDeComando(texto) {
             const n = normalize(texto);
             if (PREFIXO_COMANDO.test(n)) return true;
             if (COMANDO_MENU_SEM_PREFIXO.test(n)) return true;
             if (config.modoComando === 'livre' && window._voiceCommands.tem(n)) return true;
+            if (CMD_LINK_RE.test(texto)) return true;
+            if (CMD_WAKE_RE.test(n)) return true;
+            if (CMD_VERBO_RE.test(n) && CMD_MIDIA_RE.test(n)) return true;
             return false;
         }
 
@@ -1044,7 +1076,6 @@
             const maxLen = maxLenDoInput(inp);
 
             if (textoFinal.length < maxLen) return;
-
             if (ehInicioDeComando(textoFinal) && textoFinal.length < maxLen * 2) return;
 
             let corte = textoFinal.lastIndexOf(' ', maxLen);
@@ -1084,20 +1115,11 @@
                         {
                             role: 'system',
                             content: `
-Você é um formatador inteligente de transcrições de áudio em português brasileiro, semelhante à formatação de mensagens de voz de um assistente conversacional.
+Você é um formatador inteligente de transcrições de áudio em português brasileiro.
 
 Sua tarefa é transformar a transcrição bruta em uma mensagem natural, clara e bem pontuada, preservando fielmente o que a pessoa quis dizer.
 
-Identifique corretamente:
-- Perguntas;
-- Afirmações;
-- Dúvidas;
-- Pedidos;
-- Ordens;
-- Sugestões;
-- Desabafos;
-- Exclamações;
-- Falas informais.
+Identifique corretamente: perguntas, afirmações, dúvidas, pedidos, ordens, sugestões, desabafos, exclamações, falas informais.
 
 Regras:
 1. Responda SOMENTE com o texto formatado.
@@ -1105,7 +1127,7 @@ Regras:
 3. Não explique nada.
 4. Não resuma, expanda, invente ou altere o sentido.
 5. Preserve o tom informal e as gírias.
-6. Preserve nomes próprios, nomes de projetos, jogos, empresas e termos técnicos.
+6. Preserve nomes próprios, projetos, jogos, empresas e termos técnicos.
 7. Corrija apenas erros claros de transcrição.
 8. Use ponto de interrogação quando a fala for uma pergunta.
 9. Use exclamação somente quando houver entusiasmo, surpresa ou ênfase evidente.
@@ -1120,33 +1142,26 @@ Exemplos:
 
 Entrada:
 qual é o melhor jeito de fazer um botão no javascript
-
 Saída:
 Qual é o melhor jeito de fazer um botão no JavaScript?
 
 Entrada:
 mano que interface bonita
-
 Saída:
 Mano, que interface bonita!
 
 Entrada:
 tipo assim eu queria saber se você consegue me ajudar
-
 Saída:
 Tipo assim, eu queria saber se você consegue me ajudar.
 
 Entrada:
 eu tava indo pra casa mais aí eu vi ele
-
 Saída:
 Eu tava indo pra casa, mas aí eu vi ele.
 `,
                         },
-                        {
-                            role: 'user',
-                            content: texto
-                        }
+                        { role: 'user', content: texto }
                     ],
                     maxTokens: 600,
                     temperature: 0.15,
@@ -1189,7 +1204,7 @@ Eu tava indo pra casa, mas aí eu vi ele.
             return false;
         }
 
-        // ─── Envio final (pausa, Enter, botão) ───
+        // ─── Envio final ───
         async function enviar(forcado) {
             if (enviando) return;
 
@@ -1209,19 +1224,28 @@ Eu tava indo pra casa, mas aí eu vi ele.
 
                 if (config.modoComando === 'prefixo') {
                     if (COMANDO_MENU_SEM_PREFIXO.test(texto)) {
-                        window._voiceCommands.despachar(texto);
+                        window._voiceCommands.despachar(texto, { wake: 'menu' });
                         textoFinal = ''; textoInterim = ''; ultimoResultadoEm = 0;
                         renderPreview(); return;
                     }
                     const m = texto.match(PREFIXO_COMANDO);
                     if (m) {
                         const comando = m[2].trim();
-                        const consumido = window._voiceCommands.despachar(comando);
+                        const wake = m[1].toLowerCase();
+                        const consumido = window._voiceCommands.despachar(comando, { wake });
                         if (!consumido) {
                             console.log('[Voz] Wake word sem handler:', comando);
                             avisoEl.textContent = '⚠ comando não reconhecido';
                             avisoEl.className = 'aviso cmd';
                         }
+                        textoFinal = ''; textoInterim = ''; ultimoResultadoEm = 0;
+                        renderPreview(); return;
+                    }
+
+                    // Fallback prefixo: nenhuma wake word bateu, mas handlers de
+                    // prioridade >= 0 (YT, futuros) podem reconhecer texto natural.
+                    // Hub fica de fora por design (prioridade -1).
+                    if (window._voiceCommands.despachar(texto, { fallback: true })) {
                         textoFinal = ''; textoInterim = ''; ultimoResultadoEm = 0;
                         renderPreview(); return;
                     }
@@ -1238,9 +1262,7 @@ Eu tava indo pra casa, mas aí eu vi ele.
                 }
             }
 
-            // Guarda antecipada: sem input, não perde o buffer. Também limpa o
-            // buffer ANTES do await da formatação — durante o await a fala pode
-            // continuar entrando, e um clear depois apagaria o que chegou.
+            // Guarda antecipada: sem input, não perde o buffer.
             const inp = encontrarInputChat();
             if (!inp) {
                 avisoEl.textContent = '⚠ chat não encontrado';
@@ -1426,43 +1448,4 @@ Eu tava indo pra casa, mas aí eu vi ele.
             fab.style.top = Math.max(0, Math.min(window.innerHeight - 56, t)) + 'px';
             if (preview.classList.contains('visivel')) posicionarPreview();
         }
-        window.addEventListener('resize', onResize);
-
-        // ─── API ───
-        window[UID] = {
-            kill() {
-                desligar();
-                window.removeEventListener('sang:voz-silenciar', onSilenciar);
-                document.removeEventListener('keydown', onKeydown, true);
-                document.removeEventListener('pointerdown', fecharPopoverFora, true);
-                document.removeEventListener('visibilitychange', onVisibility);
-                window.removeEventListener('focus', onFocus);
-                window.removeEventListener('blur', onBlur);
-                window.removeEventListener('resize', onResize);
-                if (timerRestart) clearTimeout(timerRestart);
-                if (timerSilencio) clearInterval(timerSilencio);
-                if (flashTimer) clearTimeout(flashTimer);
-                host.remove();
-                delete window[UID];
-                // Se este módulo criou o dispatcher e ninguém mais usa, limpa.
-                const vc = window._voiceCommands;
-                if (vc && vc._handlers.length === 0 && vc._extras.length === 0) {
-                    delete window._voiceCommands;
-                }
-            },
-            show() { fab.style.display = 'flex'; },
-            hide() { fab.style.display = 'none'; },
-            toggle,
-            get ativo() { return ativo; },
-            get habilitado() { return habilitado; },
-            get pausado() { return pausado; }
-        };
-
-        window.dispatchEvent(new CustomEvent('sang:voz-ready'));
-    }
-
-    if (document.body) init();
-    else new MutationObserver((_, o) => {
-        if (document.body) { o.disconnect(); init(); }
-    }).observe(document.documentElement, { childList: true });
-})();
+        window.addEventListener('resize', on
