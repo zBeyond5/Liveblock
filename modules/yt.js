@@ -652,14 +652,16 @@ Responda APENAS a saída. Nada mais antes ou depois.`;
             return false;
         }
 
-        function registrarHandlerVoz() {
+                function registrarHandlerVoz() {
             if (!window._voiceCommands?.registrar) return false;
-            if (vozHandler) return true;
+            if (vozHandler) return true;                    // ← guarda de idempotência
             vozHandler = (texto, n, meta) => {
+                // Wake word explícita = texto depois dela É a query, sem IA.
+                if (meta?.wake === 'youtube' || meta?.wake === 'yt') {
+                    pesquisar(texto);
+                    return true;
+                }
                 if (!deveInterceptar(texto, meta)) return false;
-                // tocarPorFala é async (pode chamar a IA). O dispatcher do voz.js
-                // precisa de resposta síncrona, então consumimos já e deixamos a
-                // Promise seguir em background.
                 tocarPorFala(texto);
                 return true;
             };
