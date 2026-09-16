@@ -21,69 +21,30 @@
 ## Regras de saída (obrigatórias)
 1. Responda com UMA linha só, sem quebras.
 2. Sem aspas, crases, markdown ou prefixo ("Query:", "Busca:", "→").
-3. Sem pontuação final (nada de ponto, vírgula, exclamação, interrogação).
-4. Entre 2 e 6 palavras-chave essenciais, sem conectores soltos ("de", "com", "o", "a" no fim).
+3. Sem pontuação final.
+4. Entre 2 e 6 palavras-chave essenciais.
 5. Preserve o idioma da fala original — não traduza.
-6. Preserve nomes próprios, marcas, artistas e títulos exatos como o usuário falou.
+6. Preserve nomes próprios, marcas, artistas e títulos exatos.
 7. Se a fala NÃO for sobre buscar, tocar ou assistir um vídeo/música, responda EXATAMENTE: NULL
-8. Se for ambíguo, responda NULL. É melhor errar pro lado conservador.
+8. Se for ambíguo, responda NULL.
 
 ## Quando responder NULL
-- Perguntas gerais: "qual a capital da frança", "quanto é 2+2", "quem descobriu o brasil"
-- Comandos do Hub: "abre o iptv", "fecha o menu", "liga o booster", "desativa o packet"
-- Conversa: "oi", "tudo bem?", "bom dia", "valeu"
-- Controle de voz: "aumenta o volume", "para", "cancela", "limpa isso", "manda"
-- Qualquer coisa que não seja claramente pedido de vídeo ou música
+- Perguntas gerais, comandos do Hub, conversa, controle de voz, qualquer coisa que não seja pedido de vídeo ou música.
 
 ## Exemplos
-
-Pedido: coloca o vídeo do leo stronda com o cariani
-Saída: leo stronda cariani
-
-Pedido: quero ouvir metallica
-Saída: metallica
-
-Pedido: aquele vídeo do cara caindo de skate
-Saída: queda skate compilado
-
-Pedido: me mostra o trailer do gta 6
-Saída: gta 6 trailer
-
-Pedido: toca aquela música do linkin park que fala de dor
-Saída: linkin park numb
-
-Pedido: coloca o clipe da taylor swift
-Saída: taylor swift clipe
-
-Pedido: quero ver o vídeo do luba explicando javascript
-Saída: luba javascript
-
-Pedido: bota um funk pra tocar
-Saída: funk 2024
-
-Pedido: coloca a música que o cara canta no telhado de novo
-Saída: música telhado
-
-Pedido: youtube the weeknd blinding lights
-Saída: the weeknd blinding lights
-
-Pedido: abre o iptv
-Saída: NULL
-
-Pedido: qual a capital da frança
-Saída: NULL
-
-Pedido: oi tudo bem
-Saída: NULL
-
-Pedido: fecha o menu
-Saída: NULL
-
-Pedido: quanto é 2 mais 2
-Saída: NULL
-
-Pedido: cancela isso
-Saída: NULL
+"coloca o vídeo do leo stronda com o cariani" → leo stronda cariani
+"quero ouvir metallica" → metallica
+"aquele vídeo do cara caindo de skate" → queda skate compilado
+"me mostra o trailer do gta 6" → gta 6 trailer
+"toca aquela música do linkin park que fala de dor" → linkin park numb
+"coloca o clipe da taylor swift" → taylor swift clipe
+"bota um funk pra tocar" → funk 2024
+"youtube the weeknd blinding lights" → the weeknd blinding lights
+"abre o iptv" → NULL
+"qual a capital da frança" → NULL
+"oi tudo bem" → NULL
+"fecha o menu" → NULL
+"cancela isso" → NULL
 
 Responda APENAS a saída. Nada mais antes ou depois.`;
 
@@ -118,15 +79,23 @@ Responda APENAS a saída. Nada mais antes ou depois.`;
         return d.innerHTML;
     }
 
-    // Pega a chave do Groq de `sang_api_keys` (mesmo storage usado pelo resto
-    // do ecossistema). Caminho principal: wrapper global `_apis`. Fallback:
-    // leitura direta do JSON `{ groq: "gsk_..." }`.
+    // Normalização pra parsing de comandos: minúsculas, sem acento, sem pontuação.
+    // É isso que resolve "youtube, metallica" virar "youtube metallica".
+    function limparComando(s) {
+        return String(s || '')
+            .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+            .toLowerCase()
+            .replace(/[,;.!?]+/g, ' ')
+            .replace(/\s+/g, ' ')
+            .trim();
+    }
+
+    // Pega a chave do Groq de `sang_api_keys`.
     function getGroqKey() {
         try {
             const viaApis = window._apis?.getKey?.('groq');
             if (viaApis) return viaApis;
         } catch (_) {}
-
         try {
             const raw = localStorage.getItem('sang_api_keys');
             if (!raw) return '';
@@ -135,28 +104,106 @@ Responda APENAS a saída. Nada mais antes ou depois.`;
             if (typeof v === 'string') return v;
             if (v && typeof v === 'object' && typeof v.key === 'string') return v.key;
         } catch (_) {}
-
         return '';
     }
 
-    // ─── Parser de linguagem natural ───
-    function interpretar(fala) {
-        const t = String(fala || '').trim();
-        if (!t) return { tipo: null, valor: '' };
+    // ─── Classificação de comandos de controle ───
+    const ORDINAIS = {
+        'primeiro': 1, 'primeira': 1, 'um': 1, 'uma': 1, '1': 1,
+        'segundo': 2, 'segunda': 2, 'dois': 2, 'duas': 2, '2': 2,
+        'terceiro': 3, 'terceira': 3, 'tres': 3, '3': 3,
+        'quarto': 4, 'quarta': 4, 'quatro': 4, '4': 4,
+        'quinto': 5, 'quinta': 5, 'cinco': 5, '5': 5,
+        'sexto': 6, 'sexta': 6, 'seis': 6, '6': 6,
+        'setimo': 7, 'setima': 7, 'sete': 7, '7': 7,
+        'oitavo': 8, 'oitava': 8, 'oito': 8, '8': 8,
+        'nono': 9, 'nona': 9, 'nove': 9, '9': 9,
+        'decimo': 10, 'decima': 10, 'dez': 10, '10': 10
+    };
+    const ORDINAL_WORDS = 'primeiro|primeira|segundo|segunda|terceiro|terceira|quarto|quarta|quinto|quinta|sexto|sexta|setimo|setima|oitavo|oitava|nono|nona|decimo|decima|1|2|3|4|5|6|7|8|9|10';
 
-        const vid = extractVideoId(t);
+    const POS_VERB_PREFIX_RE = new RegExp(
+        '^(?:coloca|colocar|toca|tocar|abre|abrir|bota|poe|p[oõ]e|escolhe|escolher|seleciona|selecionar|vai|ir|play|quero(?:\\s+ver|\\s+ouvir)?|mostra|mostrar)\\s+(?:(?:o|a|os|as)\\s+)?',
+        'i'
+    );
+    const POS_TAIL_RE = new RegExp(
+        '^(' + ORDINAL_WORDS + ')\\s*(?:video|clipe|item|resultado|linha|opcao|da\\s+lista|na\\s+lista)?$',
+        'i'
+    );
+    const MEDIA_CTX_RE = /\b(?:video|clipe|item|resultado|linha|opcao|lista)\b/;
+
+    const CMD_LITE_RE = /^(?:modo\s+)?(?:lite|limpo|cinema|imersivo|tela\s+limpa)$|^(?:so|apenas)\s+o\s+video$/;
+    const CMD_UNLITE_RE = /^(?:sai|sair|desativa|desativar|desliga|desligar|encerra|encerrar|fecha|fechar)\s+(?:(?:do|de|o|a)\s+)?(?:modo\s+)?(?:lite|limpo|cinema|imersivo|tela\s+limpa)$|^(?:modo\s+)?(?:normal|padrao|completo|cheio)$/;
+    const CMD_HIDE_LIST_RE = /^(?:oculta|ocultar|esconde|esconder|tira|tirar|fecha|fechar)\s+(?:(?:a|o|as|os)\s+)?(?:lista|resultados|painel|barra|lateral|sidebar)$/;
+    const CMD_SHOW_LIST_RE = /^(?:mostra|mostrar|abre|abrir|exibe|exibir|volta|voltar)\s+(?:(?:a|o|as|os)\s+)?(?:lista|resultados|painel|barra|lateral|sidebar)$/;
+    const CMD_PAUSE_RE = /^(?:pausa|pausar|pause)\s*(?:(?:o|a)\s+)?(?:video|musica|clipe)?$|^(?:para|parar)\s+(?:(?:o|a)\s+)?(?:video|musica|clipe)$/;
+    const CMD_PLAY_RE = /^(?:play|resume)\s*(?:(?:o|a)\s+)?(?:video|musica|clipe)?$|^(?:continua|continuar|continue|retoma|retomar)\s*(?:(?:o|a)\s+)?(?:video|musica|clipe)?$|^(?:da|dar)\s+play$/;
+
+    // Retorna { tipo, valor } ou null.
+    function classificarComando(n) {
+        // Modo lite — entrada
+        if (CMD_LITE_RE.test(n)) return { tipo: 'lite' };
+
+        // Modo lite — saída
+        if (CMD_UNLITE_RE.test(n)) return { tipo: 'unlite' };
+
+        // Ocultar/mostrar lista
+        if (CMD_HIDE_LIST_RE.test(n)) return { tipo: 'hide_list' };
+        if (CMD_SHOW_LIST_RE.test(n)) return { tipo: 'show_list' };
+
+        // Posição na lista
+        let posText = n;
+        const verbM = n.match(POS_VERB_PREFIX_RE);
+        if (verbM) {
+            posText = n.slice(verbM[0].length);
+        } else {
+            posText = posText.replace(/^(?:o|a|os|as)\s+/, '');
+        }
+        const posM = posText.match(POS_TAIL_RE);
+        if (posM) {
+            const hadVerb = !!verbM;
+            const hadMedia = MEDIA_CTX_RE.test(n);
+            if (hadVerb || hadMedia) {
+                const num = ORDINAIS[posM[1]];
+                if (num) return { tipo: 'position', valor: num };
+            }
+        }
+
+        // Pause / Play
+        if (CMD_PAUSE_RE.test(n)) return { tipo: 'pause' };
+        if (CMD_PLAY_RE.test(n)) return { tipo: 'play' };
+
+        return null;
+    }
+
+    // ─── Parser de linguagem natural ───
+    // Retorna { tipo, valor }.
+    function interpretar(fala) {
+        const raw = String(fala || '');
+
+        // 1) Link/ID direto — antes de limpar (limparComando destrói pontos de URL)
+        const vid = extractVideoId(raw);
         if (vid) return { tipo: 'video', valor: vid };
 
+        const t = limparComando(raw);
+        if (!t) return { tipo: null, valor: '' };
+
+        // 2) Comandos de controle
+        const cmd = classificarComando(t);
+        if (cmd) return cmd;
+
+        // 3) Wake word no começo ("youtube X", "yt X")
         const wakeRe = new RegExp('^(?:' + YT_WAKE.join('|') + ')\\s+(.+)$', 'i');
         const wake = t.match(wakeRe);
         if (wake) return { tipo: 'query', valor: wake[1].trim() };
 
+        // 4) Verbo + mídia
         if (YT_VERBOS.test(t) && YT_MIDIA.test(t)) {
             const limpo = t
                 .replace(/^(?:coloca|colocar|toca|tocar|p[oõ]e|bota|abre|abrir|busca|buscar|pesquisa|pesquisar|procura|procurar|mostra|mostrar)\b\s*/i, '')
                 .replace(/\b(?:pra|para)\s+(?:mim|mim\s+ver)\b\s*/i, '')
                 .replace(/^o\s+/i, '')
-                .replace(/^(?:v[ií]deo|clipe|m[uú]sica)\s+(?:do|da|de|com)\s+/i, '')
+                .replace(/^(?:video|clipe|musica)\s+(?:do|da|de|com)\s+/i, '')
                 .trim();
             return { tipo: 'query', valor: limpo || t };
         }
@@ -164,8 +211,7 @@ Responda APENAS a saída. Nada mais antes ou depois.`;
         return { tipo: null, valor: t };
     }
 
-    // ─── IA: chamada direta ao Groq ───
-    // Fala livre → query curta de busca. Retorna null se não for sobre vídeo.
+    // ─── IA: fala livre → query ───
     async function normalizarComIA(fala) {
         const key = getGroqKey();
         if (!key) return null;
@@ -197,26 +243,20 @@ Responda APENAS a saída. Nada mais antes ou depois.`;
             const data = await res.json();
             const bruto = data?.choices?.[0]?.message?.content || '';
 
-            // Limpa: tira aspas/crases das pontas, prefixos tipo "Query:",
-            // travessões, e pega só a primeira linha não-vazia.
             const linhas = String(bruto).split('\n').map(l => l.trim()).filter(Boolean);
             if (!linhas.length) return null;
 
             const limpo = linhas[0]
                 .replace(/^["'`]+|["'`]+$/g, '')
-                .replace(/^(?:query|busca|sa[íi]da|resposta|output|→)\s*[:\-]?\s*/i, '')
+                .replace(/^(?:query|busca|saida|resposta|output|→)\s*[:\-]?\s*/i, '')
                 .replace(/^[-–—]\s*/, '')
                 .trim();
 
             if (!limpo) return null;
 
-            // Canoniza pra comparar com NULL: tira pontuação final.
             const canonico = limpo.replace(/[.,;:!?]+$/, '').trim();
-
-            // Qualquer variante de "null"/"nada"/"nenhum" vira descarte.
             if (/^(null|none|nada|nenhum[a]?|n\/a|na)$/i.test(canonico)) return null;
 
-            // Se sobrar mais de 8 palavras, provavelmente a IA ignorou o formato.
             if (canonico.split(/\s+/).length > 8) {
                 console.warn('[YouTube] IA devolveu query longa, usando mesmo assim:', canonico);
             }
@@ -235,7 +275,6 @@ Responda APENAS a saída. Nada mais antes ou depois.`;
     function init() {
         if (window[UID]) return;
 
-        // DOM
         const host = document.createElement('div');
         host.id = UID + '_host';
         host.style.cssText = 'all:initial;position:fixed;top:0;left:0;z-index:2147483000;';
@@ -295,6 +334,7 @@ Responda APENAS a saída. Nada mais antes ou depois.`;
         .results::-webkit-scrollbar-thumb { background: rgba(255,255,255,.15); border-radius: 2px; }
         .item { display: flex; gap: 8px; padding: 8px; cursor: pointer; transition: background .12s; }
         .item:hover { background: rgba(255,255,255,.06); }
+        .item.active { background: rgba(62,166,255,.12); box-shadow: inset 3px 0 0 #3ea6ff; }
         .item img { width: 88px; height: 50px; object-fit: cover; border-radius: 6px; flex-shrink: 0; background: #222; }
         .item-info { flex: 1; min-width: 0; }
         .item-title { font-size: 12px; color: #f1f1f1; line-height: 1.3; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
@@ -307,12 +347,25 @@ Responda APENAS a saída. Nada mais antes ou depois.`;
             position: absolute; right: 0; bottom: 0; width: 16px; height: 16px; cursor: nwse-resize; touch-action: none;
             background: linear-gradient(135deg, transparent 50%, rgba(255,255,255,.2) 50%);
         }
+        /* Modo lite: só o vídeo. Cabeçalho, barra, lista e handle escondidos. */
+        .panel.lite .hdr,
+        .panel.lite .searchbar,
+        .panel.lite .results,
+        .panel.lite .resize-handle { display: none !important; }
+        .panel.lite { border-radius: 0; border-color: transparent; box-shadow: 0 12px 40px rgba(0,0,0,.7); }
         `;
         root.appendChild(style);
 
         // STATE
         const geom = loadGeom() || { left: 70, top: 70, width: 820, height: 540 };
-        const state = { searchController: null, results: [], resultsVisible: true };
+        const state = {
+            searchController: null,
+            results: [],
+            resultsVisible: true,
+            hasVideo: false,
+            liteMode: false,
+            currentVideoId: null
+        };
         let minimized = false;
 
         const panel = document.createElement('div');
@@ -354,7 +407,11 @@ Responda APENAS a saída. Nada mais antes ou depois.`;
         const searchbarEl = panel.querySelector('.searchbar');
 
         function onHostKeydown(e) {
-            if (e.key === 'Escape' && !minimized) { kill(); return; }
+            if (e.key === 'Escape') {
+                // Em modo lite, Esc sai do lite antes de fechar o painel.
+                if (state.liteMode) { sairLite(); e.stopPropagation(); return; }
+                if (!minimized) { kill(); return; }
+            }
             e.stopPropagation();
         }
         function stopProp(e) { e.stopPropagation(); }
@@ -368,7 +425,7 @@ Responda APENAS a saída. Nada mais antes ou depois.`;
         }
 
         function computeHeightForWidth(width) {
-            const resultsW = state.resultsVisible ? RESULTS_W : 0;
+            const resultsW = (state.resultsVisible && !state.liteMode) ? RESULTS_W : 0;
             const playerW = width - resultsW - 2;
             if (playerW <= 0) return MIN_H;
             return Math.round(playerW * 9 / 16 + chromeHeight());
@@ -415,11 +472,31 @@ Responda APENAS a saída. Nada mais antes ou depois.`;
             }
         }
 
-        // PLAYER
+        // PLAYER — enablejsapi=1 permite pausar/retomar via postMessage.
         function loadVideo(videoId) {
-            const params = 'autoplay=1&rel=0&iv_load_policy=3&playsinline=1&modestbranding=1';
+            const origin = encodeURIComponent(location.origin);
+            const params = `autoplay=1&rel=0&iv_load_policy=3&playsinline=1&modestbranding=1&enablejsapi=1&origin=${origin}`;
             playerWrap.innerHTML = `<iframe src="https://www.youtube.com/embed/${videoId}?${params}"
                 allow="autoplay; encrypted-media; picture-in-picture; fullscreen" allowfullscreen></iframe>`;
+            state.hasVideo = true;
+            state.currentVideoId = videoId;
+        }
+
+        // Envia comando pro iframe do YouTube.
+        function postYT(func) {
+            const ifr = playerWrap.querySelector('iframe');
+            if (!ifr || !ifr.contentWindow) return false;
+            try {
+                ifr.contentWindow.postMessage(JSON.stringify({
+                    event: 'command',
+                    func,
+                    args: []
+                }), '*');
+                return true;
+            } catch (e) {
+                console.warn('[YouTube] postMessage falhou:', e);
+                return false;
+            }
         }
 
         // SEARCH
@@ -459,7 +536,7 @@ Responda APENAS a saída. Nada mais antes ou depois.`;
                     return;
                 }
 
-                if (!state.resultsVisible) {
+                if (!state.resultsVisible && !state.liteMode) {
                     state.resultsVisible = true;
                     resultsEl.classList.remove('hidden');
                     btnToggle.classList.remove('active');
@@ -467,29 +544,39 @@ Responda APENAS a saída. Nada mais antes ou depois.`;
                     scheduleSaveGeom();
                 }
 
-                resultsEl.innerHTML = state.results.map((v, i) => `
-                    <div class="item" data-index="${i}">
-                        <img src="${v.thumb}" alt="" loading="lazy" />
-                        <div class="item-info">
-                            <div class="item-title">${escapeHtml(v.title)}</div>
-                            <div class="item-channel">${escapeHtml(v.channel)}</div>
-                        </div>
-                    </div>
-                `).join('');
-
-                resultsEl.querySelectorAll('.item').forEach(el => {
-                    el.addEventListener('click', () => {
-                        const v = state.results[parseInt(el.dataset.index, 10)];
-                        if (v) { loadVideo(v.id); input.value = `https://youtu.be/${v.id}`; }
-                    });
-                });
-
-                loadVideo(state.results[0].id);
-                input.value = `https://youtu.be/${state.results[0].id}`;
+                renderResults();
+                tocar(state.results[0].id);
             } catch (e) {
                 if (e.name === 'AbortError') return;
                 resultsEl.innerHTML = `<div class="empty flow">Falha na busca.</div>`;
             }
+        }
+
+        function renderResults() {
+            resultsEl.innerHTML = state.results.map((v, i) => `
+                <div class="item" data-index="${i}">
+                    <img src="${v.thumb}" alt="" loading="lazy" />
+                    <div class="item-info">
+                        <div class="item-title">${escapeHtml(v.title)}</div>
+                        <div class="item-channel">${escapeHtml(v.channel)}</div>
+                    </div>
+                </div>
+            `).join('');
+
+            resultsEl.querySelectorAll('.item').forEach(el => {
+                el.addEventListener('click', () => {
+                    const v = state.results[parseInt(el.dataset.index, 10)];
+                    if (v) {
+                        tocar(v.id);
+                        marcarAtivo(parseInt(el.dataset.index, 10));
+                    }
+                });
+            });
+        }
+
+        function marcarAtivo(idx) {
+            const items = resultsEl.querySelectorAll('.item');
+            items.forEach((el, i) => el.classList.toggle('active', i === idx));
         }
 
         function runAction() {
@@ -497,9 +584,9 @@ Responda APENAS a saída. Nada mais antes ou depois.`;
             if (!value) return;
             const videoId = extractVideoId(value);
             if (videoId) {
-                loadVideo(videoId);
+                tocar(videoId);
                 resultsEl.innerHTML = '';
-                if (state.resultsVisible) {
+                if (state.resultsVisible && !state.liteMode) {
                     state.resultsVisible = false;
                     resultsEl.classList.add('hidden');
                     btnToggle.classList.add('active');
@@ -603,7 +690,7 @@ Responda APENAS a saída. Nada mais antes ou depois.`;
         btnMin.addEventListener('click', toggleMinimize);
         btnCls.addEventListener('click', kill);
 
-        // ─── API interna ───
+        // ─── Ações internas ───
         function tocar(videoId) {
             if (!videoId) return false;
             garantirVisivel();
@@ -621,15 +708,90 @@ Responda APENAS a saída. Nada mais antes ou depois.`;
             return true;
         }
 
-        // Fala → vídeo ou busca. Parser local primeiro; se não casar, IA.
+        function pausar() {
+            if (!state.hasVideo) return false;
+            postYT('pauseVideo');
+            return true;
+        }
+
+        function continuar() {
+            if (!state.hasVideo) return false;
+            postYT('playVideo');
+            return true;
+        }
+
+        function escolherPorPosicao(n) {
+            if (!state.results.length) return false;
+            const idx = Math.max(0, Math.min(state.results.length - 1, n - 1));
+            const v = state.results[idx];
+            if (!v) return false;
+            tocar(v.id);
+            marcarAtivo(idx);
+            // Rolagem suave até o item ativo
+            const item = resultsEl.querySelectorAll('.item')[idx];
+            if (item) item.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+            return true;
+        }
+
+        function esconderLista() {
+            if (!state.resultsVisible) return true;
+            state.resultsVisible = false;
+            resultsEl.classList.add('hidden');
+            btnToggle.classList.add('active');
+            applySize(geom.width, false);
+            scheduleSaveGeom();
+            return true;
+        }
+
+        function mostrarLista() {
+            if (state.resultsVisible) return true;
+            state.resultsVisible = true;
+            resultsEl.classList.remove('hidden');
+            btnToggle.classList.remove('active');
+            applySize(geom.width, false);
+            scheduleSaveGeom();
+            return true;
+        }
+
+        function entrarLite() {
+            if (state.liteMode) return true;
+            state.liteMode = true;
+            panel.classList.add('lite');
+            applySize(geom.width, true);
+            return true;
+        }
+
+        function sairLite() {
+            if (!state.liteMode) return true;
+            state.liteMode = false;
+            panel.classList.remove('lite');
+            applySize(geom.width, true);
+            return true;
+        }
+
+        function executarComando(cmd) {
+            if (!cmd) return false;
+            switch (cmd.tipo) {
+                case 'pause':     return pausar();
+                case 'play':      return continuar();
+                case 'position':  return escolherPorPosicao(cmd.valor);
+                case 'hide_list': return esconderLista();
+                case 'show_list': return mostrarLista();
+                case 'lite':      return entrarLite();
+                case 'unlite':    return sairLite();
+            }
+            return false;
+        }
+
+        // Fala → ação. Comandos têm prioridade; fallback IA só se não casar nada.
         async function tocarPorFala(fala) {
             const p = interpretar(fala);
             if (p.tipo === 'video') return tocar(p.valor);
             if (p.tipo === 'query') return pesquisar(p.valor);
+            if (p.tipo) return executarComando(p);
 
             const viaIA = await normalizarComIA(fala);
             if (viaIA) return pesquisar(viaIA);
-
             return false;
         }
 
@@ -640,24 +802,46 @@ Responda APENAS a saída. Nada mais antes ou depois.`;
             const wake = meta?.wake?.toLowerCase();
             if (wake === 'youtube' || wake === 'yt') return true;
 
-            const t = String(texto || '').trim();
-            if (!t) return false;
-            if (extractVideoId(t)) return true;
+            if (extractVideoId(texto)) return true;
 
-            const wakeRe = new RegExp('^(?:' + YT_WAKE.join('|') + ')\\s+', 'i');
-            if (wakeRe.test(t)) return true;
+            const t = limparComando(texto);
+            if (!t) return false;
+
+            if (/^(?:youtube|yt)\s+/.test(t)) return true;
 
             if (YT_VERBOS.test(t) && YT_MIDIA.test(t)) return true;
+
+            const cmd = classificarComando(t);
+            if (cmd) {
+                switch (cmd.tipo) {
+                    case 'pause':
+                    case 'play':
+                        return state.hasVideo;
+                    case 'position':
+                        return state.results.length > 0;
+                    case 'hide_list':
+                        return state.resultsVisible && !state.liteMode;
+                    case 'show_list':
+                        return !state.resultsVisible && !state.liteMode;
+                    case 'lite':
+                        return !state.liteMode;
+                    case 'unlite':
+                        return state.liteMode;
+                }
+            }
 
             return false;
         }
 
-                function registrarHandlerVoz() {
+        function registrarHandlerVoz() {
             if (!window._voiceCommands?.registrar) return false;
-            if (vozHandler) return true;                    // ← guarda de idempotência
+            if (vozHandler) return true;
             vozHandler = (texto, n, meta) => {
-                // Wake word explícita = texto depois dela É a query, sem IA.
-                if (meta?.wake === 'youtube' || meta?.wake === 'yt') {
+                const wake = meta?.wake?.toLowerCase();
+                // Wake word explícita: o texto depois dela pode ser comando OU query.
+                if (wake === 'youtube' || wake === 'yt') {
+                    const cmd = classificarComando(limparComando(texto));
+                    if (cmd) { executarComando(cmd); return true; }
                     pesquisar(texto);
                     return true;
                 }
@@ -676,14 +860,21 @@ Responda APENAS a saída. Nada mais antes ou depois.`;
             vozHandler = null;
         }
 
-        registrarHandlerVoz();
-        window.addEventListener('sang:voz-ready', registrarHandlerVoz);
-        window.addEventListener('sang:voz-state', registrarHandlerVoz);
+        // Registro idempotente — cobre caso de yt.js carregado antes de voz.js.
+        function forcarRegistroVoz() {
+            if (!window._voiceCommands?.registrar) return false;
+            if (vozHandler) limparHandlerVoz();
+            return registrarHandlerVoz();
+        }
+
+        forcarRegistroVoz();
+        window.addEventListener('sang:voz-ready', forcarRegistroVoz);
+        window.addEventListener('sang:voz-state', forcarRegistroVoz);
 
         function kill() {
             limparHandlerVoz();
-            window.removeEventListener('sang:voz-ready', registrarHandlerVoz);
-            window.removeEventListener('sang:voz-state', registrarHandlerVoz);
+            window.removeEventListener('sang:voz-ready', forcarRegistroVoz);
+            window.removeEventListener('sang:voz-state', forcarRegistroVoz);
 
             if (saveTimer) clearTimeout(saveTimer);
             if (state.searchController) state.searchController.abort();
@@ -711,7 +902,13 @@ Responda APENAS a saída. Nada mais antes ou depois.`;
             tocar,
             pesquisar,
             tocarPorFala,
-            interpretar
+            interpretar,
+            // extras pra debug/teste manual
+            pausar,
+            continuar,
+            escolherPorPosicao,
+            entrarLite,
+            sairLite
         };
     }
 
