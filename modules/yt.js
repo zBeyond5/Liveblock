@@ -1,3 +1,4 @@
+// modules/yt.js — YouTube embed
 (function () {
     'use strict';
     const UID = '_yt';
@@ -11,6 +12,28 @@
     const MAX_W = 2400;
     const RESULTS_W = 260;
 
+    // IA 
+    const IA_ENDPOINT = 'https://api.groq.com/openai/v1/chat/completions';
+    const IA_MODEL = 'openai/gpt-oss-20b';
+    const IA_TIMEOUT_MS = 5000;
+    const IA_SYSTEM = `Você transforma pedidos em linguagem natural em queries CURTAS de busca no YouTube (2 a 6 palavras).
+
+Responda APENAS com a query, sem aspas, sem explicação, sem pontuação final.
+Se o pedido NÃO for sobre buscar/tocar um vídeo, responda apenas: NULL
+
+Exemplos:
+"coloca o vídeo do leo stronda com o cariani" → leo stronda cariani
+"quero ouvir metallica" → metallica
+"aquele vídeo do cara caindo de skate" → queda skate compilado
+"me mostra o trailer do gta 6" → gta 6 trailer
+"qual a capital da frança" → NULL
+"abre o iptv" → NULL`;
+
+    // VOZ
+    const YT_WAKE = ['youtube', 'yt'];
+    const YT_VERBOS = /\b(coloca|colocar|toca|tocar|p[oõ]e|bota|abre|abrir|busca|buscar|pesquisa|pesquisar|procura|procurar|mostra|mostrar|quero\s+ver|quero\s+ouvir)\b/i;
+    const YT_MIDIA  = /\b(v[ií]deo|v[ií]deozinho|clipe|m[uú]sica)\b/i;
+
     // HELPERS
     function loadGeom() {
         try {
@@ -22,7 +45,7 @@
     }
 
     function extractVideoId(raw) {
-        const v = raw.trim();
+        const v = String(raw || '').trim();
         const patterns = [
             /(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/|youtube\.com\/shorts\/)([a-zA-Z0-9_-]{11})/,
             /^([a-zA-Z0-9_-]{11})$/
@@ -37,10 +60,95 @@
         return d.innerHTML;
     }
 
+    // Pega a chave do Groq do mesmo storage usado pelo resto do ecossistema.
+    function getGroqKey() {
+        try {
+            const viaApis = window._apis?.getKey?.('groq');
+            if (viaApis) return viaApis;
+        } catch (_) {}
+        try { return localStorage.getItem('sang_groq_key') || ''; }
+        catch (_) { return ''; }
+    }
+
+    // ─── Parser de linguagem natural ───
+    function interpretar(fala) {
+        const t = String(fala || '').trim();
+        if (!t) return { tipo: null, valor: '' };
+
+        const vid = extractVideoId(t);
+        if (vid) return { tipo: 'video', valor: vid };
+
+        const wakeRe = new RegExp('^(?:' + YT_WAKE.join('|') + ')\\s+(.+)$', 'i');
+        const wake = t.match(wakeRe);
+        if (wake) return { tipo: 'query', valor: wake[1].trim() };
+
+        if (YT_VERBOS.test(t) && YT_MIDIA.test(t)) {
+            const limpo = t
+                .replace(/^(?:coloca|colocar|toca|tocar|p[oõ]e|bota|abre|abrir|busca|buscar|pesquisa|pesquisar|procura|procurar|mostra|mostrar)\b\s*/i, '')
+                .replace(/\b(?:pra|para)\s+(?:mim|mim\s+ver)\b\s*/i, '')
+                .replace(/^o\s+/i, '')
+                .replace(/^(?:v[ií]deo|clipe|m[uú]sica)\s+(?:do|da|de|com)\s+/i, '')
+                .trim();
+            return { tipo: 'query', valor: limpo || t };
+        }
+
+        return { tipo: null, valor: t };
+    }
+
+    // ─── IA: chamada direta ao Groq ───
+    // Fala livre → query curta de busca. Retorna null se não for sobre vídeo.
+    async function normalizarComIA(fala) {
+        const key = getGroqKey();
+        if (!key) return null;
+
+        const ctrl = new AbortController();
+        const timer = setTimeout(() => ctrl.abort(), IA_TIMEOUT_MS);
+        try {
+            const res = await fetch(IA_ENDPOINT, {
+                method: 'POST',
+                headers: {
+                    'Authorization': 'Bearer ' + key,
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    model: IA_MODEL,
+                    messages: [
+                        { role: 'system', content: IA_SYSTEM },
+                        { role: 'user', content: String(fala || '') }
+                    ],
+                    max_tokens: 40,
+                    temperature: 0.1,
+                    top_p: 0.9
+                }),
+                signal: ctrl.signal
+            });
+
+            if (!res.ok) throw new Error('HTTP ' + res.status);
+            const data = await res.json();
+            const bruto = data?.choices?.[0]?.message?.content || '';
+
+            const limpo = String(bruto).trim()
+                .replace(/^["'`]+|["'`]+$/g, '')
+                .replace(/^[-–—]\s*/, '')
+                .split('\n')[0]
+                .trim();
+
+            if (!limpo || /^null$/i.test(limpo)) return null;
+            return limpo;
+        } catch (e) {
+            if (e.name !== 'AbortError') {
+                console.warn('[YouTube] Normalização IA falhou:', e);
+            }
+            return null;
+        } finally {
+            clearTimeout(timer);
+        }
+    }
+
     function init() {
         if (window[UID]) return;
 
-        // DOM (host + shadow, isola do CSS do jogo)
+        // DOM
         const host = document.createElement('div');
         host.id = UID + '_host';
         host.style.cssText = 'all:initial;position:fixed;top:0;left:0;z-index:2147483000;';
@@ -105,6 +213,7 @@
         .item-title { font-size: 12px; color: #f1f1f1; line-height: 1.3; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
         .item-channel { font-size: 10.5px; color: #aaa; margin-top: 3px; }
         .empty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 8px; color: #888; font-size: 12px; text-align: center; padding: 20px; }
+        .empty.flow { position: static; height: 100%; }
         .spin { width: 18px; height: 18px; border: 2px solid rgba(255,255,255,.2); border-top-color: #fff; border-radius: 50%; animation: spin .7s linear infinite; }
         @keyframes spin { to { transform: rotate(360deg); } }
         .resize-handle {
@@ -117,6 +226,7 @@
         // STATE
         const geom = loadGeom() || { left: 70, top: 70, width: 820, height: 540 };
         const state = { searchController: null, results: [], resultsVisible: true };
+        let minimized = false;
 
         const panel = document.createElement('div');
         panel.className = 'panel';
@@ -131,7 +241,7 @@
                 </div>
             </div>
             <div class="searchbar">
-                <input type="text" id="input" placeholder="Pesquisar ou colar um link do YouTube" />
+                <input type="text" id="input" placeholder="Pesquisar ou colar um link do YouTube" aria-label="Buscar no YouTube" />
                 <button id="btnGo">Buscar</button>
             </div>
             <div class="body" id="body">
@@ -143,15 +253,6 @@
             <div class="resize-handle" id="resizeHandle" aria-hidden="true"></div>
         `;
         root.appendChild(panel);
-
-        // Impede que teclas digitadas no painel vazem pro listener global do jogo
-        function onHostKeydown(e) {
-            if (e.key === 'Escape' && !minimized) kill();
-            e.stopPropagation();
-        }
-        function stopProp(e) { e.stopPropagation(); }
-        const LEAK_EVENTS = ['keydown', 'keyup', 'keypress', 'input', 'beforeinput'];
-        LEAK_EVENTS.forEach(t => host.addEventListener(t, t === 'keydown' ? onHostKeydown : stopProp));
 
         const hdr = panel.querySelector('#hdr');
         const btnToggle = panel.querySelector('#btnToggle');
@@ -165,19 +266,25 @@
         const resizeHandle = panel.querySelector('#resizeHandle');
         const searchbarEl = panel.querySelector('.searchbar');
 
-        // ---- Geometria & 16:9 ---------------------------------------------------
-        // Cabeçalho (header + searchbar + bordas) não entra no cálculo do 16:9.
+        function onHostKeydown(e) {
+            if (e.key === 'Escape' && !minimized) { kill(); return; }
+            e.stopPropagation();
+        }
+        function stopProp(e) { e.stopPropagation(); }
+        const LEAK_EVENTS = ['keydown', 'keyup', 'keypress', 'input', 'beforeinput'];
+        LEAK_EVENTS.forEach(t => host.addEventListener(t, t === 'keydown' ? onHostKeydown : stopProp));
+
+        // Geometria & 16:9
         function chromeHeight() {
             const h = hdr.getBoundingClientRect().height + searchbarEl.getBoundingClientRect().height;
-            return h + 2; // 1px top + 1px bottom de borda do panel
+            return h + 2;
         }
 
         function computeHeightForWidth(width) {
             const resultsW = state.resultsVisible ? RESULTS_W : 0;
-            const playerW = width - resultsW - 2; // 2px de borda horizontal
+            const playerW = width - resultsW - 2;
             if (playerW <= 0) return MIN_H;
-            const playerH = playerW * 9 / 16;
-            return Math.round(playerH + chromeHeight());
+            return Math.round(playerW * 9 / 16 + chromeHeight());
         }
 
         function clampGeom(s) {
@@ -199,7 +306,6 @@
             }
         }
 
-        // Aplica tamanho inicial respeitando o 16:9
         applySize(geom.width, true);
 
         // STORAGE
@@ -211,8 +317,15 @@
             }, 300);
         }
 
-        function getApiKey() {
+        function getYtApiKey() {
             try { return localStorage.getItem(APIKEY_KEY) || ''; } catch (_) { return ''; }
+        }
+
+        function garantirVisivel() {
+            if (minimized) {
+                minimized = false;
+                panel.style.display = 'flex';
+            }
         }
 
         // PLAYER
@@ -224,9 +337,9 @@
 
         // SEARCH
         async function runSearch(query) {
-            const key = getApiKey();
+            const key = getYtApiKey();
             if (!key) {
-                resultsEl.innerHTML = `<div class="empty" style="position:static;height:100%">Configure sua API key do YouTube (⚙) para buscar.<br>Ou cole um link direto do vídeo.</div>`;
+                resultsEl.innerHTML = `<div class="empty flow">Configure sua API key do YouTube (⚙) para buscar.<br>Ou cole um link direto do vídeo.</div>`;
                 return;
             }
 
@@ -234,7 +347,7 @@
             const controller = new AbortController();
             state.searchController = controller;
 
-            resultsEl.innerHTML = `<div class="empty" style="position:static;height:100%"><div class="spin"></div></div>`;
+            resultsEl.innerHTML = `<div class="empty flow"><div class="spin"></div></div>`;
 
             const url = `${SEARCH_ENDPOINT}?part=snippet&type=video&maxResults=15&q=${encodeURIComponent(query)}&key=${encodeURIComponent(key)}`;
             try {
@@ -242,7 +355,7 @@
                 const data = await res.json();
                 if (!res.ok) {
                     const msg = data?.error?.message || 'Erro na busca';
-                    resultsEl.innerHTML = `<div class="empty" style="position:static;height:100%">${escapeHtml(msg)}</div>`;
+                    resultsEl.innerHTML = `<div class="empty flow">${escapeHtml(msg)}</div>`;
                     return;
                 }
 
@@ -255,16 +368,16 @@
                 }));
 
                 if (!state.results.length) {
-                    resultsEl.innerHTML = `<div class="empty" style="position:static;height:100%">Nenhum resultado.</div>`;
+                    resultsEl.innerHTML = `<div class="empty flow">Nenhum resultado.</div>`;
                     return;
                 }
 
-                // Ao buscar, garante que a lista está visível pra escolher
                 if (!state.resultsVisible) {
                     state.resultsVisible = true;
                     resultsEl.classList.remove('hidden');
                     btnToggle.classList.remove('active');
                     applySize(geom.width, false);
+                    scheduleSaveGeom();
                 }
 
                 resultsEl.innerHTML = state.results.map((v, i) => `
@@ -288,7 +401,7 @@
                 input.value = `https://youtu.be/${state.results[0].id}`;
             } catch (e) {
                 if (e.name === 'AbortError') return;
-                resultsEl.innerHTML = `<div class="empty" style="position:static;height:100%">Falha na busca.</div>`;
+                resultsEl.innerHTML = `<div class="empty flow">Falha na busca.</div>`;
             }
         }
 
@@ -299,12 +412,12 @@
             if (videoId) {
                 loadVideo(videoId);
                 resultsEl.innerHTML = '';
-                // Se for link direto, esconde a lista pra maximizar o vídeo
                 if (state.resultsVisible) {
                     state.resultsVisible = false;
                     resultsEl.classList.add('hidden');
                     btnToggle.classList.add('active');
                     applySize(geom.width, false);
+                    scheduleSaveGeom();
                 }
                 return;
             }
@@ -316,13 +429,12 @@
         input.addEventListener('keydown', e => { if (e.key === 'Enter') runAction(); });
 
         btnKey.addEventListener('click', () => {
-            const current = getApiKey();
+            const current = getYtApiKey();
             const next = window.prompt('Cole sua API key do YouTube Data API v3 (Google Cloud Console):', current);
             if (next === null) return;
             try { localStorage.setItem(APIKEY_KEY, next.trim()); } catch (_) {}
         });
 
-        // Toggle resultados
         function toggleResults() {
             state.resultsVisible = !state.resultsVisible;
             resultsEl.classList.toggle('hidden', !state.resultsVisible);
@@ -365,7 +477,7 @@
         hdr.addEventListener('pointerup', endDrag);
         hdr.addEventListener('pointercancel', endDrag);
 
-        // Resize — travado em 16:9 na área do vídeo
+        // Resize 16:9
         let resizePointerId = null, resizeStart = null;
         function onResizeDown(e) {
             e.stopPropagation();
@@ -377,7 +489,6 @@
             if (resizePointerId === null || e.pointerId !== resizePointerId) return;
             const dx = e.clientX - resizeStart.mouseX;
             const dy = e.clientY - resizeStart.mouseY;
-            // Converte dy pra equivalente horizontal (16:9) e usa o eixo dominante
             const dyAsDx = dy * 16 / 9;
             const delta = Math.abs(dx) > Math.abs(dyAsDx) ? dx : dyAsDx;
             applySize(resizeStart.width + delta, false);
@@ -393,7 +504,6 @@
         resizeHandle.addEventListener('pointerup', endResize);
         resizeHandle.addEventListener('pointercancel', endResize);
 
-        // Reclamp em resize da janela do navegador
         function onWindowResize() {
             clampGeom(geom);
             panel.style.left = geom.left + 'px'; panel.style.top = geom.top + 'px';
@@ -401,18 +511,91 @@
         }
         window.addEventListener('resize', onWindowResize);
 
-        // Minimizar / fechar / Esc
-        let minimized = false;
+        // Minimizar / fechar
         function toggleMinimize() { minimized = !minimized; panel.style.display = minimized ? 'none' : 'flex'; }
         btnMin.addEventListener('click', toggleMinimize);
         btnCls.addEventListener('click', kill);
-        function onKeyDown(e) { if (e.key === 'Escape' && !minimized) kill(); }
-        document.addEventListener('keydown', onKeyDown);
+
+        // ─── API interna ───
+        function tocar(videoId) {
+            if (!videoId) return false;
+            garantirVisivel();
+            loadVideo(videoId);
+            input.value = `https://youtu.be/${videoId}`;
+            return true;
+        }
+
+        function pesquisar(query) {
+            const q = String(query || '').trim();
+            if (!q) return false;
+            garantirVisivel();
+            input.value = q;
+            runSearch(q);
+            return true;
+        }
+
+        // Fala → vídeo ou busca. Tenta parser local primeiro; se não casar,
+        // cai na IA (chamada direta ao Groq) pra normalizar a query.
+        async function tocarPorFala(fala) {
+            const p = interpretar(fala);
+            if (p.tipo === 'video') return tocar(p.valor);
+            if (p.tipo === 'query') return pesquisar(p.valor);
+
+            const viaIA = await normalizarComIA(fala);
+            if (viaIA) return pesquisar(viaIA);
+
+            return false;
+        }
+
+        // ─── Integração voz.js ───
+        let vozHandler = null;
+
+        function deveInterceptar(texto, meta) {
+            const wake = meta?.wake?.toLowerCase();
+            if (wake === 'youtube' || wake === 'yt') return true;
+
+            const t = String(texto || '').trim();
+            if (!t) return false;
+            if (extractVideoId(t)) return true;
+
+            const wakeRe = new RegExp('^(?:' + YT_WAKE.join('|') + ')\\s+', 'i');
+            if (wakeRe.test(t)) return true;
+
+            if (YT_VERBOS.test(t) && YT_MIDIA.test(t)) return true;
+
+            return false;
+        }
+
+        function registrarHandlerVoz() {
+            if (!window._voiceCommands?.registrar) return false;
+            if (vozHandler) return true;
+            vozHandler = (texto, n, meta) => {
+                if (!deveInterceptar(texto, meta)) return false;
+                tocarPorFala(texto);
+                return true;
+            };
+            window._voiceCommands.registrar(/.*/, vozHandler, 0);
+            return true;
+        }
+
+        function limparHandlerVoz() {
+            if (vozHandler && window._voiceCommands?.remover) {
+                window._voiceCommands.remover(vozHandler);
+            }
+            vozHandler = null;
+        }
+
+        registrarHandlerVoz();
+        window.addEventListener('sang:voz-ready', registrarHandlerVoz);
+        window.addEventListener('sang:voz-state', registrarHandlerVoz);
 
         function kill() {
+            limparHandlerVoz();
+            window.removeEventListener('sang:voz-ready', registrarHandlerVoz);
+            window.removeEventListener('sang:voz-state', registrarHandlerVoz);
+
             if (saveTimer) clearTimeout(saveTimer);
             if (state.searchController) state.searchController.abort();
-            document.removeEventListener('keydown', onKeyDown);
             window.removeEventListener('resize', onWindowResize);
 
             hdr.removeEventListener('pointerdown', onPointerDown);
@@ -432,8 +615,12 @@
 
         window[UID] = {
             kill,
-            show: () => { minimized = false; panel.style.display = 'flex'; },
-            hide: () => { minimized = true; panel.style.display = 'none'; }
+            show: garantirVisivel,
+            hide: () => { minimized = true; panel.style.display = 'none'; },
+            tocar,
+            pesquisar,
+            tocarPorFala,
+            interpretar
         };
     }
 
