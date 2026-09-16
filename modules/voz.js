@@ -1448,4 +1448,42 @@ Eu tava indo pra casa, mas aí eu vi ele.
             fab.style.top = Math.max(0, Math.min(window.innerHeight - 56, t)) + 'px';
             if (preview.classList.contains('visivel')) posicionarPreview();
         }
-        window.addEventListener('resize', on
+        window.addEventListener('resize', onResize);
+
+        // ─── API ───
+        window[UID] = {
+            kill() {
+                desligar();
+                window.removeEventListener('sang:voz-silenciar', onSilenciar);
+                document.removeEventListener('keydown', onKeydown, true);
+                document.removeEventListener('pointerdown', fecharPopoverFora, true);
+                document.removeEventListener('visibilitychange', onVisibility);
+                window.removeEventListener('focus', onFocus);
+                window.removeEventListener('blur', onBlur);
+                window.removeEventListener('resize', onResize);
+                if (timerRestart) clearTimeout(timerRestart);
+                if (timerSilencio) clearInterval(timerSilencio);
+                if (flashTimer) clearTimeout(flashTimer);
+                host.remove();
+                delete window[UID];
+                const vc = window._voiceCommands;
+                if (vc && vc._handlers.length === 0 && vc._extras.length === 0) {
+                    delete window._voiceCommands;
+                }
+            },
+            show() { fab.style.display = 'flex'; },
+            hide() { fab.style.display = 'none'; },
+            toggle,
+            get ativo() { return ativo; },
+            get habilitado() { return habilitado; },
+            get pausado() { return pausado; }
+        };
+
+        window.dispatchEvent(new CustomEvent('sang:voz-ready'));
+    }
+
+    if (document.body) init();
+    else new MutationObserver((_, o) => {
+        if (document.body) { o.disconnect(); init(); }
+    }).observe(document.documentElement, { childList: true });
+})();
