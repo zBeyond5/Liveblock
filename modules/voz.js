@@ -1,4 +1,3 @@
-// modules/voz.js — fala vira texto no chat do Habbo
 (function() {
     'use strict';
     const UID = '_voz';
@@ -13,6 +12,7 @@
     const STATE_KEY = 'sang_voz_state';
     const DEFAULT_CONFIG = {
         modo: 'manual',
+        motor: 'nativo',
         silencioMs: 2500,
         minChars: 2,
         lang: 'pt-BR',
@@ -27,6 +27,12 @@
     };
 
     const MIN_INTERVALO_STREAM = 350;  // ms entre envios contínuos
+
+    // ─── Whisper (Groq) ───
+    const WHISPER_MODEL = 'whisper-large-v3-turbo';
+    const WHISPER_VAD_THRESHOLD = 0.025; // rms mínimo pra considerar "falando"
+    const WHISPER_SILENCIO_MS = 700;     // silêncio pra fechar o segmento e transcrever
+    const WHISPER_MIN_FALA_MS = 250;     // fala mínima pra não mandar ruído/clique
 
     // ─── Persistência ───
     const loadConfig = () => {
@@ -455,6 +461,13 @@
                 </select>
             </div>
             <div class="campo">
+                <label>Motor de reconhecimento</label>
+                <select id="cfgMotor">
+                    <option value="nativo">Nativo (navegador)</option>
+                    <option value="whisper">Whisper via Groq (mais preciso)</option>
+                </select>
+            </div>
+            <div class="campo">
                 <label>Pontuação</label>
                 <select id="cfgPontuacao">
                     <option value="off">Nenhuma</option>
@@ -487,7 +500,10 @@
                 se preferir mandar tudo de uma vez no fim.<br><br>
                 <strong>Modo livre:</strong> comandos disparam direto, como antes.
                 <code>enviar</code> força envio, <code>cancelar</code> limpa.
-                Use <code>digitar</code> para forçar texto ao chat.
+                Use <code>digitar</code> para forçar texto ao chat.<br><br>
+                <strong>Whisper:</strong> transcreve por trechos (silêncio fecha o
+                trecho e envia pro Groq), não mostra prévia enquanto você fala.
+                Precisa da chave da Groq já configurada na Sang AI.
                 <div class="dica-foco">💡 Pausa sozinho quando você troca de aba ou janela.</div>
             </div>
         `;
@@ -499,6 +515,7 @@
         const cfgModo = popover.querySelector('#cfgModo');
         const cfgSilencio = popover.querySelector('#cfgSilencio');
         const cfgLang = popover.querySelector('#cfgLang');
+        const cfgMotor = popover.querySelector('#cfgMotor');
         const cfgPontuacao = popover.querySelector('#cfgPontuacao');
         const cfgModoComando = popover.querySelector('#cfgModoComando');
         const cfgStreaming = popover.querySelector('#cfgStreaming');
@@ -506,6 +523,7 @@
         cfgModo.value = config.modo;
         cfgSilencio.value = String(config.silencioMs);
         cfgLang.value = config.lang;
+        cfgMotor.value = config.motor;
         cfgPontuacao.value = config.pontuacao;
         cfgModoComando.value = config.modoComando;
         cfgStreaming.value = config.streaming ? 'on' : 'off';
@@ -527,6 +545,11 @@
         let ultimoStreamEm = 0;
         let flashTimer = null;
 
+        // Estado do motor Whisper (nulo/vazio quando não está em uso).
+        let whisperStream = null, whisperCtx = null, whisperAnalyser = null, whisperRecorder = null;
+        let whisperVadTimer = null, whisperChunks = [], whisperFalando = false;
+        let whisperSilencioDesde = 0, whisperFalaDesde = 0;
+
         // Nomeado pra permitir removeEventListener no kill().
         function onSilenciar(e) {
             silencioAte = Date.now() + (e?.detail?.ms || 1500);
@@ -539,7 +562,7 @@
             }));
         }
 
-        // ─── Reconhecimento ───
+        // ─── Reconhecimento nativo ───
         function criarRecognition() {
             const r = new SpeechRecognitionAPI();
             r.lang = config.lang;
@@ -636,6 +659,138 @@
             return r;
         }
 
+        // ─── Reconhecimento via Whisper (Groq) ───
+        // Sem resultado parcial: grava por trechos (VAD por volume) e transcreve
+        // cada trecho ao detectar silêncio, tratando o texto como resultado final.
+        async function iniciarWhisper() {
+            try {
+                whisperStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            } catch (e) {
+                console.warn('[Voz] Permissão de microfone negada (Whisper).');
+                return false;
+            }
+            if (!ativo) { // usuário desligou enquanto aguardava a permissão
+                whisperStream.getTracks().forEach(t => t.stop());
+                whisperStream = null;
+                return false;
+            }
+            whisperCtx = new (window.AudioContext || window.webkitAudioContext)();
+            const source = whisperCtx.createMediaStreamSource(whisperStream);
+            whisperAnalyser = whisperCtx.createAnalyser();
+            whisperAnalyser.fftSize = 512;
+            source.connect(whisperAnalyser);
+
+            iniciarSegmentoWhisper();
+            whisperVadTimer = setInterval(loopVad, 80);
+            return true;
+        }
+
+        function iniciarSegmentoWhisper() {
+            if (!whisperStream) return;
+            whisperChunks = [];
+            whisperFalando = false;
+            whisperSilencioDesde = 0;
+            whisperFalaDesde = 0;
+            try {
+                whisperRecorder = new MediaRecorder(whisperStream, { mimeType: 'audio/webm' });
+            } catch (e) {
+                whisperRecorder = new MediaRecorder(whisperStream);
+            }
+            whisperRecorder.ondataavailable = e => {
+                if (e.data.size > 0) whisperChunks.push(e.data);
+            };
+            whisperRecorder.start();
+        }
+
+        function loopVad() {
+            if (!whisperAnalyser || !ativo) return;
+            const buf = new Uint8Array(whisperAnalyser.fftSize);
+            whisperAnalyser.getByteTimeDomainData(buf);
+            let soma = 0;
+            for (let i = 0; i < buf.length; i++) {
+                const v = (buf[i] - 128) / 128;
+                soma += v * v;
+            }
+            const rms = Math.sqrt(soma / buf.length);
+            const agora = Date.now();
+
+            if (rms > WHISPER_VAD_THRESHOLD) {
+                if (!whisperFalando) { whisperFalando = true; whisperFalaDesde = agora; }
+                whisperSilencioDesde = 0;
+                fab.classList.add('hearing');
+                nivelEl.classList.add('pico');
+                return;
+            }
+
+            fab.classList.remove('hearing');
+            nivelEl.classList.remove('pico');
+            if (!whisperFalando) return;
+            if (!whisperSilencioDesde) whisperSilencioDesde = agora;
+            if (agora - whisperSilencioDesde >= WHISPER_SILENCIO_MS) {
+                fecharSegmentoWhisper(agora - whisperFalaDesde >= WHISPER_MIN_FALA_MS);
+            }
+        }
+
+        function fecharSegmentoWhisper(valido) {
+            if (!whisperRecorder || whisperRecorder.state === 'inactive') return;
+            const recorderAtual = whisperRecorder;
+            recorderAtual.onstop = () => {
+                if (valido && whisperChunks.length) {
+                    const blob = new Blob(whisperChunks, { type: recorderAtual.mimeType || 'audio/webm' });
+                    transcreverComWhisper(blob);
+                }
+                if (ativo && config.motor === 'whisper') iniciarSegmentoWhisper();
+            };
+            try { recorderAtual.stop(); } catch (e) {}
+        }
+
+        async function transcreverComWhisper(blob) {
+            const key = window._apis?.getKey?.('groq');
+            if (!key) {
+                console.warn('[Voz] Sem chave Groq configurada — abra a Sang AI e configure a chave.');
+                return;
+            }
+            const form = new FormData();
+            form.append('file', blob, 'audio.webm');
+            form.append('model', WHISPER_MODEL);
+            form.append('language', (config.lang || 'pt-BR').split('-')[0]);
+            form.append('response_format', 'json');
+            try {
+                const res = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
+                    method: 'POST',
+                    headers: { Authorization: 'Bearer ' + key },
+                    body: form
+                });
+                if (!res.ok) throw new Error('HTTP ' + res.status);
+                const data = await res.json();
+                const trecho = (data.text || '').trim();
+                if (!trecho) return;
+
+                if (textoFinal && !textoFinal.endsWith(' ')) textoFinal += ' ';
+                textoFinal += trecho;
+                ultimoResultadoEm = Date.now();
+                renderPreview();
+                posicionarPreview();
+                tentarStreaming();
+            } catch (e) {
+                console.warn('[Voz] Falha na transcrição Whisper:', e);
+            }
+        }
+
+        function pararWhisper() {
+            if (whisperVadTimer) { clearInterval(whisperVadTimer); whisperVadTimer = null; }
+            if (whisperRecorder && whisperRecorder.state !== 'inactive') {
+                whisperRecorder.onstop = null;
+                try { whisperRecorder.stop(); } catch (e) {}
+            }
+            whisperRecorder = null;
+            if (whisperStream) { whisperStream.getTracks().forEach(t => t.stop()); whisperStream = null; }
+            if (whisperCtx) { try { whisperCtx.close(); } catch (e) {} whisperCtx = null; }
+            whisperAnalyser = null;
+            whisperChunks = [];
+            whisperFalando = false;
+        }
+
         // ─── Parada interna ───
         function _parar() {
             enviandoGen++;
@@ -646,6 +801,7 @@
                 try { rec.onend = null; rec.stop(); } catch {}
                 rec = null;
             }
+            pararWhisper();
             pararTimerSilencio();
             fab.classList.remove('ativo', 'hearing');
             nivelEl.classList.remove('pico');
@@ -661,6 +817,25 @@
             textoInterim = '';
             ultimoResultadoEm = 0;
             tentativasRestart = 0;
+
+            if (config.motor === 'whisper') {
+                ativo = true;
+                fab.classList.add('ativo');
+                fab.classList.remove('pausado');
+                iniciarTimerSilencio();
+                iniciarWhisper().then(ok => {
+                    if (!ok && ativo) {
+                        ativo = false;
+                        habilitado = false;
+                        pausado = false;
+                        fab.classList.remove('ativo');
+                        pararTimerSilencio();
+                        dispararEstadoVoz();
+                    }
+                });
+                return true;
+            }
+
             ativo = true;
             rec = criarRecognition();
             try { rec.start(); }
@@ -1146,6 +1321,15 @@ Eu tava indo pra casa, mas aí eu vi ele.
         cfgSilencio.addEventListener('change', () => { config.silencioMs = parseInt(cfgSilencio.value, 10); saveConfig(config); });
         cfgLang.addEventListener('change', () => {
             config.lang = cfgLang.value;
+            saveConfig(config);
+            if (ativo) {
+                const eraHabilitado = habilitado;
+                _parar();
+                if (eraHabilitado) setTimeout(() => _iniciarCaptura(), 300);
+            }
+        });
+        cfgMotor.addEventListener('change', () => {
+            config.motor = cfgMotor.value;
             saveConfig(config);
             if (ativo) {
                 const eraHabilitado = habilitado;
