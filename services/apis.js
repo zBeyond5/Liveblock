@@ -386,7 +386,7 @@ registrar({
     requerUI: true,
     chamar: async (params, ctx) => {
         const key = getKey('groq');
-        const modelo = params.modelo || 'llama-3.3-70b-versatile';
+        const modelo = params.modelo || 'openai/gpt-oss-120b';
         const mensagens = params.mensagens || [{ role: 'user', content: params.prompt || '' }];
 
         const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
