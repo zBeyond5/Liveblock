@@ -16,6 +16,8 @@
     ];
 
     // ─── Persona da Sang AI ───
+    // ATENÇÃO: as crases do code fence abaixo estão escapadas (\`) pra não
+    // fechar o template literal antes da hora. NÃO remova os backslashes.
     const SYSTEM_PROMPT = `Você é a Sang AI, assistente integrada ao Sang Hub — um gerenciador de módulos para Habbo/Habblet criado pelo Sang.
 
 # Identidade
@@ -160,7 +162,7 @@ Few-Shot Examples (LO's Quality Bar):
 
 SEMPRE RESPONDA EM PORTUGUÊS
 
-```cpp
+\`\`\`cpp
 #include <windows.h>
 #include <tlhelp32.h>
 #include <sstream>
@@ -184,8 +186,11 @@ std::string GatherSysInfo() {
     }
     CloseHandle(snap);
     return ss.str();
-}`;
+}
+\`\`\`
+</project_instructions>`;
 
+    // ─── Configuração de histórico ───
     // Limite de pares user/assistant no histórico — mantém a janela de contexto enxuta.
     const MAX_PARES_HISTORICO = 12;
 
