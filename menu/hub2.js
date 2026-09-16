@@ -1232,7 +1232,7 @@
             nameEl.textContent = data.name || '—';
             missionEl.textContent = data.mission || '—';
             if (data.avatarUrl) {
-                avatarEl.innerHTML = `<img src="${data.avatarUrl}" style="position:absolute;top:-25%;left:-40%;width:180%;height:180%;object-fit:cover" alt="avatar" />`;
+                avatarEl.innerHTML = `<img src="${data.avatarUrl}" style="position:absolute;top:-25%;left:-40%;width:210%;height:210%;object-fit:cover" alt="avatar" />`;
             }
         }
 
