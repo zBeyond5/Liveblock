@@ -1,47 +1,27 @@
-// ==UserScript==
-// @name         LivePhoto
-// @namespace    http://tampermonkey.net/
-// @version      9.1.0-module
-// @description  Substitui imagens. 
-// @match        https://habblive.in/*
-// @match        https://www.habblet.city/*
-// @grant        GM_addStyle
-// @grant        GM_setValue
-// @grant        GM_getValue
-// @run-at       document-start
-// ==/UserScript==
-
 (function () {
     "use strict";
 
-    if (window.__hcprLoaded) return;
-    window.__hcprLoaded = true;
+    const MODULE_ID = "photolive";
 
-    const GM_getValue = window.GM_getValue || function (key, fallback) {
+    // SHIMS — módulo Hub não usa APIs GM_*
+    const GM_getValue = (key, def) => {
         try {
-            const raw = localStorage.getItem("livephoto_" + key);
-            return raw === null ? fallback : JSON.parse(raw);
-        } catch {
-            return fallback;
-        }
+            const raw = localStorage.getItem(key);
+            return raw === null ? def : JSON.parse(raw);
+        } catch { return def; }
+    };
+    const GM_setValue = (key, val) => {
+        try { localStorage.setItem(key, JSON.stringify(val)); } catch {}
+    };
+    const GM_addStyle = (css) => {
+        const s = document.createElement("style");
+        s.setAttribute("data-livephoto", "1");
+        s.textContent = css;
+        (document.head || document.documentElement).appendChild(s);
+        return s;
     };
 
-    const GM_setValue = window.GM_setValue || function (key, value) {
-        try {
-            localStorage.setItem("livephoto_" + key, JSON.stringify(value));
-        } catch {
-            // ignora falha de storage
-        }
-    };
-
-    const GM_addStyle = window.GM_addStyle || function (css) {
-        const style = document.createElement("style");
-        style.setAttribute("data-livephoto", "1");
-        style.textContent = css;
-        document.head.appendChild(style);
-        return style;
-    };
-
+    // CONFIG
     const OUTPUT_SIZE = 320;
     const ICON_URL = "https://raw.githubusercontent.com/zBeyond5/assets/main/photo.png";
 
@@ -54,9 +34,18 @@
     const DRAG_HOLD_MS = 300;
     const DRAG_CANCEL_THRESHOLD = 6;
 
-    // ---- Teardown (usado pelo kill do Hub) ----
-    const teardownTasks = [];
-    let handlePaste = null;
+    const HIDE_TRANSITION_MS = 260; // watchdog: cobre --t-medium (240ms) com folga
+
+    // TEARDOWN
+    const ac = new AbortController();
+    let killed = false;
+    let origWebSocket = null;
+    let origFetch = null;
+    let origXhrOpen = null;
+    let origXhrSend = null;
+    let origToBlob = null;
+    let origToDataURL = null;
+    let frameResizeObserver = null;
 
     // ------------------------------------------------------------------
     // Estado
@@ -151,12 +140,12 @@
                 console.table(logStore);
             },
 
-            // ---- Destroy ----
-            destroy() {
+            dispose() {
                 if (flushTimer) {
                     clearTimeout(flushTimer);
                     flushTimer = null;
                 }
+                dirty = false;
             },
         };
     })();
@@ -256,6 +245,18 @@
         }
     }
 
+    // microfeedback visual: reinicia a animação de "bump" do badge de zoom
+    // (só chamado onde o zoom de fato muda — wheel e restore — não a cada
+    // pointermove do pan, pra não gerar reflow desnecessário)
+    function bumpZoomBadge() {
+        const zoomBadge = document.querySelector("#hcpr-zoom-badge");
+        if (!zoomBadge) return;
+
+        zoomBadge.classList.remove("hcpr-bump");
+        void zoomBadge.offsetWidth;
+        zoomBadge.classList.add("hcpr-bump");
+    }
+
     function renderOutputCanvas() {
         return new Promise((resolve, reject) => {
             try {
@@ -350,7 +351,7 @@
 
         await Promise.race([
             pendingRenderPromise,
-            new Promise((resolve) => setTimeout(resolve, 1200)),
+            new Promise((resolve) => setTimeout(resolve, 1200)), // watchdog
         ]);
     }
 
@@ -442,12 +443,16 @@
     // ------------------------------------------------------------------
 
     function setupWebSocketInterceptor() {
+        if (origWebSocket) return;
+
         const NativeWebSocket = window.WebSocket;
 
         if (!NativeWebSocket) {
             debug.add("websocket_unavailable");
             return;
         }
+
+        origWebSocket = NativeWebSocket;
 
         class HookedWebSocket extends NativeWebSocket {
             constructor(...args) {
@@ -476,11 +481,6 @@
         }
 
         window.WebSocket = HookedWebSocket;
-
-        // ---- Teardown ----
-        teardownTasks.push(() => {
-            window.WebSocket = NativeWebSocket;
-        });
     }
 
     // ------------------------------------------------------------------
@@ -488,12 +488,16 @@
     // ------------------------------------------------------------------
 
     function setupFetchInterceptor() {
+        if (origFetch) return;
+
         const originalFetch = window.fetch;
 
         if (typeof originalFetch !== "function") {
             debug.add("fetch_unavailable");
             return;
         }
+
+        origFetch = originalFetch;
 
         window.fetch = async function (input, init) {
             try {
@@ -539,11 +543,6 @@
                 return originalFetch.call(this, input, init);
             }
         };
-
-        // ---- Teardown ----
-        teardownTasks.push(() => {
-            window.fetch = originalFetch;
-        });
     }
 
     async function rewriteRequestAndFetch(request, init, originalFetch, ctx) {
@@ -571,8 +570,13 @@
     // ------------------------------------------------------------------
 
     function setupXhrInterceptor() {
+        if (origXhrOpen) return;
+
         const originalOpen = XMLHttpRequest.prototype.open;
         const originalSend = XMLHttpRequest.prototype.send;
+
+        origXhrOpen = originalOpen;
+        origXhrSend = originalSend;
 
         XMLHttpRequest.prototype.open = function (method, url, ...args) {
             this.__hcprUrl = url;
@@ -592,7 +596,7 @@
                     finalizeXhrSend(xhr, capturedBody);
                 };
                 pendingRenderPromise.then(doSend);
-                setTimeout(doSend, 1200);
+                setTimeout(doSend, 1200); // watchdog: nunca prende o envio indefinidamente
                 return;
             }
 
@@ -620,13 +624,7 @@
             }
 
             return originalSend.call(xhr, body);
-        };
-
-        // ---- Teardown ----
-        teardownTasks.push(() => {
-            XMLHttpRequest.prototype.open = originalOpen;
-            XMLHttpRequest.prototype.send = originalSend;
-        });
+        }
     }
 
     // ------------------------------------------------------------------
@@ -648,8 +646,13 @@
     }
 
     function setupCanvasHooks() {
+        if (origToBlob) return;
+
         const originalToBlob = HTMLCanvasElement.prototype.toBlob;
         const originalToDataURL = HTMLCanvasElement.prototype.toDataURL;
+
+        origToBlob = originalToBlob;
+        origToDataURL = originalToDataURL;
 
         HTMLCanvasElement.prototype.toBlob = function (callback, type, quality) {
             try {
@@ -669,7 +672,7 @@
                                 callback(state.blob);
                             };
                             pendingRenderPromise.then(doCallback);
-                            setTimeout(doCallback, 1200);
+                            setTimeout(doCallback, 1200); // watchdog
                         } else {
                             setTimeout(() => callback(state.blob), 0);
                         }
@@ -702,12 +705,6 @@
 
             return originalToDataURL.call(this, type, quality);
         };
-
-        // ---- Teardown ----
-        teardownTasks.push(() => {
-            HTMLCanvasElement.prototype.toBlob = originalToBlob;
-            HTMLCanvasElement.prototype.toDataURL = originalToDataURL;
-        });
     }
 
     // ------------------------------------------------------------------
@@ -716,16 +713,33 @@
 
     const STATUS_TO_STATE = {
         info: "idle",
+        processing: "processing",
         success: "ready",
         error: "error",
+        disabled: "disabled",
     };
 
     function updateStatus(message, type = "info") {
         const statusText = document.querySelector("#hcpr-status-text");
+        const statusDot = document.querySelector("#hcpr-status-dot");
         const shell = document.querySelector("#hcpr-shell");
+        const reopenDot = document.querySelector("#hcpr-reopen-dot");
+
+        const nextState = STATUS_TO_STATE[type] || "idle";
 
         if (statusText) statusText.textContent = message;
-        if (shell) shell.dataset.state = STATUS_TO_STATE[type] || "idle";
+        if (shell) shell.dataset.state = nextState;
+        if (statusDot) statusDot.dataset.state = nextState;
+        if (reopenDot) reopenDot.dataset.state = nextState;
+    }
+
+    function updateActiveDescription() {
+        const desc = document.querySelector("#hcpr-active-desc");
+        if (desc) {
+            desc.textContent = state.active
+                ? "A substituição de imagem está ativada"
+                : "A substituição de imagem está desativada";
+        }
     }
 
     // ------------------------------------------------------------------
@@ -778,6 +792,7 @@
         view.offsetY = 0;
 
         applyPreviewTransform();
+        bumpZoomBadge();
         scheduleRenderOutput();
         debug.add("view_restored_default");
     }
@@ -788,14 +803,14 @@
         if (!file) return;
 
         if (!file.type.startsWith("image/")) {
-            updateStatus("Formato inválido", "error");
+            updateStatus("Formato não suportado", "error");
             return;
         }
 
         const MAX_SOURCE_BYTES = 25 * 1024 * 1024;
 
         if (file.size > MAX_SOURCE_BYTES) {
-            updateStatus("Imagem grande demais (máx. 25MB)", "error");
+            updateStatus("Imagem muito grande (máx. 25MB)", "error");
             return;
         }
 
@@ -808,7 +823,7 @@
         const zoomBadge = root.querySelector("#hcpr-zoom-badge");
         const restoreButton = root.querySelector("#hcpr-restore");
 
-        updateStatus("Processando imagem", "info");
+        updateStatus("Processando imagem", "processing");
 
         let objectUrl = null;
 
@@ -832,6 +847,11 @@
             if (preview) {
                 preview.src = state.previewObjectUrl;
                 preview.hidden = false;
+                // reinicia a animação de "materialização" mesmo se o
+                // elemento já estava visível de uma seleção anterior
+                preview.classList.remove("hcpr-materialize");
+                void preview.offsetWidth;
+                preview.classList.add("hcpr-materialize");
             }
 
             if (emptyState) emptyState.hidden = true;
@@ -848,12 +868,12 @@
 
             if (mySelection !== selectionGeneration) return;
 
-            updateStatus("Pronta · 320 × 320", "success");
+            updateStatus("Pronto · 320×320", "success");
             debug.add("image_ready", { type: file.type, size: file.size });
         } catch (error) {
             if (mySelection === selectionGeneration) {
                 debug.add("image_error", { message: String(error) });
-                updateStatus("Erro ao processar imagem", "error");
+                updateStatus("Não foi possível processar a imagem", "error");
             }
         } finally {
             if (objectUrl) URL.revokeObjectURL(objectUrl);
@@ -861,7 +881,7 @@
     }
 
     function clearPreview(root) {
-        selectionGeneration++;
+        selectionGeneration++; // invalida qualquer handleSelectedFile ainda em voo
         revokePreviewUrl();
         state.image = null;
         state.blob = null;
@@ -876,6 +896,7 @@
 
         if (preview) {
             preview.hidden = true;
+            preview.classList.remove("hcpr-materialize");
             preview.style.transform = "";
             preview.style.width = "";
             preview.style.height = "";
@@ -891,18 +912,53 @@
     }
 
     // ------------------------------------------------------------------
-    // UI — painel: arrastar e redimensionar
+    // UI — painel: mostrar/esconder com transição
     // ------------------------------------------------------------------
 
     function setPanelHidden(hidden) {
-        const shell = document.querySelector("#hcpr-tool");
+        const tool = document.querySelector("#hcpr-tool");
+        const shell = document.querySelector("#hcpr-shell");
         const reopen = document.querySelector("#hcpr-reopen");
 
         state.panelHidden = hidden;
         saveState();
 
-        if (shell) shell.classList.toggle("hcpr-hidden", hidden);
-        if (reopen) reopen.hidden = !hidden;
+        if (tool && shell) {
+            if (hidden) {
+                shell.classList.add("hcpr-shell-hiding");
+
+                let done = false;
+                const finish = () => {
+                    if (done) return;
+                    done = true;
+                    tool.classList.add("hcpr-hidden");
+                    shell.removeEventListener("transitionend", onEnd);
+                };
+                const onEnd = (event) => {
+                    if (event.target === shell) finish();
+                };
+
+                shell.addEventListener("transitionend", onEnd);
+                setTimeout(finish, HIDE_TRANSITION_MS);
+            } else {
+                tool.classList.remove("hcpr-hidden");
+                shell.classList.add("hcpr-shell-hiding");
+                void shell.offsetWidth; // força o reflow antes de animar de volta
+                shell.classList.remove("hcpr-shell-hiding");
+            }
+        }
+
+        if (reopen) {
+            if (hidden) {
+                reopen.hidden = false;
+                reopen.classList.remove("hcpr-reopen-enter");
+                void reopen.offsetWidth;
+                reopen.classList.add("hcpr-reopen-enter");
+            } else {
+                reopen.hidden = true;
+                reopen.classList.remove("hcpr-reopen-enter");
+            }
+        }
     }
 
     function applyPanelPosition(panel) {
@@ -957,6 +1013,7 @@
             panel.style.top = `${startTop}px`;
 
             handle.classList.add("hcpr-dragging");
+            panel.classList.add("hcpr-panel-dragging");
         }
 
         handle.addEventListener("pointerdown", (event) => {
@@ -1002,6 +1059,7 @@
             if (dragging) {
                 dragging = false;
                 handle.classList.remove("hcpr-dragging");
+                panel.classList.remove("hcpr-panel-dragging");
 
                 state.panelPos = {
                     left: parseFloat(panel.style.left) || 0,
@@ -1036,6 +1094,7 @@
 
             handle.setPointerCapture(event.pointerId);
             handle.classList.add("hcpr-resizing");
+            panel.classList.add("hcpr-panel-resizing");
         });
 
         handle.addEventListener("pointermove", (event) => {
@@ -1056,6 +1115,7 @@
 
             resizing = false;
             handle.classList.remove("hcpr-resizing");
+            panel.classList.remove("hcpr-panel-resizing");
 
             try {
                 handle.releasePointerCapture(event.pointerId);
@@ -1249,6 +1309,7 @@
 
                 clampOffsets();
                 applyPreviewTransform();
+                bumpZoomBadge();
                 scheduleRenderOutput();
             },
             { passive: false }
@@ -1256,7 +1317,7 @@
 
         frame.addEventListener("dblclick", () => restoreDefaultFraming());
 
-        const resizeObserver = new ResizeObserver((entries) => {
+        frameResizeObserver = new ResizeObserver((entries) => {
             if (!state.image) return;
 
             const entry = entries[0];
@@ -1276,7 +1337,26 @@
             scheduleRenderOutput();
         });
 
-        resizeObserver.observe(frameInner);
+        frameResizeObserver.observe(frameInner);
+    }
+
+    // ------------------------------------------------------------------
+    // UI
+    // ------------------------------------------------------------------
+
+    function bindAccordion(root) {
+        const trigger = root.querySelector("#hcpr-settings-toggle");
+        const panel = root.querySelector("#hcpr-settings-panel");
+
+        if (!trigger || !panel) return;
+
+        trigger.addEventListener("click", () => {
+            const isOpen = trigger.getAttribute("aria-expanded") === "true";
+            const next = !isOpen;
+
+            trigger.setAttribute("aria-expanded", String(next));
+            panel.classList.toggle("hcpr-accordion-open", next);
+        });
     }
 
     // ------------------------------------------------------------------
@@ -1284,6 +1364,7 @@
     // ------------------------------------------------------------------
 
     function createInterface() {
+        if (killed) return;
         if (!document.body || document.querySelector("#hcpr-tool")) {
             return;
         }
@@ -1293,31 +1374,51 @@
 
         wrapper.innerHTML = `
             <div class="hcpr-shell" id="hcpr-shell" data-state="idle">
+                <div class="hcpr-ambient" aria-hidden="true"></div>
+
                 <header class="hcpr-header" id="hcpr-header">
-                    <div class="hcpr-mark" aria-hidden="true">
+                    <div class="hcpr-mark">
+                        <span class="hcpr-mark-glow" aria-hidden="true"></span>
+                        <span class="hcpr-mark-ring" aria-hidden="true"></span>
                         <img src="${ICON_URL}" alt="" class="hcpr-mark-img">
                     </div>
 
-                    <div class="hcpr-title">
-                        <strong>LivePhoto [by SANG]</strong>
-                        <span id="hcpr-status-text">Standby</span>
+                    <div class="hcpr-brand">
+                        <span class="hcpr-eyebrow">Processador de Foto</span>
+                        <strong class="hcpr-brand-name">LivePhoto</strong>
                     </div>
 
-                    <button type="button" id="hcpr-close" class="hcpr-ghost-button" aria-label="Minimizar painel">
-                        <svg viewBox="0 0 24 24" fill="none"><path d="M6 12h12" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+                    <button type="button" id="hcpr-close" class="hcpr-icon-btn" data-tooltip="Minimizar" aria-label="Minimizar painel">
+                        <svg viewBox="0 0 24 24" fill="none"><path d="M6 12h12" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
                     </button>
                 </header>
+
+                <div class="hcpr-status-row">
+                    <span class="hcpr-status-dot" id="hcpr-status-dot" data-state="idle" aria-hidden="true"></span>
+                    <span class="hcpr-status-text" id="hcpr-status-text">Em espera</span>
+                </div>
 
                 <section class="hcpr-frame" id="hcpr-frame">
                     <div class="hcpr-frame-inner" id="hcpr-frame-inner">
                         <img id="hcpr-preview" alt="Prévia da imagem selecionada" hidden>
 
                         <div id="hcpr-empty" class="hcpr-empty">
-                            <span>Arraste, cole (Ctrl+V) ou</span>
-                            <label for="hcpr-file" class="hcpr-link-button">selecione um arquivo</label>
+                            <span class="hcpr-empty-icon" aria-hidden="true">
+                                <svg viewBox="0 0 24 24" fill="none"><path d="M12 16V4m0 0-4.5 4.5M12 4l4.5 4.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/><path d="M4.5 15v2.5A2.5 2.5 0 0 0 7 20h10a2.5 2.5 0 0 0 2.5-2.5V15" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                            </span>
+                            <strong class="hcpr-empty-title">Solte a imagem</strong>
+                            <span class="hcpr-empty-sub">Arraste e solte, cole ou <label for="hcpr-file" class="hcpr-link-button">selecione</label></span>
+                            <span class="hcpr-empty-caption hcpr-mono">PNG · JPG · WEBP · MÁX 25MB</span>
                         </div>
 
-                        <button type="button" id="hcpr-restore" class="hcpr-frame-tool" aria-label="Restaurar enquadramento padrão" hidden>
+                        <div class="hcpr-drop-overlay" aria-hidden="true">
+                            <span class="hcpr-drop-icon">
+                                <svg viewBox="0 0 24 24" fill="none"><path d="M12 16V4m0 0-4.5 4.5M12 4l4.5 4.5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/><path d="M4.5 15v2.5A2.5 2.5 0 0 0 7 20h10a2.5 2.5 0 0 0 2.5-2.5V15" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                            </span>
+                            <strong>Solte para enviar</strong>
+                        </div>
+
+                        <button type="button" id="hcpr-restore" class="hcpr-float-btn" data-tooltip="Restaurar enquadramento" aria-label="Restaurar enquadramento padrão" hidden>
                             <svg viewBox="0 0 24 24" fill="none"><path d="M4 12a8 8 0 1 1 2.7 6M4 12v5m0-5h5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
                         </button>
 
@@ -1330,19 +1431,30 @@
                     </div>
                 </section>
 
-                <div class="hcpr-readout">
-                    <span>saída fixa</span>
-                    <span class="hcpr-mono">320 × 320</span>
-                    <span class="hcpr-readout-sep">·</span>
-                    <span>arraste pra mover, ctrl+scroll pra zoom</span>
+                <div class="hcpr-info-strip">
+                    <div class="hcpr-info-item">
+                        <span class="hcpr-info-label">Saída</span>
+                        <span class="hcpr-info-value hcpr-mono">320×320</span>
+                    </div>
+                    <span class="hcpr-info-sep" aria-hidden="true"></span>
+                    <div class="hcpr-info-item">
+                        <span class="hcpr-info-label">Arraste</span>
+                        <span class="hcpr-info-value">Mover imagem</span>
+                    </div>
+                    <span class="hcpr-info-sep" aria-hidden="true"></span>
+                    <div class="hcpr-info-item">
+                        <span class="hcpr-info-label">Zoom</span>
+                        <span class="hcpr-info-value">Ctrl + Scroll</span>
+                    </div>
                 </div>
 
                 <input id="hcpr-file" class="hcpr-file-input" type="file" accept="image/png,image/jpeg,image/webp">
 
                 <div class="hcpr-primary-row">
                     <div class="hcpr-primary-label">
-                        <strong>Ativo</strong>
-                        <span id="hcpr-file-name">Nenhum arquivo selecionado</span>
+                        <span class="hcpr-eyebrow">Substituição</span>
+                        <strong>Ativa</strong>
+                        <span class="hcpr-primary-desc" id="hcpr-active-desc">${state.active ? "A substituição de imagem está ativada" : "A substituição de imagem está desativada"}</span>
                     </div>
 
                     <label class="hcpr-switch">
@@ -1351,36 +1463,61 @@
                     </label>
                 </div>
 
-                <details class="hcpr-disclosure">
-                    <summary>
+                <div class="hcpr-file-badge hcpr-mono" id="hcpr-file-name">Nenhum arquivo selecionado</div>
+
+                <div class="hcpr-accordion">
+                    <button type="button" class="hcpr-accordion-trigger" id="hcpr-settings-toggle" aria-expanded="false" aria-controls="hcpr-settings-panel">
                         <span>Ajustes</span>
                         <svg class="hcpr-chevron" viewBox="0 0 24 24" fill="none"><path d="m7 10 5 5 5-5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
-                    </summary>
+                    </button>
 
-                    <div class="hcpr-disclosure-body">
-                        <div class="hcpr-setting-row">
-                            <span>Somente canvas quadrado</span>
-                            <label class="hcpr-switch hcpr-switch-sm">
-                                <input id="hcpr-square-only" type="checkbox" ${state.canvasSquareOnly ? "checked" : ""}>
-                                <span class="hcpr-slider"></span>
-                            </label>
-                        </div>
+                    <div class="hcpr-accordion-panel" id="hcpr-settings-panel">
+                        <div class="hcpr-accordion-inner">
+                            <div class="hcpr-group">
+                                <span class="hcpr-group-title">Tela</span>
 
-                        <div class="hcpr-setting-row">
-                            <span>Tamanho mínimo do canvas</span>
-                            <div class="hcpr-number-field">
-                                <input id="hcpr-min-size" class="hcpr-mono" type="number" min="1" step="1" value="${state.canvasMinSize}">
-                                <span class="hcpr-mono hcpr-unit">px</span>
+                                <div class="hcpr-setting-row">
+                                    <div class="hcpr-setting-label">
+                                        <span>Somente quadrado</span>
+                                        <small>Processar apenas telas quadradas</small>
+                                    </div>
+                                    <label class="hcpr-switch hcpr-switch-sm">
+                                        <input id="hcpr-square-only" type="checkbox" ${state.canvasSquareOnly ? "checked" : ""}>
+                                        <span class="hcpr-slider"></span>
+                                    </label>
+                                </div>
+
+                                <div class="hcpr-setting-row">
+                                    <div class="hcpr-setting-label">
+                                        <span>Tamanho mínimo</span>
+                                    </div>
+                                    <div class="hcpr-number-field">
+                                        <input id="hcpr-min-size" class="hcpr-mono" type="number" min="1" step="1" value="${state.canvasMinSize}">
+                                        <span class="hcpr-mono hcpr-unit">px</span>
+                                    </div>
+                                </div>
                             </div>
-                        </div>
 
-                        <div class="hcpr-text-actions">
-                            <button type="button" id="hcpr-logs" class="hcpr-text-button">Diagnóstico</button>
-                            <button type="button" id="hcpr-clear-logs" class="hcpr-text-button">Limpar log</button>
-                            <button type="button" id="hcpr-reset" class="hcpr-text-button hcpr-text-button-danger">Resetar imagem</button>
+                            <div class="hcpr-group">
+                                <span class="hcpr-group-title">Diagnóstico</span>
+                                <div class="hcpr-text-actions">
+                                    <button type="button" id="hcpr-logs" class="hcpr-btn hcpr-btn-ghost">Diagnóstico</button>
+                                    <button type="button" id="hcpr-clear-logs" class="hcpr-btn hcpr-btn-ghost">Limpar registros</button>
+                                </div>
+                            </div>
+
+                            <div class="hcpr-footnote hcpr-mono">LivePhoto by SANG · v9.1.0</div>
                         </div>
                     </div>
-                </details>
+                </div>
+
+                <div class="hcpr-footer-row">
+                    <button type="button" id="hcpr-reset" class="hcpr-btn hcpr-btn-danger hcpr-btn-footer" data-tooltip="Ctrl+Z">
+                        <svg viewBox="0 0 24 24" fill="none"><path d="M4 12a8 8 0 1 1 2.7 6M4 12v5m0-5h5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                        <span>Resetar imagem</span>
+                        <span class="hcpr-shortcut-hint hcpr-mono">Ctrl+Z</span>
+                    </button>
+                </div>
 
                 <div class="hcpr-resize-handle" id="hcpr-resize-handle" aria-hidden="true"></div>
             </div>
@@ -1389,9 +1526,14 @@
         const reopen = document.createElement("button");
         reopen.type = "button";
         reopen.id = "hcpr-reopen";
-        reopen.setAttribute("aria-label", "Abrir painel PhotoLive");
+        reopen.setAttribute("aria-label", "Abrir painel LivePhoto");
+        reopen.dataset.tooltip = "Abrir LivePhoto";
         reopen.hidden = !state.panelHidden;
-        reopen.innerHTML = `<img src="${ICON_URL}" alt="" class="hcpr-reopen-img">`;
+        reopen.innerHTML = `
+            <span class="hcpr-reopen-ring" aria-hidden="true"></span>
+            <img src="${ICON_URL}" alt="" class="hcpr-reopen-img">
+            <span class="hcpr-reopen-dot" id="hcpr-reopen-dot" data-state="idle" aria-hidden="true"></span>
+        `;
 
         document.body.appendChild(wrapper);
         document.body.appendChild(reopen);
@@ -1401,7 +1543,12 @@
         applyReopenPosition(reopen);
 
         if (state.panelHidden) {
+            // estado inicial não deve animar
+            wrapper.style.transition = "none";
             wrapper.classList.add("hcpr-hidden");
+            requestAnimationFrame(() => {
+                wrapper.style.transition = "";
+            });
         }
 
         bindInterface(wrapper, reopen);
@@ -1445,8 +1592,7 @@
             if (file) handleSelectedFile(file, root);
         });
 
-        // ---- Paste listener (referência guardada p/ remover no kill) ----
-        handlePaste = (event) => {
+        document.addEventListener("paste", (event) => {
             if (state.panelHidden) return;
 
             const items = event.clipboardData?.items;
@@ -1463,17 +1609,42 @@
                 updateStatus("Imagem colada", "info");
                 break;
             }
-        };
-        document.addEventListener("paste", handlePaste);
+        }, { signal: ac.signal });
+
+        // Atalho Ctrl+Z (ou Cmd+Z no macOS) para resetar a imagem atual
+        window.addEventListener("keydown", (event) => {
+            if (state.panelHidden) return;
+            if (!state.image) return;
+
+            const isUndoCombo = (event.ctrlKey || event.metaKey) && !event.shiftKey && event.code === "KeyZ";
+
+            if (!isUndoCombo) return;
+
+            const target = event.composedPath ? event.composedPath()[0] : event.target;
+
+            const isEditableTarget =
+                target &&
+                (target.tagName === "INPUT" ||
+                    target.tagName === "TEXTAREA" ||
+                    target.isContentEditable);
+
+            if (isEditableTarget) return;
+
+            event.preventDefault();
+            clearPreview(root);
+            debug.add("image_reset_shortcut");
+        }, { signal: ac.signal, capture: true });
 
         activeToggle.addEventListener("change", () => {
             state.active = activeToggle.checked;
             saveState();
+            updateActiveDescription();
 
-            updateStatus(
-                state.active ? "Substituição ativada" : "Substituição pausada",
-                state.active ? "success" : "info"
-            );
+            if (state.active) {
+                updateStatus(state.blob ? "Imagem substituída" : "Aguardando imagem", state.blob ? "success" : "info");
+            } else {
+                updateStatus("Substituição desativada", "disabled");
+            }
 
             debug.add(state.active ? "tool_enabled" : "tool_disabled");
         });
@@ -1503,12 +1674,12 @@
 
         logsButton.addEventListener("click", () => {
             debug.print();
-            updateStatus("Diagnóstico no console", "info");
+            updateStatus("Diagnóstico registrado", "info");
         });
 
         clearLogsButton.addEventListener("click", () => {
             debug.clear();
-            updateStatus("Log limpo", "info");
+            updateStatus("Registros limpos", "info");
         });
 
         resetButton.addEventListener("click", () => clearPreview(root));
@@ -1518,21 +1689,71 @@
         makePanelResizable(resizeHandle, root);
         makeReopenDraggable(reopen);
         bindImageEditor(root);
+        bindAccordion(root);
+
+        // reflete o estado inicial (active/disabled) assim que a UI monta
+        updateStatus(
+            state.active ? "Aguardando imagem" : "Substituição desativada",
+            state.active ? "info" : "disabled"
+        );
     }
 
     GM_addStyle(`
         :root {
-            --hcpr-bg: #121316;
-            --hcpr-panel: #17181c;
-            --hcpr-elevated: #1d1f24;
-            --hcpr-border: #2a2c31;
-            --hcpr-text: #eceef0;
-            --hcpr-muted: #888c94;
-            --hcpr-accent: #5eead4;
-            --hcpr-warn: #ff7a59;
-            --hcpr-radius: 14px;
+            /* superfícies */
+            --hcpr-bg: #08090D;
+            --hcpr-bg-soft: #0C0E14;
+            --hcpr-surface: #11131B;
+            --hcpr-surface-raised: #161925;
+            --hcpr-surface-elevated: #1C2030;
+
+            --hcpr-border: rgba(255,255,255,.10);
+            --hcpr-border-subtle: rgba(255,255,255,.055);
+            --hcpr-border-strong: rgba(255,255,255,.16);
+
+            /* texto */
+            --hcpr-text: #F7F8FF;
+            --hcpr-text-secondary: #C7CADE;
+            --hcpr-text-muted: #8B90A5;
+            --hcpr-text-dim: #5A6079;
+
+            /* accent */
+            --hcpr-accent: #8B5CF6;
+            --hcpr-accent-bright: #A78BFA;
+            --hcpr-accent-deep: #6366F1;
+            --hcpr-accent-cyan: #22D3EE;
+            --hcpr-accent-soft: rgba(139,92,246,.16);
+
+            --hcpr-success: #34D399;
+            --hcpr-danger: #FB7185;
+            --hcpr-danger-soft: rgba(251,113,133,.14);
+
+            --hcpr-radius: 18px;
+            --hcpr-radius-sm: 10px;
+            --hcpr-radius-xs: 7px;
+
             --hcpr-mono: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
             --hcpr-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, sans-serif;
+
+            /* motion */
+            --hcpr-ease-out: cubic-bezier(.16,1,.3,1);
+            --hcpr-ease-in-out: cubic-bezier(.65,0,.35,1);
+            --hcpr-t-fast: 120ms;
+            --hcpr-t-base: 180ms;
+            --hcpr-t-medium: 240ms;
+            --hcpr-t-slow: 320ms;
+
+            --hcpr-shadow-ambient: 0 30px 80px rgba(0,0,0,.55);
+            --hcpr-shadow-contact: 0 8px 22px rgba(0,0,0,.35);
+            --hcpr-shadow-inner: inset 0 1px 0 rgba(255,255,255,.04);
+        }
+
+        @media (prefers-reduced-motion: reduce) {
+            #hcpr-tool, #hcpr-tool *, #hcpr-reopen, #hcpr-reopen * {
+                animation-duration: .001ms !important;
+                animation-iteration-count: 1 !important;
+                transition-duration: .001ms !important;
+            }
         }
 
         #hcpr-tool {
@@ -1541,7 +1762,7 @@
             z-index: 2147483647;
             right: 22px;
             bottom: 22px;
-            width: 296px;
+            width: 306px;
             color: var(--hcpr-text);
             font-family: var(--hcpr-sans);
             transform-origin: top left;
@@ -1558,16 +1779,60 @@
             overflow: visible;
             border: 1px solid var(--hcpr-border);
             border-radius: var(--hcpr-radius);
-            background: var(--hcpr-bg);
-            box-shadow: 0 20px 60px rgba(0, 0, 0, .4), 0 6px 18px rgba(0, 0, 0, .22);
+            background:
+                radial-gradient(120% 90% at 15% -10%, rgba(139,92,246,.10), transparent 55%),
+                linear-gradient(180deg, var(--hcpr-bg-soft), var(--hcpr-bg) 60%);
+            box-shadow: var(--hcpr-shadow-ambient), var(--hcpr-shadow-contact), var(--hcpr-shadow-inner);
+            opacity: 1;
+            transform: translateY(0) scale(1);
+            filter: blur(0);
+            transition:
+                opacity var(--hcpr-t-medium) var(--hcpr-ease-out),
+                transform var(--hcpr-t-medium) var(--hcpr-ease-out),
+                filter var(--hcpr-t-medium) var(--hcpr-ease-out),
+                box-shadow var(--hcpr-t-base) var(--hcpr-ease-out),
+                border-color var(--hcpr-t-base) var(--hcpr-ease-out);
         }
 
+        .hcpr-shell.hcpr-shell-hiding {
+            opacity: 0;
+            transform: translateY(6px) scale(.96);
+            filter: blur(4px);
+        }
+
+        #hcpr-tool.hcpr-panel-dragging .hcpr-shell,
+        #hcpr-tool.hcpr-panel-resizing .hcpr-shell {
+            border-color: color-mix(in srgb, var(--hcpr-accent) 45%, var(--hcpr-border));
+            box-shadow: 0 36px 100px rgba(0,0,0,.6), 0 0 0 1px var(--hcpr-accent-soft), var(--hcpr-shadow-inner);
+        }
+
+        #hcpr-tool.hcpr-panel-dragging .hcpr-shell { transform: scale(1.006); }
+
+        .hcpr-ambient {
+            position: absolute;
+            inset: 0;
+            overflow: hidden;
+            border-radius: inherit;
+            pointer-events: none;
+            opacity: .5;
+            background: radial-gradient(60% 40% at 50% 0%, rgba(139,92,246,.14), transparent 70%);
+            transition: opacity var(--hcpr-t-medium) var(--hcpr-ease-out);
+        }
+
+        .hcpr-shell[data-state="ready"] .hcpr-ambient { opacity: .85; }
+        .hcpr-shell[data-state="error"] .hcpr-ambient {
+            background: radial-gradient(60% 40% at 50% 0%, rgba(251,113,133,.14), transparent 70%);
+            opacity: .8;
+        }
+
+        /* ---------------- header ---------------- */
+
         .hcpr-header {
+            position: relative;
             display: flex;
             align-items: center;
-            gap: 10px;
-            padding: 14px 14px 12px;
-            border-radius: var(--hcpr-radius) var(--hcpr-radius) 0 0;
+            gap: 11px;
+            padding: 16px 15px 10px;
             cursor: grab;
             touch-action: none;
             user-select: none;
@@ -1576,94 +1841,172 @@
         .hcpr-header.hcpr-dragging { cursor: grabbing; }
 
         .hcpr-mark {
+            position: relative;
             display: grid;
             flex: 0 0 auto;
-            width: 30px;
-            height: 30px;
+            width: 34px;
+            height: 34px;
             place-items: center;
-            overflow: hidden;
-            border: 1px solid var(--hcpr-border);
-            border-radius: 9px;
-            color: var(--hcpr-muted);
-            background: var(--hcpr-panel);
-            transition: border-color .2s ease;
+        }
+
+        .hcpr-mark-glow {
+            position: absolute;
+            inset: -8px;
+            border-radius: 14px;
+            background: radial-gradient(circle, var(--hcpr-accent) 0%, transparent 70%);
+            opacity: 0;
+            filter: blur(6px);
+            transition: opacity var(--hcpr-t-medium) var(--hcpr-ease-out);
+        }
+
+        .hcpr-shell[data-state="ready"] .hcpr-mark-glow { opacity: .55; }
+        .hcpr-shell[data-state="processing"] .hcpr-mark-glow {
+            opacity: .4;
+            animation: hcpr-breathe 1.6s var(--hcpr-ease-in-out) infinite;
+        }
+        .hcpr-shell[data-state="error"] .hcpr-mark-glow {
+            opacity: .5;
+            background: radial-gradient(circle, var(--hcpr-danger) 0%, transparent 70%);
+        }
+
+        .hcpr-mark-ring {
+            position: absolute;
+            inset: 0;
+            border-radius: 10px;
+            border: 1px solid var(--hcpr-border-strong);
+            background: linear-gradient(160deg, var(--hcpr-surface-elevated), var(--hcpr-surface));
+            box-shadow: inset 0 1px 0 rgba(255,255,255,.08), inset 0 -6px 10px rgba(0,0,0,.35);
+            transition: border-color var(--hcpr-t-base) var(--hcpr-ease-out);
+        }
+
+        .hcpr-shell[data-state="ready"] .hcpr-mark-ring {
+            border-color: color-mix(in srgb, var(--hcpr-accent) 55%, var(--hcpr-border-strong));
+        }
+        .hcpr-shell[data-state="error"] .hcpr-mark-ring {
+            border-color: color-mix(in srgb, var(--hcpr-danger) 50%, var(--hcpr-border-strong));
         }
 
         .hcpr-mark-img {
-            width: 100%;
-            height: 100%;
+            position: relative;
+            width: 20px;
+            height: 20px;
             object-fit: cover;
+            border-radius: 5px;
             display: block;
         }
 
-        .hcpr-shell[data-state="ready"] .hcpr-mark {
-            border-color: color-mix(in srgb, var(--hcpr-accent) 40%, var(--hcpr-border));
-        }
-
-        .hcpr-shell[data-state="error"] .hcpr-mark {
-            border-color: color-mix(in srgb, var(--hcpr-warn) 40%, var(--hcpr-border));
-        }
-
-        .hcpr-title {
+        .hcpr-brand {
             display: flex;
             flex: 1 1 auto;
             flex-direction: column;
             min-width: 0;
-            gap: 2px;
+            gap: 1px;
         }
 
-        .hcpr-title strong {
-            font-size: 12.5px;
+        .hcpr-eyebrow {
+            color: var(--hcpr-text-muted);
+            font-size: 9.5px;
+            font-weight: 700;
+            letter-spacing: .09em;
+            text-transform: uppercase;
+        }
+
+        .hcpr-brand-name {
+            font-size: 14.5px;
             font-weight: 650;
-            letter-spacing: -.01em;
+            letter-spacing: -.015em;
+            background: linear-gradient(120deg, var(--hcpr-text) 40%, var(--hcpr-accent-bright) 120%);
+            -webkit-background-clip: text;
+            background-clip: text;
+            color: transparent;
         }
 
-        .hcpr-title span {
-            overflow: hidden;
-            color: var(--hcpr-muted);
-            font-size: 10px;
-            text-overflow: ellipsis;
-            white-space: nowrap;
-            transition: color .2s ease;
-        }
-
-        .hcpr-shell[data-state="ready"] .hcpr-title span { color: var(--hcpr-accent); }
-        .hcpr-shell[data-state="error"] .hcpr-title span { color: var(--hcpr-warn); }
-
-        .hcpr-ghost-button {
+        .hcpr-icon-btn {
             display: grid;
             flex: 0 0 auto;
-            width: 26px;
-            height: 26px;
+            width: 27px;
+            height: 27px;
             padding: 0;
             place-items: center;
-            border: 0;
-            border-radius: 8px;
-            color: var(--hcpr-muted);
+            border: 1px solid transparent;
+            border-radius: var(--hcpr-radius-xs);
+            color: var(--hcpr-text-muted);
             background: transparent;
             cursor: pointer;
+            transition: color var(--hcpr-t-fast) var(--hcpr-ease-out), background var(--hcpr-t-fast) var(--hcpr-ease-out), border-color var(--hcpr-t-fast) var(--hcpr-ease-out), transform var(--hcpr-t-fast) var(--hcpr-ease-out);
         }
 
-        .hcpr-ghost-button svg { width: 15px; height: 15px; }
-        .hcpr-ghost-button:hover { color: var(--hcpr-text); background: var(--hcpr-panel); }
+        .hcpr-icon-btn svg { width: 14px; height: 14px; }
+        .hcpr-icon-btn:hover { color: var(--hcpr-text); background: var(--hcpr-surface-raised); border-color: var(--hcpr-border); }
+        .hcpr-icon-btn:active { transform: scale(.92); }
+        .hcpr-icon-btn:focus-visible { outline: 2px solid var(--hcpr-accent); outline-offset: 2px; }
 
-        .hcpr-frame { padding: 0 14px; }
+        /* ---------------- status ---------------- */
+
+        .hcpr-status-row {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            padding: 0 15px 12px;
+        }
+
+        .hcpr-status-dot {
+            position: relative;
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            background: var(--hcpr-text-dim);
+            box-shadow: 0 0 0 3px transparent;
+            transition: background var(--hcpr-t-base) var(--hcpr-ease-out), box-shadow var(--hcpr-t-base) var(--hcpr-ease-out);
+        }
+
+        .hcpr-status-dot[data-state="ready"] { background: var(--hcpr-success); box-shadow: 0 0 0 3px rgba(52,211,153,.18); }
+        .hcpr-status-dot[data-state="error"] { background: var(--hcpr-danger); box-shadow: 0 0 0 3px rgba(251,113,133,.18); }
+        .hcpr-status-dot[data-state="disabled"] { background: var(--hcpr-text-dim); }
+        .hcpr-status-dot[data-state="processing"] {
+            background: var(--hcpr-accent-bright);
+            animation: hcpr-breathe 1.3s var(--hcpr-ease-in-out) infinite;
+        }
+
+        .hcpr-status-text {
+            color: var(--hcpr-text-secondary);
+            font-size: 10.5px;
+            font-weight: 600;
+            letter-spacing: .01em;
+            transition: color var(--hcpr-t-base) var(--hcpr-ease-out);
+        }
+
+        .hcpr-shell[data-state="ready"] .hcpr-status-text { color: var(--hcpr-success); }
+        .hcpr-shell[data-state="error"] .hcpr-status-text { color: var(--hcpr-danger); }
+
+        @keyframes hcpr-breathe {
+            0%, 100% { opacity: .4; transform: scale(1); }
+            50% { opacity: 1; transform: scale(1.15); }
+        }
+
+        /* ---------------- editor ---------------- */
+
+        .hcpr-frame { padding: 0 15px; }
 
         .hcpr-frame-inner {
             position: relative;
             aspect-ratio: 1 / 1;
             overflow: hidden;
-            border-radius: 10px;
+            border-radius: var(--hcpr-radius-sm);
+            border: 1px solid var(--hcpr-border);
             background:
-                linear-gradient(45deg, var(--hcpr-elevated) 25%, transparent 25%),
-                linear-gradient(-45deg, var(--hcpr-elevated) 25%, transparent 25%),
-                linear-gradient(45deg, transparent 75%, var(--hcpr-elevated) 75%),
-                linear-gradient(-45deg, transparent 75%, var(--hcpr-elevated) 75%),
-                var(--hcpr-panel);
-            background-position: 0 0, 0 7px, 7px -7px, -7px 0;
-            background-size: 14px 14px;
-            transition: filter .15s ease;
+                linear-gradient(45deg, var(--hcpr-surface-elevated) 25%, transparent 25%),
+                linear-gradient(-45deg, var(--hcpr-surface-elevated) 25%, transparent 25%),
+                linear-gradient(45deg, transparent 75%, var(--hcpr-surface-elevated) 75%),
+                linear-gradient(-45deg, transparent 75%, var(--hcpr-surface-elevated) 75%),
+                var(--hcpr-surface);
+            background-position: 0 0, 0 8px, 8px -8px, -8px 0;
+            background-size: 16px 16px;
+            box-shadow: inset 0 1px 0 rgba(255,255,255,.05), inset 0 0 0 1px rgba(0,0,0,.3);
+            transition: filter var(--hcpr-t-fast) var(--hcpr-ease-out), border-color var(--hcpr-t-base) var(--hcpr-ease-out);
         }
+
+        .hcpr-frame:hover .hcpr-frame-inner { border-color: var(--hcpr-border-strong); }
 
         .hcpr-frame-inner img {
             position: absolute;
@@ -1675,94 +2018,202 @@
             pointer-events: none;
         }
 
+        @keyframes hcpr-materialize-in {
+            from { opacity: 0; transform: translate(-50%, -50%) scale(.985); filter: blur(6px); }
+        }
+
+        .hcpr-frame-inner img.hcpr-materialize {
+            animation: hcpr-materialize-in var(--hcpr-t-medium) var(--hcpr-ease-out);
+        }
+
         .hcpr-frame { cursor: default; }
         .hcpr-frame:has(#hcpr-preview:not([hidden])) { cursor: grab; touch-action: none; }
         .hcpr-frame-panning { cursor: grabbing !important; }
-        .hcpr-frame-dragging .hcpr-frame-inner { filter: brightness(1.15); }
+        .hcpr-frame-panning .hcpr-frame-inner { filter: brightness(1.04); }
 
         .hcpr-empty {
             position: absolute;
             inset: 0;
-            display: grid;
-            place-items: center;
-            gap: 4px;
-            color: var(--hcpr-muted);
-            font-size: 10.5px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 7px;
+            padding: 16px;
             text-align: center;
+            transition: transform var(--hcpr-t-base) var(--hcpr-ease-out);
         }
 
-        .hcpr-link-button { color: var(--hcpr-accent); cursor: pointer; }
+        .hcpr-frame:hover .hcpr-empty { transform: translateY(-1px); }
+
+        .hcpr-empty-icon {
+            display: grid;
+            width: 38px;
+            height: 38px;
+            place-items: center;
+            border-radius: 11px;
+            border: 1px solid var(--hcpr-border);
+            background: linear-gradient(160deg, var(--hcpr-surface-elevated), var(--hcpr-surface));
+            color: var(--hcpr-text-muted);
+            box-shadow: inset 0 1px 0 rgba(255,255,255,.06);
+        }
+
+        .hcpr-empty-icon svg { width: 17px; height: 17px; }
+
+        .hcpr-empty-title {
+            font-size: 12.5px;
+            font-weight: 700;
+            color: var(--hcpr-text);
+        }
+
+        .hcpr-empty-sub {
+            color: var(--hcpr-text-secondary);
+            font-size: 10.5px;
+        }
+
+        .hcpr-empty-caption {
+            color: var(--hcpr-text-muted);
+            font-size: 9px;
+            letter-spacing: .04em;
+        }
+
+        .hcpr-link-button { color: var(--hcpr-accent-bright); cursor: pointer; font-weight: 700; }
         .hcpr-link-button:hover { text-decoration: underline; }
 
-        .hcpr-frame-tool {
+        .hcpr-drop-overlay {
+            position: absolute;
+            inset: 0;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            border-radius: var(--hcpr-radius-sm);
+            background: linear-gradient(180deg, rgba(139,92,246,.16), rgba(99,102,241,.10));
+            border: 1.5px dashed color-mix(in srgb, var(--hcpr-accent) 60%, transparent);
+            color: var(--hcpr-accent-bright);
+            font-size: 12px;
+            font-weight: 650;
+            opacity: 0;
+            transform: scale(.98);
+            pointer-events: none;
+            transition: opacity var(--hcpr-t-base) var(--hcpr-ease-out), transform var(--hcpr-t-base) var(--hcpr-ease-out);
+        }
+
+        .hcpr-drop-icon svg { width: 22px; height: 22px; }
+
+        .hcpr-frame-dragging .hcpr-drop-overlay { opacity: 1; transform: scale(1); }
+        .hcpr-frame-dragging .hcpr-frame-inner { border-color: var(--hcpr-accent); }
+
+        .hcpr-float-btn {
             position: absolute;
             top: 8px;
             left: 8px;
             display: grid;
-            width: 24px;
-            height: 24px;
+            width: 26px;
+            height: 26px;
             padding: 0;
             place-items: center;
             border: 1px solid var(--hcpr-border);
-            border-radius: 7px;
-            color: var(--hcpr-text);
-            background: rgba(18, 19, 22, .82);
+            border-radius: 8px;
+            color: var(--hcpr-text-secondary);
+            background: rgba(17,19,27,.7);
+            backdrop-filter: blur(6px);
+            -webkit-backdrop-filter: blur(6px);
+            box-shadow: 0 6px 16px rgba(0,0,0,.3);
             cursor: pointer;
+            transition: color var(--hcpr-t-fast) var(--hcpr-ease-out), border-color var(--hcpr-t-fast) var(--hcpr-ease-out), transform var(--hcpr-t-fast) var(--hcpr-ease-out);
         }
 
-        .hcpr-frame-tool svg { width: 13px; height: 13px; }
-        .hcpr-frame-tool:hover { color: var(--hcpr-accent); border-color: color-mix(in srgb, var(--hcpr-accent) 40%, var(--hcpr-border)); }
+        .hcpr-float-btn svg { width: 13px; height: 13px; }
+        .hcpr-float-btn:hover { color: var(--hcpr-accent-bright); border-color: color-mix(in srgb, var(--hcpr-accent) 45%, var(--hcpr-border)); }
+        .hcpr-float-btn:active { transform: scale(.9); }
 
         .hcpr-zoom-badge {
             position: absolute;
             right: 8px;
             bottom: 8px;
-            padding: 3px 6px;
+            padding: 4px 7px;
             border: 1px solid var(--hcpr-border);
-            border-radius: 6px;
+            border-radius: 7px;
             color: var(--hcpr-text);
-            background: rgba(18, 19, 22, .82);
+            background: rgba(17,19,27,.7);
+            backdrop-filter: blur(6px);
+            -webkit-backdrop-filter: blur(6px);
+            box-shadow: 0 6px 16px rgba(0,0,0,.3);
             font-size: 9.5px;
+            letter-spacing: .02em;
+            transform: scale(1);
+            transition: transform var(--hcpr-t-fast) var(--hcpr-ease-out);
+        }
+
+        .hcpr-zoom-badge.hcpr-bump { animation: hcpr-badge-bump var(--hcpr-t-base) var(--hcpr-ease-out); }
+
+        @keyframes hcpr-badge-bump {
+            0% { transform: scale(1); }
+            45% { transform: scale(1.14); }
+            100% { transform: scale(1); }
         }
 
         .hcpr-corner {
             position: absolute;
-            width: 16px;
-            height: 16px;
-            border: 2px solid var(--hcpr-border);
-            transition: border-color .2s ease;
+            width: 15px;
+            height: 15px;
+            border: 2px solid var(--hcpr-border-strong);
+            transition: border-color var(--hcpr-t-base) var(--hcpr-ease-out);
             pointer-events: none;
         }
 
         .hcpr-shell[data-state="ready"] .hcpr-corner { border-color: var(--hcpr-accent); }
-        .hcpr-shell[data-state="error"] .hcpr-corner { border-color: var(--hcpr-warn); }
+        .hcpr-shell[data-state="error"] .hcpr-corner { border-color: var(--hcpr-danger); }
 
-        .hcpr-corner-tl { top: 6px; left: 6px; border-width: 2px 0 0 2px; border-radius: 4px 0 0 0; }
-        .hcpr-corner-tr { top: 6px; right: 6px; border-width: 2px 2px 0 0; border-radius: 0 4px 0 0; }
-        .hcpr-corner-bl { bottom: 6px; left: 6px; border-width: 0 0 2px 2px; border-radius: 0 0 0 4px; }
-        .hcpr-corner-br { bottom: 6px; right: 6px; border-width: 0 2px 2px 0; border-radius: 0 0 4px 0; }
+        .hcpr-corner-tl { top: 6px; left: 6px; border-width: 2px 0 0 2px; border-radius: 5px 0 0 0; }
+        .hcpr-corner-tr { top: 6px; right: 6px; border-width: 2px 2px 0 0; border-radius: 0 5px 0 0; }
+        .hcpr-corner-bl { bottom: 6px; left: 6px; border-width: 0 0 2px 2px; border-radius: 0 0 0 5px; }
+        .hcpr-corner-br { bottom: 6px; right: 6px; border-width: 0 2px 2px 0; border-radius: 0 0 5px 0; }
 
-        .hcpr-readout {
+        /* ---------------- info strip ---------------- */
+
+        .hcpr-info-strip {
             display: flex;
-            flex-wrap: wrap;
-            align-items: baseline;
+            align-items: center;
             justify-content: center;
-            gap: 5px;
-            padding: 9px 14px 2px;
-            color: var(--hcpr-muted);
-            font-size: 9.5px;
-            text-align: center;
+            gap: 12px;
+            padding: 10px 15px 4px;
+        }
+
+        .hcpr-info-item {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 1px;
+        }
+
+        .hcpr-info-label {
+            color: var(--hcpr-text-muted);
+            font-size: 8.5px;
+            font-weight: 700;
+            letter-spacing: .08em;
+            text-transform: uppercase;
+        }
+
+        .hcpr-info-value {
+            color: var(--hcpr-text-secondary);
+            font-size: 10px;
+            font-weight: 500;
+        }
+
+        .hcpr-info-value.hcpr-mono { color: var(--hcpr-text); font-weight: 600; }
+
+        .hcpr-info-sep {
+            width: 1px;
+            height: 18px;
+            background: var(--hcpr-border-subtle);
         }
 
         .hcpr-mono { font-family: var(--hcpr-mono); }
 
-        .hcpr-readout .hcpr-mono {
-            color: var(--hcpr-text);
-            font-size: 10.5px;
-            letter-spacing: .2px;
-        }
-
-        .hcpr-readout-sep { opacity: .5; }
+        /* ---------------- primary control ---------------- */
 
         .hcpr-file-input { display: none; }
 
@@ -1771,7 +2222,18 @@
             align-items: center;
             justify-content: space-between;
             gap: 12px;
-            padding: 14px;
+            margin: 12px 15px 0;
+            padding: 13px 14px;
+            border: 1px solid var(--hcpr-border);
+            border-radius: var(--hcpr-radius-sm);
+            background: linear-gradient(160deg, var(--hcpr-surface-raised), var(--hcpr-surface));
+            transition: border-color var(--hcpr-t-base) var(--hcpr-ease-out), box-shadow var(--hcpr-t-base) var(--hcpr-ease-out);
+        }
+
+        .hcpr-shell[data-state="ready"] .hcpr-primary-row,
+        .hcpr-shell[data-state="processing"] .hcpr-primary-row {
+            border-color: color-mix(in srgb, var(--hcpr-accent) 35%, var(--hcpr-border));
+            box-shadow: 0 0 0 1px var(--hcpr-accent-soft);
         }
 
         .hcpr-primary-label {
@@ -1781,85 +2243,148 @@
             gap: 2px;
         }
 
-        .hcpr-primary-label strong { font-size: 12px; font-weight: 600; }
+        .hcpr-primary-label strong { font-size: 12.5px; font-weight: 700; }
 
-        .hcpr-primary-label span {
+        .hcpr-primary-desc {
             overflow: hidden;
-            color: var(--hcpr-muted);
+            color: var(--hcpr-text-secondary);
             font-size: 10px;
             text-overflow: ellipsis;
             white-space: nowrap;
         }
 
-        .hcpr-switch { position: relative; display: block; flex: 0 0 auto; width: 34px; height: 19px; }
+        .hcpr-file-badge {
+            margin: 7px 15px 0;
+            padding: 6px 10px;
+            border: 1px solid var(--hcpr-border-subtle);
+            border-radius: var(--hcpr-radius-xs);
+            background: var(--hcpr-bg-soft);
+            color: var(--hcpr-text-muted);
+            font-size: 9.5px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        /* ---------------- toggle ---------------- */
+
+        .hcpr-switch { position: relative; display: block; flex: 0 0 auto; width: 36px; height: 21px; }
         .hcpr-switch-sm { width: 28px; height: 16px; }
-        .hcpr-switch input { width: 1px; height: 1px; opacity: 0; }
+        .hcpr-switch input { position: absolute; width: 1px; height: 1px; opacity: 0; }
 
         .hcpr-slider {
             position: absolute;
             inset: 0;
             border: 1px solid var(--hcpr-border);
             border-radius: 99px;
-            background: var(--hcpr-panel);
+            background: var(--hcpr-bg-soft);
+            box-shadow: inset 0 1px 2px rgba(0,0,0,.4);
             cursor: pointer;
-            transition: background .2s ease, border-color .2s ease;
+            transition: background var(--hcpr-t-base) var(--hcpr-ease-out), border-color var(--hcpr-t-base) var(--hcpr-ease-out);
         }
 
         .hcpr-slider::before {
             position: absolute;
             top: 2px;
             left: 2px;
-            width: 13px;
-            height: 13px;
+            width: 15px;
+            height: 15px;
             border-radius: 50%;
-            background: var(--hcpr-muted);
+            background: linear-gradient(160deg, #e9eaf4, #c7cadb);
+            box-shadow: 0 1px 3px rgba(0,0,0,.4);
             content: "";
-            transition: transform .2s ease, background .2s ease;
+            transition: transform var(--hcpr-t-base) var(--hcpr-ease-out), background var(--hcpr-t-base) var(--hcpr-ease-out);
         }
 
-        .hcpr-switch-sm .hcpr-slider::before { width: 11px; height: 11px; }
+        .hcpr-switch-sm .hcpr-slider::before { width: 12px; height: 12px; }
 
         .hcpr-switch input:checked + .hcpr-slider {
-            border-color: color-mix(in srgb, var(--hcpr-accent) 45%, var(--hcpr-border));
-            background: color-mix(in srgb, var(--hcpr-accent) 20%, var(--hcpr-panel));
+            border-color: color-mix(in srgb, var(--hcpr-accent) 55%, var(--hcpr-border));
+            background: linear-gradient(120deg, var(--hcpr-accent-deep), var(--hcpr-accent));
+            box-shadow: inset 0 1px 2px rgba(0,0,0,.2), 0 0 12px var(--hcpr-accent-soft);
         }
 
         .hcpr-switch input:checked + .hcpr-slider::before {
-            background: var(--hcpr-accent);
+            background: #fff;
             transform: translateX(15px);
         }
 
         .hcpr-switch-sm input:checked + .hcpr-slider::before { transform: translateX(12px); }
+
+        .hcpr-switch input:active + .hcpr-slider::before { width: 17px; }
+        .hcpr-switch-sm input:active + .hcpr-slider::before { width: 13px; }
 
         .hcpr-switch input:focus-visible + .hcpr-slider {
             outline: 2px solid var(--hcpr-accent);
             outline-offset: 2px;
         }
 
-        .hcpr-disclosure { border-top: 1px solid var(--hcpr-border); }
+        /* ---------------- accordion / settings ---------------- */
 
-        .hcpr-disclosure summary {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            padding: 11px 14px;
-            color: var(--hcpr-muted);
-            font-size: 11px;
-            cursor: pointer;
-            list-style: none;
+        .hcpr-accordion {
+            margin: 12px 0 0;
+            border-top: 1px solid var(--hcpr-border-subtle);
         }
 
-        .hcpr-disclosure summary::-webkit-details-marker { display: none; }
-        .hcpr-disclosure summary:hover { color: var(--hcpr-text); }
+        .hcpr-accordion-trigger {
+            display: flex;
+            width: 100%;
+            align-items: center;
+            justify-content: space-between;
+            padding: 12px 15px;
+            border: 0;
+            background: transparent;
+            color: var(--hcpr-text-secondary);
+            font: inherit;
+            font-size: 11.5px;
+            font-weight: 650;
+            cursor: pointer;
+            transition: color var(--hcpr-t-fast) var(--hcpr-ease-out);
+        }
 
-        .hcpr-chevron { width: 14px; height: 14px; transition: transform .18s ease; }
-        .hcpr-disclosure[open] .hcpr-chevron { transform: rotate(180deg); }
+        .hcpr-accordion-trigger:hover { color: var(--hcpr-text); }
+        .hcpr-accordion-trigger:focus-visible { outline: 2px solid var(--hcpr-accent); outline-offset: -2px; }
 
-        .hcpr-disclosure-body {
+        .hcpr-chevron { width: 14px; height: 14px; transition: transform var(--hcpr-t-base) var(--hcpr-ease-out); }
+        .hcpr-accordion-trigger[aria-expanded="true"] .hcpr-chevron { transform: rotate(180deg); }
+
+        .hcpr-accordion-panel {
+            display: grid;
+            grid-template-rows: 0fr;
+            opacity: 0;
+            transition: grid-template-rows var(--hcpr-t-medium) var(--hcpr-ease-out), opacity var(--hcpr-t-base) var(--hcpr-ease-out);
+        }
+
+        .hcpr-accordion-panel.hcpr-accordion-open {
+            grid-template-rows: 1fr;
+            opacity: 1;
+        }
+
+        .hcpr-accordion-inner {
+            overflow: hidden;
+            min-height: 0;
+            display: flex;
+            flex-direction: column;
+            gap: 14px;
+            padding: 0 15px 14px;
+        }
+
+        .hcpr-group {
             display: flex;
             flex-direction: column;
             gap: 10px;
-            padding: 0 14px 14px;
+            padding: 12px;
+            border: 1px solid var(--hcpr-border-subtle);
+            border-radius: var(--hcpr-radius-sm);
+            background: var(--hcpr-bg-soft);
+        }
+
+        .hcpr-group-title {
+            color: var(--hcpr-text-muted);
+            font-size: 9.5px;
+            font-weight: 700;
+            letter-spacing: .1em;
+            text-transform: uppercase;
         }
 
         .hcpr-setting-row {
@@ -1867,51 +2392,153 @@
             align-items: center;
             justify-content: space-between;
             gap: 12px;
-            font-size: 11px;
-            color: var(--hcpr-muted);
+        }
+
+        .hcpr-setting-label {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+            font-size: 11.5px;
+            font-weight: 600;
+            color: var(--hcpr-text);
+        }
+
+        .hcpr-setting-label small {
+            color: var(--hcpr-text-muted);
+            font-size: 9.5px;
+            font-weight: 500;
         }
 
         .hcpr-number-field {
             display: flex;
             align-items: center;
             gap: 5px;
-            padding: 4px 8px;
+            padding: 5px 9px;
             border: 1px solid var(--hcpr-border);
-            border-radius: 7px;
-            background: var(--hcpr-panel);
+            border-radius: var(--hcpr-radius-xs);
+            background: var(--hcpr-surface);
         }
 
         .hcpr-number-field input {
-            width: 44px;
+            width: 42px;
             border: 0;
             background: transparent;
             color: var(--hcpr-text);
             font-size: 11px;
+            font-weight: 600;
             text-align: right;
         }
 
         .hcpr-number-field input:focus-visible { outline: none; }
-        .hcpr-unit { color: var(--hcpr-muted); font-size: 10px; }
+        .hcpr-unit { color: var(--hcpr-text-muted); font-size: 9.5px; }
 
-        .hcpr-text-actions {
+        .hcpr-text-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+
+        .hcpr-danger-zone { border-color: var(--hcpr-danger-soft); }
+
+        .hcpr-footnote {
+            color: var(--hcpr-text-dim);
+            font-size: 8.5px;
+            letter-spacing: .03em;
+            text-align: center;
+        }
+
+        /* ---------------- rodapé fixo (reset) ---------------- */
+
+        .hcpr-footer-row {
+            margin: 12px 15px 15px;
+            padding-top: 12px;
+            border-top: 1px solid var(--hcpr-border-subtle);
+        }
+
+        .hcpr-btn-footer {
             display: flex;
-            flex-wrap: wrap;
-            gap: 4px 14px;
-            padding-top: 4px;
-            border-top: 1px solid var(--hcpr-border);
+            width: 100%;
+            align-items: center;
+            justify-content: center;
+            gap: 7px;
+            padding: 10px 12px;
         }
 
-        .hcpr-text-button {
-            padding: 6px 0;
-            border: 0;
-            background: transparent;
-            color: var(--hcpr-muted);
+        .hcpr-btn-footer svg { width: 14px; height: 14px; flex: 0 0 auto; }
+
+        .hcpr-btn-footer span:not(.hcpr-shortcut-hint) {
+            font-size: 11.5px;
+            font-weight: 700;
+        }
+
+        .hcpr-shortcut-hint {
+            margin-left: auto;
+            padding: 2px 6px;
+            border: 1px solid var(--hcpr-border);
+            border-radius: 5px;
+            background: var(--hcpr-bg-soft);
+            color: var(--hcpr-text-muted);
+            font-size: 9px;
+            font-weight: 600;
+        }
+
+        /* ---------------- button system ---------------- */
+
+        .hcpr-btn {
+            padding: 7px 11px;
+            border: 1px solid var(--hcpr-border);
+            border-radius: var(--hcpr-radius-xs);
+            background: var(--hcpr-surface);
+            color: var(--hcpr-text-secondary);
+            font: inherit;
             font-size: 10.5px;
+            font-weight: 650;
             cursor: pointer;
+            transition: color var(--hcpr-t-fast) var(--hcpr-ease-out), background var(--hcpr-t-fast) var(--hcpr-ease-out), border-color var(--hcpr-t-fast) var(--hcpr-ease-out), transform var(--hcpr-t-fast) var(--hcpr-ease-out);
         }
 
-        .hcpr-text-button:hover { color: var(--hcpr-text); text-decoration: underline; }
-        .hcpr-text-button-danger:hover { color: var(--hcpr-warn); }
+        .hcpr-btn:active { transform: scale(.96); }
+        .hcpr-btn:focus-visible { outline: 2px solid var(--hcpr-accent); outline-offset: 2px; }
+        .hcpr-btn:disabled { opacity: .45; cursor: not-allowed; }
+
+        .hcpr-btn-ghost { background: transparent; border-color: transparent; }
+        .hcpr-btn-ghost:hover { color: var(--hcpr-text); background: var(--hcpr-surface-raised); border-color: var(--hcpr-border); }
+
+        .hcpr-btn-danger { color: var(--hcpr-text-secondary); background: var(--hcpr-danger-soft); border-color: color-mix(in srgb, var(--hcpr-danger) 30%, var(--hcpr-border)); }
+        .hcpr-btn-danger:hover { color: var(--hcpr-danger); background: var(--hcpr-danger-soft); border-color: color-mix(in srgb, var(--hcpr-danger) 55%, var(--hcpr-border)); }
+
+        /* ---------------- tooltips (puramente CSS) ---------------- */
+
+        [data-tooltip] { position: relative; }
+
+        [data-tooltip]::after {
+            content: attr(data-tooltip);
+            position: absolute;
+            bottom: calc(100% + 9px);
+            left: 50%;
+            transform: translateX(-50%) translateY(3px);
+            padding: 5px 8px;
+            border: 1px solid var(--hcpr-border);
+            border-radius: 7px;
+            background: rgba(17,19,27,.92);
+            backdrop-filter: blur(6px);
+            -webkit-backdrop-filter: blur(6px);
+            box-shadow: 0 8px 20px rgba(0,0,0,.4);
+            color: var(--hcpr-text);
+            font-size: 9.5px;
+            font-weight: 500;
+            white-space: nowrap;
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity var(--hcpr-t-fast) var(--hcpr-ease-out), transform var(--hcpr-t-fast) var(--hcpr-ease-out);
+            transition-delay: 0s;
+            z-index: 5;
+        }
+
+        [data-tooltip]:hover::after,
+        [data-tooltip]:focus-visible::after {
+            opacity: 1;
+            transform: translateX(-50%) translateY(0);
+            transition-delay: .25s;
+        }
+
+        /* ---------------- resize handle ---------------- */
 
         .hcpr-resize-handle {
             position: absolute;
@@ -1921,15 +2548,18 @@
             height: 16px;
             border-bottom: 2px solid var(--hcpr-border);
             border-right: 2px solid var(--hcpr-border);
-            border-radius: 0 0 6px 0;
+            border-radius: 0 0 8px 0;
             cursor: nwse-resize;
             touch-action: none;
+            transition: border-color var(--hcpr-t-fast) var(--hcpr-ease-out);
         }
 
         .hcpr-resize-handle:hover,
         .hcpr-resize-handle.hcpr-resizing {
             border-color: var(--hcpr-accent);
         }
+
+        /* ---------------- reopen orb ---------------- */
 
         #hcpr-reopen {
             all: initial;
@@ -1938,25 +2568,74 @@
             right: 22px;
             bottom: 22px;
             display: grid;
-            width: 42px;
-            height: 42px;
+            width: 46px;
+            height: 46px;
             place-items: center;
-            overflow: hidden;
-            border: 1px solid var(--hcpr-border);
-            border-radius: 12px;
-            background: var(--hcpr-bg);
-            box-shadow: 0 12px 30px rgba(0, 0, 0, .35);
+            border: 1px solid var(--hcpr-border-strong);
+            border-radius: 15px;
+            background: linear-gradient(160deg, var(--hcpr-surface-elevated), var(--hcpr-surface));
+            box-shadow: 0 16px 40px rgba(0,0,0,.5), inset 0 1px 0 rgba(255,255,255,.06);
             cursor: pointer;
             font-family: var(--hcpr-sans);
             touch-action: none;
             user-select: none;
+            transition: transform var(--hcpr-t-fast) var(--hcpr-ease-out), box-shadow var(--hcpr-t-base) var(--hcpr-ease-out), border-color var(--hcpr-t-base) var(--hcpr-ease-out);
         }
 
-        #hcpr-reopen.hcpr-dragging { cursor: grabbing; box-shadow: 0 0 0 3px color-mix(in srgb, var(--hcpr-accent) 45%, transparent), 0 12px 30px rgba(0, 0, 0, .35); }
+        #hcpr-reopen:hover {
+            transform: scale(1.05);
+            border-color: color-mix(in srgb, var(--hcpr-accent) 45%, var(--hcpr-border-strong));
+            box-shadow: 0 18px 46px rgba(0,0,0,.55), 0 0 0 5px var(--hcpr-accent-soft);
+        }
 
-        .hcpr-reopen-img { width: 100%; height: 100%; object-fit: cover; display: block; }
+        #hcpr-reopen:active { transform: scale(.94); }
 
-        #hcpr-reopen:hover { border-color: color-mix(in srgb, var(--hcpr-accent) 40%, var(--hcpr-border)); }
+        #hcpr-reopen.hcpr-dragging {
+            cursor: grabbing;
+            box-shadow: 0 0 0 4px var(--hcpr-accent-soft), 0 16px 40px rgba(0,0,0,.5);
+        }
+
+        @keyframes hcpr-reopen-enter {
+            from { opacity: 0; transform: scale(.9); }
+        }
+
+        #hcpr-reopen.hcpr-reopen-enter { animation: hcpr-reopen-enter var(--hcpr-t-medium) var(--hcpr-ease-out); }
+
+        .hcpr-reopen-ring {
+            position: absolute;
+            inset: -3px;
+            border-radius: 17px;
+            border: 1px solid var(--hcpr-accent-soft);
+            opacity: 0;
+            transition: opacity var(--hcpr-t-base) var(--hcpr-ease-out);
+        }
+
+        #hcpr-reopen:hover .hcpr-reopen-ring { opacity: 1; }
+
+        .hcpr-reopen-img {
+            width: 24px;
+            height: 24px;
+            object-fit: cover;
+            border-radius: 7px;
+            display: block;
+            pointer-events: none;
+        }
+
+        .hcpr-reopen-dot {
+            position: absolute;
+            top: 6px;
+            right: 6px;
+            width: 7px;
+            height: 7px;
+            border-radius: 50%;
+            border: 2px solid var(--hcpr-surface);
+            background: var(--hcpr-text-dim);
+            transition: background var(--hcpr-t-base) var(--hcpr-ease-out);
+        }
+
+        .hcpr-reopen-dot[data-state="ready"] { background: var(--hcpr-success); }
+        .hcpr-reopen-dot[data-state="error"] { background: var(--hcpr-danger); }
+        .hcpr-reopen-dot[data-state="processing"] { background: var(--hcpr-accent-bright); animation: hcpr-breathe 1.3s var(--hcpr-ease-in-out) infinite; }
 
         @media (max-width: 480px) {
             #hcpr-tool { right: 12px; bottom: 12px; left: 12px !important; top: auto !important; width: auto; }
@@ -1974,6 +2653,8 @@
     try { setupCanvasHooks(); } catch (error) { debug.add("canvas_setup_error", { message: String(error) }); }
 
     function waitForBody() {
+        if (killed) return;
+
         if (document.body) {
             createInterface();
         } else {
@@ -1985,28 +2666,56 @@
 
     debug.add("script_initialized");
 
-    // ---- Kill ----
-    function kill() {
-        teardownTasks.forEach((fn) => {
-            try {
-                fn();
-            } catch (error) {
-                console.warn("[PhotoLive] falha no teardown", error);
-            }
-        });
-        teardownTasks.length = 0;
+    // ------------------------------------------------------------------
+    // Ciclo de vida do módulo (kill + sang:module-close)
+    // ------------------------------------------------------------------
 
-        if (handlePaste) {
-            document.removeEventListener("paste", handlePaste);
-            handlePaste = null;
+    function kill() {
+        if (killed) return;
+        killed = true;
+
+        try { ac.abort(); } catch {}
+
+        if (origWebSocket) {
+            try { window.WebSocket = origWebSocket; } catch {}
+            origWebSocket = null;
+        }
+        if (origFetch) {
+            try { window.fetch = origFetch; } catch {}
+            origFetch = null;
+        }
+        if (origXhrOpen) {
+            try { XMLHttpRequest.prototype.open = origXhrOpen; } catch {}
+            origXhrOpen = null;
+        }
+        if (origXhrSend) {
+            try { XMLHttpRequest.prototype.send = origXhrSend; } catch {}
+            origXhrSend = null;
+        }
+        if (origToBlob) {
+            try { HTMLCanvasElement.prototype.toBlob = origToBlob; } catch {}
+            origToBlob = null;
+        }
+        if (origToDataURL) {
+            try { HTMLCanvasElement.prototype.toDataURL = origToDataURL; } catch {}
+            origToDataURL = null;
         }
 
-        document.querySelector("#hcpr-tool")?.remove();
-        document.querySelector("#hcpr-reopen")?.remove();
-        document.querySelectorAll('style[data-livephoto]').forEach((el) => el.remove());
+        if (frameResizeObserver) {
+            try { frameResizeObserver.disconnect(); } catch {}
+            frameResizeObserver = null;
+        }
 
-        debug.destroy();
-        window.__hcprLoaded = false;
+        debug.dispose();
+        try { revokePreviewUrl(); } catch {}
+
+        document
+            .querySelectorAll("#hcpr-tool, #hcpr-reopen, style[data-livephoto]")
+            .forEach((el) => el.remove());
+
+        window.dispatchEvent(
+            new CustomEvent("sang:module-close", { detail: { id: MODULE_ID } })
+        );
     }
 
     window._livePhoto = { kill };
