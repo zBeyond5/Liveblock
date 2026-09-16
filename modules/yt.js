@@ -12,22 +12,80 @@
     const MAX_W = 2400;
     const RESULTS_W = 260;
 
-    // IA 
+    // IA
     const IA_ENDPOINT = 'https://api.groq.com/openai/v1/chat/completions';
     const IA_MODEL = 'openai/gpt-oss-20b';
     const IA_TIMEOUT_MS = 5000;
-    const IA_SYSTEM = `Você transforma pedidos em linguagem natural em queries CURTAS de busca no YouTube (2 a 6 palavras).
+    const IA_SYSTEM = `Você é um normalizador de comandos de voz para o YouTube. Sua ÚNICA função é transformar pedidos em linguagem natural numa query curta de busca no YouTube.
 
-Responda APENAS com a query, sem aspas, sem explicação, sem pontuação final.
-Se o pedido NÃO for sobre buscar/tocar um vídeo, responda apenas: NULL
+## Regras de saída (obrigatórias)
+1. Responda com UMA linha só, sem quebras.
+2. Sem aspas, crases, markdown ou prefixo ("Query:", "Busca:", "→").
+3. Sem pontuação final (nada de ponto, vírgula, exclamação, interrogação).
+4. Entre 2 e 6 palavras-chave essenciais, sem conectores soltos ("de", "com", "o", "a" no fim).
+5. Preserve o idioma da fala original — não traduza.
+6. Preserve nomes próprios, marcas, artistas e títulos exatos como o usuário falou.
+7. Se a fala NÃO for sobre buscar, tocar ou assistir um vídeo/música, responda EXATAMENTE: NULL
+8. Se for ambíguo, responda NULL. É melhor errar pro lado conservador.
 
-Exemplos:
-"coloca o vídeo do leo stronda com o cariani" → leo stronda cariani
-"quero ouvir metallica" → metallica
-"aquele vídeo do cara caindo de skate" → queda skate compilado
-"me mostra o trailer do gta 6" → gta 6 trailer
-"qual a capital da frança" → NULL
-"abre o iptv" → NULL`;
+## Quando responder NULL
+- Perguntas gerais: "qual a capital da frança", "quanto é 2+2", "quem descobriu o brasil"
+- Comandos do Hub: "abre o iptv", "fecha o menu", "liga o booster", "desativa o packet"
+- Conversa: "oi", "tudo bem?", "bom dia", "valeu"
+- Controle de voz: "aumenta o volume", "para", "cancela", "limpa isso", "manda"
+- Qualquer coisa que não seja claramente pedido de vídeo ou música
+
+## Exemplos
+
+Pedido: coloca o vídeo do leo stronda com o cariani
+Saída: leo stronda cariani
+
+Pedido: quero ouvir metallica
+Saída: metallica
+
+Pedido: aquele vídeo do cara caindo de skate
+Saída: queda skate compilado
+
+Pedido: me mostra o trailer do gta 6
+Saída: gta 6 trailer
+
+Pedido: toca aquela música do linkin park que fala de dor
+Saída: linkin park numb
+
+Pedido: coloca o clipe da taylor swift
+Saída: taylor swift clipe
+
+Pedido: quero ver o vídeo do luba explicando javascript
+Saída: luba javascript
+
+Pedido: bota um funk pra tocar
+Saída: funk 2024
+
+Pedido: coloca a música que o cara canta no telhado de novo
+Saída: música telhado
+
+Pedido: youtube the weeknd blinding lights
+Saída: the weeknd blinding lights
+
+Pedido: abre o iptv
+Saída: NULL
+
+Pedido: qual a capital da frança
+Saída: NULL
+
+Pedido: oi tudo bem
+Saída: NULL
+
+Pedido: fecha o menu
+Saída: NULL
+
+Pedido: quanto é 2 mais 2
+Saída: NULL
+
+Pedido: cancela isso
+Saída: NULL
+
+Responda APENAS a saída. Nada mais antes ou depois.`;
 
     // VOZ
     const YT_WAKE = ['youtube', 'yt'];
@@ -60,14 +118,25 @@ Exemplos:
         return d.innerHTML;
     }
 
-    // Pega a chave do Groq do mesmo storage usado pelo resto do ecossistema.
+    // Pega a chave do Groq de `sang_api_keys` (mesmo storage usado pelo resto
+    // do ecossistema). Caminho principal: wrapper global `_apis`. Fallback:
+    // leitura direta do JSON `{ groq: "gsk_..." }`.
     function getGroqKey() {
         try {
             const viaApis = window._apis?.getKey?.('groq');
             if (viaApis) return viaApis;
         } catch (_) {}
-        try { return localStorage.getItem('sang_groq_key') || ''; }
-        catch (_) { return ''; }
+
+        try {
+            const raw = localStorage.getItem('sang_api_keys');
+            if (!raw) return '';
+            const obj = JSON.parse(raw);
+            const v = obj?.groq;
+            if (typeof v === 'string') return v;
+            if (v && typeof v === 'object' && typeof v.key === 'string') return v.key;
+        } catch (_) {}
+
+        return '';
     }
 
     // ─── Parser de linguagem natural ───
@@ -116,9 +185,10 @@ Exemplos:
                         { role: 'system', content: IA_SYSTEM },
                         { role: 'user', content: String(fala || '') }
                     ],
-                    max_tokens: 40,
+                    max_tokens: 60,
                     temperature: 0.1,
-                    top_p: 0.9
+                    top_p: 0.9,
+                    reasoning_effort: 'low'
                 }),
                 signal: ctrl.signal
             });
@@ -127,14 +197,31 @@ Exemplos:
             const data = await res.json();
             const bruto = data?.choices?.[0]?.message?.content || '';
 
-            const limpo = String(bruto).trim()
+            // Limpa: tira aspas/crases das pontas, prefixos tipo "Query:",
+            // travessões, e pega só a primeira linha não-vazia.
+            const linhas = String(bruto).split('\n').map(l => l.trim()).filter(Boolean);
+            if (!linhas.length) return null;
+
+            const limpo = linhas[0]
                 .replace(/^["'`]+|["'`]+$/g, '')
+                .replace(/^(?:query|busca|sa[íi]da|resposta|output|→)\s*[:\-]?\s*/i, '')
                 .replace(/^[-–—]\s*/, '')
-                .split('\n')[0]
                 .trim();
 
-            if (!limpo || /^null$/i.test(limpo)) return null;
-            return limpo;
+            if (!limpo) return null;
+
+            // Canoniza pra comparar com NULL: tira pontuação final.
+            const canonico = limpo.replace(/[.,;:!?]+$/, '').trim();
+
+            // Qualquer variante de "null"/"nada"/"nenhum" vira descarte.
+            if (/^(null|none|nada|nenhum[a]?|n\/a|na)$/i.test(canonico)) return null;
+
+            // Se sobrar mais de 8 palavras, provavelmente a IA ignorou o formato.
+            if (canonico.split(/\s+/).length > 8) {
+                console.warn('[YouTube] IA devolveu query longa, usando mesmo assim:', canonico);
+            }
+
+            return canonico;
         } catch (e) {
             if (e.name !== 'AbortError') {
                 console.warn('[YouTube] Normalização IA falhou:', e);
@@ -534,8 +621,7 @@ Exemplos:
             return true;
         }
 
-        // Fala → vídeo ou busca. Tenta parser local primeiro; se não casar,
-        // cai na IA (chamada direta ao Groq) pra normalizar a query.
+        // Fala → vídeo ou busca. Parser local primeiro; se não casar, IA.
         async function tocarPorFala(fala) {
             const p = interpretar(fala);
             if (p.tipo === 'video') return tocar(p.valor);
@@ -571,6 +657,9 @@ Exemplos:
             if (vozHandler) return true;
             vozHandler = (texto, n, meta) => {
                 if (!deveInterceptar(texto, meta)) return false;
+                // tocarPorFala é async (pode chamar a IA). O dispatcher do voz.js
+                // precisa de resposta síncrona, então consumimos já e deixamos a
+                // Promise seguir em background.
                 tocarPorFala(texto);
                 return true;
             };
