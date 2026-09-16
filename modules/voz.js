@@ -1,3 +1,4 @@
+
 (function() {
     'use strict';
     const UID = '_voz';
@@ -30,9 +31,10 @@
 
     // ─── Whisper (Groq) ───
     const WHISPER_MODEL = 'whisper-large-v3-turbo';
-    const WHISPER_VAD_THRESHOLD = 0.025; // rms mínimo pra considerar "falando"
-    const WHISPER_SILENCIO_MS = 700;     // silêncio pra fechar o segmento e transcrever
-    const WHISPER_MIN_FALA_MS = 250;     // fala mínima pra não mandar ruído/clique
+    const WHISPER_VAD_START = 0.040;    // entra em "falando" (ruído de fundo fica abaixo)
+    const WHISPER_VAD_STOP  = 0.020;    // sai de "falando" (histerese: menor que START)
+    const WHISPER_SILENCIO_MS = 900;    // silêncio contínuo pra fechar o trecho
+    const WHISPER_MIN_FALA_MS = 400;    // descarta tosse/clique/estalo
 
     // ─── Persistência ───
     const loadConfig = () => {
@@ -191,10 +193,12 @@
     }
 
     function pressEnter(el) {
-        const o = { key:'Enter', code:'Enter', keyCode:13, which:13, bubbles:true, cancelable:true };
-        el.dispatchEvent(new KeyboardEvent('keydown', o));
-        el.dispatchEvent(new KeyboardEvent('keypress', o));
-        el.dispatchEvent(new KeyboardEvent('keyup', o));
+        // Só keydown. Disparar keypress sintético junto faz o chat do Habbo
+        // processar Enter 2x (ele escuta keydown e o keypress cai no mesmo handler).
+        el.dispatchEvent(new KeyboardEvent('keydown', {
+            key: 'Enter', code: 'Enter', keyCode: 13, which: 13,
+            bubbles: true, cancelable: true
+        }));
     }
 
     // Divide texto em blocos que caibam no limite do chat, cortando em espaços
@@ -211,9 +215,11 @@
             let corte = resto.lastIndexOf(' ', maxLen);
             if (corte < Math.floor(maxLen * 0.6)) corte = maxLen;
             let bloco = resto.slice(0, corte).trimEnd();
+            if (!bloco) bloco = resto.slice(0, corte); // guard: nunca deixa bloco vazio
             const ultima = bloco.split(/\s+/).pop()?.toLowerCase();
             if (ultima && CONECTORES_BLOCO.has(ultima) && bloco.length > 20) {
-                bloco = bloco.slice(0, bloco.length - ultima.length).trimEnd();
+                const reduzido = bloco.slice(0, bloco.length - ultima.length).trimEnd();
+                if (reduzido) bloco = reduzido;
             }
             blocos.push(bloco);
             resto = resto.slice(bloco.length).trimStart();
@@ -289,12 +295,16 @@
             font-size: 13px;
             font-family: -apple-system, system-ui, sans-serif;
             max-width: 460px; min-width: 220px;
+            max-height: 60vh;
+            overflow-y: auto;
             box-shadow: 0 8px 28px rgba(0,0,0,.7), 0 0 18px rgba(139,92,246,.2);
             display: none;
             backdrop-filter: blur(10px);
             z-index: 2147483000;
         }
         .preview.visivel { display: block; }
+        .preview::-webkit-scrollbar { width: 5px; }
+        .preview::-webkit-scrollbar-thumb { background: rgba(139,92,246,.4); border-radius: 3px; }
         .preview-hdr {
             display: flex; align-items: center; gap: 8px;
             font-size: 10px; color: #8b8fa3; margin-bottom: 6px;
@@ -461,10 +471,10 @@
                 </select>
             </div>
             <div class="campo">
-                <label>Motor de reconhecimento</label>
+                <label>Motor de captura</label>
                 <select id="cfgMotor">
-                    <option value="nativo">Nativo (navegador)</option>
-                    <option value="whisper">Whisper via Groq (mais preciso)</option>
+                    <option value="nativo">Navegador (Web Speech API)</option>
+                    <option value="whisper">Groq (Whisper large v3 turbo)</option>
                 </select>
             </div>
             <div class="campo">
@@ -501,10 +511,12 @@
                 <strong>Modo livre:</strong> comandos disparam direto, como antes.
                 <code>enviar</code> força envio, <code>cancelar</code> limpa.
                 Use <code>digitar</code> para forçar texto ao chat.<br><br>
-                <strong>Whisper:</strong> transcreve por trechos (silêncio fecha o
-                trecho e envia pro Groq), não mostra prévia enquanto você fala.
-                Precisa da chave da Groq já configurada na Sang AI.
-                <div class="dica-foco">💡 Pausa sozinho quando você troca de aba ou janela.</div>
+                <strong>Motor:</strong> <code>Navegador</code> usa a Web Speech API
+                (mostra parcial em tempo real, sem custo). <code>Groq</code> usa
+                Whisper large v3 turbo (mais preciso em sotaque e ruído; transcreve
+                por trechos ao detectar silêncio; precisa da chave Groq configurada
+                na Sang AI).
+                <div class="dica-foco">💡 Pausa sozinho quando você troca de aba ou janela — e preserva o texto pendente.</div>
             </div>
         `;
         root.appendChild(popover);
@@ -549,6 +561,8 @@
         let whisperStream = null, whisperCtx = null, whisperAnalyser = null, whisperRecorder = null;
         let whisperVadTimer = null, whisperChunks = [], whisperFalando = false;
         let whisperSilencioDesde = 0, whisperFalaDesde = 0;
+        let whisperFila = Promise.resolve();  // serializa transcrições (ordem preservada)
+        let whisperGen = 0;                    // invalida transcrições em voo ao desligar
 
         // Nomeado pra permitir removeEventListener no kill().
         function onSilenciar(e) {
@@ -704,6 +718,7 @@
 
         function loopVad() {
             if (!whisperAnalyser || !ativo) return;
+            if (Date.now() < silencioAte) return;
             const buf = new Uint8Array(whisperAnalyser.fftSize);
             whisperAnalyser.getByteTimeDomainData(buf);
             let soma = 0;
@@ -713,8 +728,11 @@
             }
             const rms = Math.sqrt(soma / buf.length);
             const agora = Date.now();
+            // Histerese: entra em "falando" só acima de START; só considera silêncio
+            // abaixo de STOP. Evita cortar em pausa de respiração e engatar em ruído.
+            const limiar = whisperFalando ? WHISPER_VAD_STOP : WHISPER_VAD_START;
 
-            if (rms > WHISPER_VAD_THRESHOLD) {
+            if (rms > limiar) {
                 if (!whisperFalando) { whisperFalando = true; whisperFalaDesde = agora; }
                 whisperSilencioDesde = 0;
                 fab.classList.add('hearing');
@@ -737,14 +755,23 @@
             recorderAtual.onstop = () => {
                 if (valido && whisperChunks.length) {
                     const blob = new Blob(whisperChunks, { type: recorderAtual.mimeType || 'audio/webm' });
-                    transcreverComWhisper(blob);
+                    enfileirarTranscricao(blob);
                 }
                 if (ativo && config.motor === 'whisper') iniciarSegmentoWhisper();
             };
             try { recorderAtual.stop(); } catch (e) {}
         }
 
+        // Serializa transcrições: sem fila, um trecho curto pode voltar do Groq
+        // antes de um trecho anterior e bagunçar a ordem do texto final.
+        function enfileirarTranscricao(blob) {
+            whisperFila = whisperFila
+                .then(() => transcreverComWhisper(blob))
+                .catch(e => console.warn('[Voz] Fila de transcrição:', e));
+        }
+
         async function transcreverComWhisper(blob) {
+            const gen = whisperGen;
             const key = window._apis?.getKey?.('groq');
             if (!key) {
                 console.warn('[Voz] Sem chave Groq configurada — abra a Sang AI e configure a chave.');
@@ -763,6 +790,7 @@
                 });
                 if (!res.ok) throw new Error('HTTP ' + res.status);
                 const data = await res.json();
+                if (gen !== whisperGen) return; // desligou durante o await — descarta
                 const trecho = (data.text || '').trim();
                 if (!trecho) return;
 
@@ -792,8 +820,11 @@
         }
 
         // ─── Parada interna ───
-        function _parar() {
+        // preservarTexto: usado em pausa por foco (não perde o que o usuário falou).
+        function _parar(opts = {}) {
+            const { preservarTexto = false } = opts;
             enviandoGen++;
+            whisperGen++;
             ativo = false;
             if (timerRestart) { clearTimeout(timerRestart); timerRestart = null; }
             if (flashTimer) { clearTimeout(flashTimer); flashTimer = null; }
@@ -805,16 +836,21 @@
             pararTimerSilencio();
             fab.classList.remove('ativo', 'hearing');
             nivelEl.classList.remove('pico');
-            textoFinal = '';
-            textoInterim = '';
+            if (!preservarTexto) {
+                textoFinal = '';
+                textoInterim = '';
+                delete preview.dataset.busy;
+            }
             renderPreview();
-            preview.classList.remove('visivel');
         }
 
-        function _iniciarCaptura() {
+        function _iniciarCaptura(opts = {}) {
+            const { preservarTexto = false } = opts;
             if (ativo) return true;
-            textoFinal = '';
-            textoInterim = '';
+            if (!preservarTexto) {
+                textoFinal = '';
+                textoInterim = '';
+            }
             ultimoResultadoEm = 0;
             tentativasRestart = 0;
 
@@ -875,7 +911,7 @@
         function _pausarPorFoco() {
             if (!ativo) return;
             pausado = true;
-            _parar();
+            _parar({ preservarTexto: true });
             fab.classList.add('pausado');
         }
 
@@ -883,7 +919,7 @@
             if (!pausado) return;
             pausado = false;
             fab.classList.remove('pausado');
-            if (habilitado) _iniciarCaptura();
+            if (habilitado) _iniciarCaptura({ preservarTexto: true });
         }
 
         function verificarFoco() {
@@ -930,7 +966,7 @@
         function renderPreview() {
             if (preview.dataset.busy === '1') return;
             const completo = (textoFinal + textoInterim).trim();
-            if (!completo || !ativo) {
+            if (!completo) {
                 preview.classList.remove('visivel');
                 avisoEl.textContent = '';
                 avisoEl.className = 'aviso';
@@ -1324,8 +1360,8 @@ Eu tava indo pra casa, mas aí eu vi ele.
             saveConfig(config);
             if (ativo) {
                 const eraHabilitado = habilitado;
-                _parar();
-                if (eraHabilitado) setTimeout(() => _iniciarCaptura(), 300);
+                _parar({ preservarTexto: true });
+                if (eraHabilitado) setTimeout(() => _iniciarCaptura({ preservarTexto: true }), 300);
             }
         });
         cfgMotor.addEventListener('change', () => {
@@ -1333,8 +1369,8 @@ Eu tava indo pra casa, mas aí eu vi ele.
             saveConfig(config);
             if (ativo) {
                 const eraHabilitado = habilitado;
-                _parar();
-                if (eraHabilitado) setTimeout(() => _iniciarCaptura(), 300);
+                _parar({ preservarTexto: true });
+                if (eraHabilitado) setTimeout(() => _iniciarCaptura({ preservarTexto: true }), 300);
             }
         });
         cfgPontuacao.addEventListener('change', () => {
@@ -1408,6 +1444,11 @@ Eu tava indo pra casa, mas aí eu vi ele.
                 if (flashTimer) clearTimeout(flashTimer);
                 host.remove();
                 delete window[UID];
+                // Se este módulo criou o dispatcher e ninguém mais usa, limpa.
+                const vc = window._voiceCommands;
+                if (vc && vc._handlers.length === 0 && vc._extras.length === 0) {
+                    delete window._voiceCommands;
+                }
             },
             show() { fab.style.display = 'flex'; },
             hide() { fab.style.display = 'none'; },
