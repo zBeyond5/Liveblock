@@ -35,6 +35,8 @@
     const WHISPER_VAD_STOP  = 0.020;
     const WHISPER_SILENCIO_MS = 900;
     const WHISPER_MIN_FALA_MS = 400;
+    // Candidatos de mimeType em ordem de preferência. Chrome/Firefox/Edge
+    // aceitam webm/opus; Safari moderno prefere mp4.
     const MIME_CANDIDATES = [
         'audio/webm;codecs=opus',
         'audio/webm',
@@ -59,6 +61,7 @@
         try { localStorage.setItem(STATE_KEY, JSON.stringify(c)); } catch {}
     };
 
+    // Lê a chave Groq do mesmo storage usado pelo resto do ecossistema.
     function getGroqKey() {
         try {
             const viaApis = window._apis?.getKey?.('groq');
@@ -82,6 +85,7 @@
     const normalize = s => String(s || '')
         .normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
 
+    // Escolhe um mimeType suportado pelo navegador atual.
     function detectarMimeGravar() {
         if (typeof MediaRecorder === 'undefined') return '';
         for (const m of MIME_CANDIDATES) {
@@ -90,6 +94,7 @@
         return '';
     }
 
+    // Descobre extensão de arquivo a partir do mime — Groq usa pra decodificar.
     function extDoMime(mime) {
         if (!mime) return 'webm';
         if (mime.includes('ogg')) return 'ogg';
@@ -239,6 +244,7 @@
     }
 
     function pressEnter(el) {
+        // Só keydown. keypress sintético junto faz o chat do Habbo processar 2x.
         el.dispatchEvent(new KeyboardEvent('keydown', {
             key: 'Enter', code: 'Enter', keyCode: 13, which: 13,
             bubbles: true, cancelable: true
@@ -285,31 +291,6 @@
         :host { all: initial; }
         * { box-sizing: border-box; }
 
-        /* ─── Moldura do chat ─── */
-        .chat-frame {
-            position: fixed;
-            border: 1.5px solid rgba(167,139,250,.42);
-            border-radius: 16px;
-            box-shadow:
-                0 0 0 1px rgba(0,0,0,.35),
-                0 8px 26px rgba(139,92,246,.20),
-                0 0 0 3px rgba(139,92,246,.05),
-                inset 0 0 0 1px rgba(255,255,255,.05);
-            pointer-events: none;
-            z-index: 2147482998;
-            opacity: 0;
-            transform: scale(.985);
-            transition:
-                opacity .3s cubic-bezier(.34,1.56,.64,1),
-                transform .3s cubic-bezier(.34,1.56,.64,1);
-            background: radial-gradient(140% 100% at 50% 50%, rgba(139,92,246,.06), transparent 75%);
-        }
-        .chat-frame.visivel {
-            opacity: 1;
-            transform: scale(1);
-        }
-
-        /* ─── FAB (mic) ─── */
         .fab {
             position: fixed; width: 46px; height: 46px; border-radius: 50%;
             background: linear-gradient(135deg, #1e1e28, #2a2a3a);
@@ -337,6 +318,8 @@
             display: flex; align-items: center; justify-content: center;
             box-shadow: 0 2px 6px rgba(0,0,0,.5);
         }
+        /* Reconfig de motor/idioma: 300ms em que a captura está off — sem isso
+           o fab fica mudo e parece travado. */
         .fab.reconfig { opacity: .5; pointer-events: none; }
         .fab.reconfig svg { animation: spin 1s linear infinite; }
         @keyframes spin { to { transform: rotate(360deg); } }
@@ -356,6 +339,7 @@
         .fab.ativo .nivel { opacity: 1; }
         .nivel.pico { height: 11px; }
 
+        /* Badge do motor ativo — N (navegador) ou W (whisper). */
         .motor-badge {
             position: absolute; top: -3px; left: -3px;
             width: 15px; height: 15px; border-radius: 50%;
@@ -373,7 +357,6 @@
             border-color: rgba(167,139,250,.55);
         }
 
-        /* ─── Preview ─── */
         .preview {
             position: fixed;
             background: rgba(15,15,20,.96);
@@ -439,12 +422,8 @@
         }
         .preview-acoes button.primario:hover { filter: brightness(1.15); }
 
-        /* ─── Popover (slide da direita) ─── */
         .popover {
             position: fixed;
-            right: 12px;
-            left: auto;
-            top: 100px;
             background: rgba(15,15,20,.98);
             border: 1px solid rgba(139,92,246,.25);
             border-radius: 12px;
@@ -454,22 +433,12 @@
             font-family: -apple-system, system-ui, sans-serif;
             width: 290px;
             box-shadow: 0 12px 32px rgba(0,0,0,.8);
+            display: none;
             z-index: 2147483001;
             max-height: 90vh;
             overflow-y: auto;
-            /* Estado fechado: fora da tela pela direita */
-            transform: translateX(calc(100% + 32px));
-            opacity: 0;
-            pointer-events: none;
-            transition:
-                transform .34s cubic-bezier(.34,1.56,.64,1),
-                opacity .22s ease;
         }
-        .popover.visivel {
-            transform: translateX(0);
-            opacity: 1;
-            pointer-events: auto;
-        }
+        .popover.visivel { display: block; }
         .popover::-webkit-scrollbar { width: 5px; }
         .popover::-webkit-scrollbar-thumb { background: rgba(139,92,246,.4); border-radius: 3px; }
         .popover-hdr {
@@ -519,18 +488,8 @@
             display: flex; align-items: flex-start; gap: 6px;
             color: #f5b942; margin-top: 8px;
         }
-
-        @media (max-width: 500px) {
-            .popover { right: 8px; left: 8px; width: auto; }
-        }
         `;
         root.appendChild(style);
-
-        // ─── Moldura do chat ───
-        const chatFrame = document.createElement('div');
-        chatFrame.className = 'chat-frame';
-        chatFrame.setAttribute('aria-hidden', 'true');
-        root.appendChild(chatFrame);
 
         // ─── FAB ───
         const fab = document.createElement('div');
@@ -546,22 +505,12 @@
             </svg>
             <span class="nivel"></span>
             <span class="motor-badge" aria-hidden="true"></span>`;
-
-        // Se o usuário nunca arrastou, o FAB é reposicionado automaticamente
-        // na borda direita do input. Se arrastou, mantém onde ele deixou.
-        let usuarioMoveuFab = config.left !== null && config.top !== null;
-        if (usuarioMoveuFab) {
-            const l = Math.max(0, Math.min(window.innerWidth - 56, config.left));
-            const t = Math.max(0, Math.min(window.innerHeight - 56, config.top));
-            fab.style.left = l + 'px';
-            fab.style.top = t + 'px';
-        } else {
-            // placeholder — será reposicionado por posicionarFrame() quando
-            // o input for encontrado. Se o input nunca aparecer, fica no
-            // canto padrão.
-            fab.style.left = (window.innerWidth - 66) + 'px';
-            fab.style.top = (window.innerHeight - 66) + 'px';
-        }
+        const pos = {
+            left: config.left ?? (window.innerWidth - 66),
+            top: config.top ?? (window.innerHeight - 66)
+        };
+        fab.style.left = Math.max(0, Math.min(window.innerWidth - 56, pos.left)) + 'px';
+        fab.style.top = Math.max(0, Math.min(window.innerHeight - 56, pos.top)) + 'px';
         root.appendChild(fab);
 
         // ─── Preview ───
@@ -694,67 +643,6 @@
         }
         atualizarMotorBadge();
 
-        // ─── Posicionamento da moldura + snap do FAB ───
-        function posicionarFrame(inp) {
-            const alvo = inp || encontrarInputChat();
-            if (!alvo) {
-                chatFrame.classList.remove('visivel');
-                return false;
-            }
-            const r = alvo.getBoundingClientRect();
-            if (r.width < 40 || r.height < 10 || r.width > window.innerWidth * 0.9) {
-                chatFrame.classList.remove('visivel');
-                return false;
-            }
-
-            const pad = 8;
-
-            // Snap do FAB: encosta na borda direita do input, verticalmente
-            // centrado. Só quando o usuário nunca arrastou.
-            if (!usuarioMoveuFab) {
-                const fabSize = 46;
-                const fabLeft = r.right + pad + 2;
-                const fabTop = r.top + r.height / 2 - fabSize / 2;
-                fab.style.left = Math.max(0, fabLeft) + 'px';
-                fab.style.top = Math.max(0, fabTop) + 'px';
-            }
-
-            const fabR = fab.getBoundingClientRect();
-            // Só inclui o FAB na moldura se ele estiver perto do input.
-            // Se o usuário o arrastou pra longe, a moldura cobre só o input.
-            const incluirFab = Math.abs(fabR.left - r.right) < 100;
-            const left = Math.min(r.left, incluirFab ? fabR.left : r.left) - pad;
-            const top = Math.min(r.top, incluirFab ? fabR.top : r.top) - pad;
-            const right = Math.max(r.right, incluirFab ? fabR.right : r.right) + pad;
-            const bottom = Math.max(r.bottom, incluirFab ? fabR.bottom : r.bottom) + pad;
-
-            chatFrame.style.left = left + 'px';
-            chatFrame.style.top = top + 'px';
-            chatFrame.style.width = (right - left) + 'px';
-            chatFrame.style.height = (bottom - top) + 'px';
-            chatFrame.classList.add('visivel');
-            return true;
-        }
-
-        // Tick leve: só reposiciona quando o rect do input muda. Custa
-        // 1 getBoundingClientRect a cada 600ms — desprezível.
-        let ultimoFrameKey = '';
-        function tickFrame() {
-            const inp = encontrarInputChat();
-            if (!inp) {
-                if (chatFrame.classList.contains('visivel')) chatFrame.classList.remove('visivel');
-                ultimoFrameKey = '';
-                return;
-            }
-            const r = inp.getBoundingClientRect();
-            const key = `${Math.round(r.left)}|${Math.round(r.top)}|${Math.round(r.width)}|${Math.round(r.height)}`;
-            if (key === ultimoFrameKey) return;
-            ultimoFrameKey = key;
-            posicionarFrame(inp);
-        }
-        posicionarFrame();
-        const frameTick = setInterval(tickFrame, 600);
-
         // ─── Estado ───
         let rec = null;
         let habilitado = false;
@@ -784,6 +672,8 @@
         let whisperFalhasSeguidas = 0;
         const WHISPER_MAX_FALHAS = 4;
         let timerAutoWhisper = null;
+        // Piso de ruído adaptativo — começa baixo, ajusta pra cima quando
+        // detecta ambiente barulhento. Ver loopVad().
         let pisoRuido = 0.008;
 
         function onSilenciar(e) {
@@ -915,6 +805,9 @@
 
         // ─── Whisper (Groq) ───
         async function iniciarWhisper() {
+            // Checa suporte ANTES de pedir microfone — evita prompt de permissão
+            // pra um motor que vai falhar de qualquer forma (WebView não-Chromium,
+            // Safari antigo, etc).
             if (typeof MediaRecorder === 'undefined') {
                 console.warn('[Voz] MediaRecorder não disponível — Whisper indisponível.');
                 avisarFalhaWhisper('⚠ Whisper indisponível neste navegador');
@@ -931,7 +824,7 @@
                 whisperStream = null;
                 return false;
             }
-            pisoRuido = 0.008;
+            pisoRuido = 0.008; // reseta calibração a cada sessão nova
             whisperCtx = new (window.AudioContext || window.webkitAudioContext)();
             const source = whisperCtx.createMediaStreamSource(whisperStream);
             whisperAnalyser = whisperCtx.createAnalyser();
@@ -983,6 +876,10 @@
             const rms = Math.sqrt(soma / buf.length);
             const agora = Date.now();
 
+            // Piso de ruído adaptativo: só aprende fora de fala, com média
+            // móvel lenta. Compensa mic com ganho alto / ambiente barulhento
+            // sem nunca descer abaixo do baseline fixo (evita falsos positivos
+            // em ambiente silencioso).
             if (!whisperFalando) {
                 pisoRuido = pisoRuido * 0.95 + rms * 0.05;
             }
@@ -1108,6 +1005,8 @@
         }
 
         // ─── Parada interna ───
+        // preservarTexto: pausa por foco NÃO descarta texto, NÃO invalida
+        // transcrições em voo (o usuário só saiu da aba, não pediu pra parar).
         function _parar(opts = {}) {
             const { preservarTexto = false } = opts;
             enviandoGen++;
@@ -1312,6 +1211,8 @@
                 left = window.innerWidth / 2 - 230;
                 top = window.innerHeight - 240;
             }
+            // Largura real do preview (o CSS usa min(460px, 92vw)) — sem
+            // recalcular, o clamp fica negativo em viewport estreito.
             const largura = Math.min(460, window.innerWidth - 20);
             preview.style.maxWidth = largura + 'px';
             preview.style.left = Math.max(10, Math.min(left, window.innerWidth - largura - 10)) + 'px';
@@ -1534,6 +1435,7 @@ Eu tava indo pra casa, mas aí eu vi ele.
                 }
             }
 
+            // Guarda antecipada: sem input, não perde o buffer.
             const inp = encontrarInputChat();
             if (!inp) {
                 avisoEl.textContent = '⚠ chat não encontrado';
@@ -1550,6 +1452,9 @@ Eu tava indo pra casa, mas aí eu vi ele.
 
             try {
                 if (config.pontuacao === 'groq' && !forcarPrefixo) {
+                    // Trava o render durante a formatação — sem isso, uma fala
+                    // nova durante os até 8s do Groq sobrescrevia o aviso com
+                    // o texto acumulado, dando impressão de travamento.
                     preview.dataset.busy = '1';
                     avisoEl.textContent = '✨ formatando…';
                     avisoEl.className = 'aviso forcar';
@@ -1632,9 +1537,6 @@ Eu tava indo pra casa, mas aí eu vi ele.
             fabMoved = true;
             fab.style.left = Math.max(0, Math.min(window.innerWidth - 56, fabDrag.left + dx)) + 'px';
             fab.style.top = Math.max(0, Math.min(window.innerHeight - 56, fabDrag.top + dy)) + 'px';
-            // Durante o drag, a moldura não segue — ela fica ancorada no input.
-            // Só o FAB se move. Ao soltar, se ainda estiver perto, a moldura
-            // volta a incluir o FAB no próximo tick.
         });
         fab.addEventListener('pointerup', e => {
             if (!fabDrag) return;
@@ -1643,28 +1545,16 @@ Eu tava indo pra casa, mas aí eu vi ele.
             else {
                 config.left = parseInt(fab.style.left, 10);
                 config.top = parseInt(fab.style.top, 10);
-                usuarioMoveuFab = true;
                 saveConfig(config);
-                // Força re-medir a moldura com o novo FAB
-                ultimoFrameKey = '';
-                tickFrame();
             }
             fabDrag = null;
         });
         fab.addEventListener('contextmenu', e => {
             e.preventDefault();
-            if (popover.classList.contains('visivel')) {
-                popover.classList.remove('visivel');
-                return;
-            }
-            // Vertical: alinhado ao FAB, clampado
-            const fabR = fab.getBoundingClientRect();
-            const altura = popover.offsetHeight || 540;
-            let top = fabR.top + fabR.height / 2 - altura / 2;
-            top = Math.max(12, Math.min(top, window.innerHeight - altura - 12));
-            popover.style.top = top + 'px';
-            // Horizontal é fixado pelo CSS (right: 12px)
-            popover.classList.add('visivel');
+            const r = fab.getBoundingClientRect();
+            popover.style.left = Math.max(10, Math.min(r.left - 300, window.innerWidth - 310)) + 'px';
+            popover.style.top = Math.max(10, Math.min(r.top, window.innerHeight - 540)) + 'px';
+            popover.classList.toggle('visivel');
         });
 
         // ─── Config ───
@@ -1675,6 +1565,8 @@ Eu tava indo pra casa, mas aí eu vi ele.
             const eraHabilitado = habilitado;
             _parar({ preservarTexto: true });
             if (!eraHabilitado) return;
+            // Feedback visual durante o gap de 300ms — sem isso o fab fica
+            // mudo e o usuário acha que travou.
             fab.classList.add('reconfig');
             timerReconfig = setTimeout(() => {
                 timerReconfig = null;
@@ -1724,6 +1616,10 @@ Eu tava indo pra casa, mas aí eu vi ele.
 
         // ─── Hotkeys ───
         const estaDigitando = () => {
+            // Atravessa shadow roots aninhadas. Sem isso, quando o foco está
+            // dentro de outro módulo (Sang AI, notas, etc), o document
+            // top-level só vê o host, e o check de tag falha — os hotkeys
+            // disparavam por cima da digitação.
             let el = document.activeElement;
             while (el?.shadowRoot?.activeElement) {
                 el = el.shadowRoot.activeElement;
@@ -1754,9 +1650,6 @@ Eu tava indo pra casa, mas aí eu vi ele.
             fab.style.left = Math.max(0, Math.min(window.innerWidth - 56, l)) + 'px';
             fab.style.top = Math.max(0, Math.min(window.innerHeight - 56, t)) + 'px';
             if (preview.classList.contains('visivel')) posicionarPreview();
-            // Força re-medir moldura no próximo tick
-            ultimoFrameKey = '';
-            tickFrame();
         }
         window.addEventListener('resize', onResize);
 
@@ -1771,7 +1664,6 @@ Eu tava indo pra casa, mas aí eu vi ele.
                 window.removeEventListener('focus', onFocus);
                 window.removeEventListener('blur', onBlur);
                 window.removeEventListener('resize', onResize);
-                if (frameTick) clearInterval(frameTick);
                 if (timerRestart) clearTimeout(timerRestart);
                 if (timerReconfig) clearTimeout(timerReconfig);
                 if (timerSilencio) clearInterval(timerSilencio);
@@ -1784,15 +1676,8 @@ Eu tava indo pra casa, mas aí eu vi ele.
                     delete window._voiceCommands;
                 }
             },
-            show() {
-                fab.style.display = 'flex';
-                ultimoFrameKey = '';
-                tickFrame();
-            },
-            hide() {
-                fab.style.display = 'none';
-                chatFrame.classList.remove('visivel');
-            },
+            show() { fab.style.display = 'flex'; },
+            hide() { fab.style.display = 'none'; },
             toggle,
             get ativo() { return ativo; },
             get habilitado() { return habilitado; },
