@@ -24,10 +24,26 @@
         modoComando: 'prefixo',
         streaming: true,
         maxCharsFallback: 100,
-        delayEntreBlocos: 320
+        delayEntreBlocos: 320,
+        bilingue: false,
+        bilingueIdioma: 'en'
     };
 
     const MIN_INTERVALO_STREAM = 350;
+
+    // ─── Bilingue ───
+    // Código → nome em inglês pra prompt (evita ambiguidade na IA).
+    const IDIOMAS_BILINGUE = {
+        en: 'English',
+        es: 'Spanish',
+        fr: 'French',
+        de: 'German',
+        it: 'Italian',
+        ja: 'Japanese',
+        ko: 'Korean',
+        zh: 'Chinese',
+        ru: 'Russian'
+    };
 
     // ─── Whisper (Groq) ───
     const WHISPER_MODEL = 'whisper-large-v3-turbo';
@@ -35,8 +51,6 @@
     const WHISPER_VAD_STOP  = 0.020;
     const WHISPER_SILENCIO_MS = 900;
     const WHISPER_MIN_FALA_MS = 400;
-    // Candidatos de mimeType em ordem de preferência. Chrome/Firefox/Edge
-    // aceitam webm/opus; Safari moderno prefere mp4.
     const MIME_CANDIDATES = [
         'audio/webm;codecs=opus',
         'audio/webm',
@@ -61,7 +75,6 @@
         try { localStorage.setItem(STATE_KEY, JSON.stringify(c)); } catch {}
     };
 
-    // Lê a chave Groq do mesmo storage usado pelo resto do ecossistema.
     function getGroqKey() {
         try {
             const viaApis = window._apis?.getKey?.('groq');
@@ -85,7 +98,6 @@
     const normalize = s => String(s || '')
         .normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
 
-    // Escolhe um mimeType suportado pelo navegador atual.
     function detectarMimeGravar() {
         if (typeof MediaRecorder === 'undefined') return '';
         for (const m of MIME_CANDIDATES) {
@@ -94,7 +106,6 @@
         return '';
     }
 
-    // Descobre extensão de arquivo a partir do mime — Groq usa pra decodificar.
     function extDoMime(mime) {
         if (!mime) return 'webm';
         if (mime.includes('ogg')) return 'ogg';
@@ -244,7 +255,6 @@
     }
 
     function pressEnter(el) {
-        // Só keydown. keypress sintético junto faz o chat do Habbo processar 2x.
         el.dispatchEvent(new KeyboardEvent('keydown', {
             key: 'Enter', code: 'Enter', keyCode: 13, which: 13,
             bubbles: true, cancelable: true
@@ -318,8 +328,6 @@
             display: flex; align-items: center; justify-content: center;
             box-shadow: 0 2px 6px rgba(0,0,0,.5);
         }
-        /* Reconfig de motor/idioma: 300ms em que a captura está off — sem isso
-           o fab fica mudo e parece travado. */
         .fab.reconfig { opacity: .5; pointer-events: none; }
         .fab.reconfig svg { animation: spin 1s linear infinite; }
         @keyframes spin { to { transform: rotate(360deg); } }
@@ -339,7 +347,6 @@
         .fab.ativo .nivel { opacity: 1; }
         .nivel.pico { height: 11px; }
 
-        /* Badge do motor ativo — N (navegador) ou W (whisper). */
         .motor-badge {
             position: absolute; top: -3px; left: -3px;
             width: 15px; height: 15px; border-radius: 50%;
@@ -356,6 +363,20 @@
             color: #fff;
             border-color: rgba(167,139,250,.55);
         }
+        /* Badge do modo bilíngue — pequeno globo no canto oposto ao motor. */
+        .bil-badge {
+            position: absolute; top: -3px; right: -3px;
+            width: 15px; height: 15px; border-radius: 50%;
+            background: linear-gradient(135deg, #22d3ee, #0891b2);
+            color: #fff;
+            border: 1px solid rgba(34,211,238,.55);
+            font-size: 9px; font-weight: 900;
+            display: none; align-items: center; justify-content: center;
+            line-height: 1;
+            pointer-events: none;
+            box-shadow: 0 2px 6px rgba(0,0,0,.5);
+        }
+        .bil-badge.on { display: flex; }
 
         .preview {
             position: fixed;
@@ -474,6 +495,7 @@
             font-size: 12px; font-family: inherit; outline: none; cursor: pointer;
         }
         .campo select:focus { border-color: #8b5cf6; }
+        .campo.subordinado { padding-left: 10px; border-left: 2px solid rgba(34,211,238,.25); }
         .ajuda {
             font-size: 10px; color: #8b8fa3; line-height: 1.55;
             border-top: 1px solid rgba(255,255,255,.06);
@@ -504,7 +526,8 @@
                 <line x1="8" y1="23" x2="16" y2="23"/>
             </svg>
             <span class="nivel"></span>
-            <span class="motor-badge" aria-hidden="true"></span>`;
+            <span class="motor-badge" aria-hidden="true"></span>
+            <span class="bil-badge" aria-hidden="true">🌐</span>`;
         const pos = {
             left: config.left ?? (window.innerWidth - 66),
             top: config.top ?? (window.innerHeight - 66)
@@ -556,7 +579,7 @@
                 </select>
             </div>
             <div class="campo">
-                <label>Idioma</label>
+                <label>Idioma da fala</label>
                 <select id="cfgLang">
                     <option value="pt-BR">Português (Brasil)</option>
                     <option value="pt-PT">Português (Portugal)</option>
@@ -593,14 +616,35 @@
                     <option value="off">Desativado (junta tudo)</option>
                 </select>
             </div>
+            <div class="campo">
+                <label>Modo bilíngue</label>
+                <select id="cfgBilingue">
+                    <option value="off">Desativado</option>
+                    <option value="on">Ativado (traduz antes de enviar)</option>
+                </select>
+            </div>
+            <div class="campo subordinado" id="campoBilingueIdioma">
+                <label>Traduzir para</label>
+                <select id="cfgBilingueIdioma">
+                    <option value="en">English</option>
+                    <option value="es">Español</option>
+                    <option value="fr">Français</option>
+                    <option value="de">Deutsch</option>
+                    <option value="it">Italiano</option>
+                    <option value="ja">日本語</option>
+                    <option value="ko">한국어</option>
+                    <option value="zh">中文</option>
+                    <option value="ru">Русский</option>
+                </select>
+            </div>
             <div class="ajuda">
                 <strong>Modo prefixado:</strong> comandos começam com
                 <code>menu</code>, <code>sang</code>, <code>comando</code>,
                 <code>catapimbas</code>, <code>youtube</code> ou <code>yt</code>.
                 Ex: <code>youtube metallica</code>.<br><br>
-                <strong>Comandos naturais:</strong> frases como
-                <code>coloca o vídeo do leo stronda</code> também são
-                detectadas, mesmo sem wake word.<br><br>
+                <strong>Modo bilíngue:</strong> envia a fala original e em seguida
+                a tradução no idioma escolhido, como mensagens separadas.
+                Exige a chave Groq configurada (mesma do Whisper).<br><br>
                 <strong>Envio contínuo:</strong> quando a transcrição bate no limite do
                 chat, ela é enviada na hora e o restante continua acumulando.
                 Desativado automaticamente quando a pontuação é "Formatar com Sang AI",
@@ -620,6 +664,7 @@
         const avisoEl = preview.querySelector('#aviso');
         const nivelEl = fab.querySelector('.nivel');
         const motorBadge = fab.querySelector('.motor-badge');
+        const bilBadge = fab.querySelector('.bil-badge');
         const cfgModo = popover.querySelector('#cfgModo');
         const cfgSilencio = popover.querySelector('#cfgSilencio');
         const cfgLang = popover.querySelector('#cfgLang');
@@ -627,6 +672,9 @@
         const cfgPontuacao = popover.querySelector('#cfgPontuacao');
         const cfgModoComando = popover.querySelector('#cfgModoComando');
         const cfgStreaming = popover.querySelector('#cfgStreaming');
+        const cfgBilingue = popover.querySelector('#cfgBilingue');
+        const cfgBilingueIdioma = popover.querySelector('#cfgBilingueIdioma');
+        const campoBilingueIdioma = popover.querySelector('#campoBilingueIdioma');
         const btnPopoverClose = popover.querySelector('#popoverClose');
 
         cfgModo.value = config.modo;
@@ -636,12 +684,20 @@
         cfgPontuacao.value = config.pontuacao;
         cfgModoComando.value = config.modoComando;
         cfgStreaming.value = config.streaming ? 'on' : 'off';
+        cfgBilingue.value = config.bilingue ? 'on' : 'off';
+        cfgBilingueIdioma.value = IDIOMAS_BILINGUE[config.bilingueIdioma] ? config.bilingueIdioma : 'en';
 
         function atualizarMotorBadge() {
             motorBadge.textContent = config.motor === 'whisper' ? 'W' : 'N';
             motorBadge.dataset.motor = config.motor;
         }
+        function atualizarBilBadge() {
+            bilBadge.classList.toggle('on', config.bilingue === true);
+            // Esmaece o campo de idioma quando o modo bilíngue está off
+            campoBilingueIdioma.style.opacity = config.bilingue ? '1' : '.45';
+        }
         atualizarMotorBadge();
+        atualizarBilBadge();
 
         // ─── Estado ───
         let rec = null;
@@ -672,8 +728,6 @@
         let whisperFalhasSeguidas = 0;
         const WHISPER_MAX_FALHAS = 4;
         let timerAutoWhisper = null;
-        // Piso de ruído adaptativo — começa baixo, ajusta pra cima quando
-        // detecta ambiente barulhento. Ver loopVad().
         let pisoRuido = 0.008;
 
         function onSilenciar(e) {
@@ -805,9 +859,6 @@
 
         // ─── Whisper (Groq) ───
         async function iniciarWhisper() {
-            // Checa suporte ANTES de pedir microfone — evita prompt de permissão
-            // pra um motor que vai falhar de qualquer forma (WebView não-Chromium,
-            // Safari antigo, etc).
             if (typeof MediaRecorder === 'undefined') {
                 console.warn('[Voz] MediaRecorder não disponível — Whisper indisponível.');
                 avisarFalhaWhisper('⚠ Whisper indisponível neste navegador');
@@ -824,7 +875,7 @@
                 whisperStream = null;
                 return false;
             }
-            pisoRuido = 0.008; // reseta calibração a cada sessão nova
+            pisoRuido = 0.008;
             whisperCtx = new (window.AudioContext || window.webkitAudioContext)();
             const source = whisperCtx.createMediaStreamSource(whisperStream);
             whisperAnalyser = whisperCtx.createAnalyser();
@@ -876,10 +927,6 @@
             const rms = Math.sqrt(soma / buf.length);
             const agora = Date.now();
 
-            // Piso de ruído adaptativo: só aprende fora de fala, com média
-            // móvel lenta. Compensa mic com ganho alto / ambiente barulhento
-            // sem nunca descer abaixo do baseline fixo (evita falsos positivos
-            // em ambiente silencioso).
             if (!whisperFalando) {
                 pisoRuido = pisoRuido * 0.95 + rms * 0.05;
             }
@@ -1005,8 +1052,6 @@
         }
 
         // ─── Parada interna ───
-        // preservarTexto: pausa por foco NÃO descarta texto, NÃO invalida
-        // transcrições em voo (o usuário só saiu da aba, não pediu pra parar).
         function _parar(opts = {}) {
             const { preservarTexto = false } = opts;
             enviandoGen++;
@@ -1179,6 +1224,9 @@
             } else if (config.modoComando === 'prefixo' && PREFIXO_COMANDO.test(completo)) {
                 avisoEl.textContent = '⚡ comando';
                 avisoEl.className = 'aviso cmd';
+            } else if (config.bilingue) {
+                avisoEl.textContent = '🌐 + ' + (IDIOMAS_BILINGUE[config.bilingueIdioma] || 'EN');
+                avisoEl.className = 'aviso forcar';
             } else {
                 avisoEl.textContent = '';
                 avisoEl.className = 'aviso';
@@ -1211,8 +1259,6 @@
                 left = window.innerWidth / 2 - 230;
                 top = window.innerHeight - 240;
             }
-            // Largura real do preview (o CSS usa min(460px, 92vw)) — sem
-            // recalcular, o clamp fica negativo em viewport estreito.
             const largura = Math.min(460, window.innerWidth - 20);
             preview.style.maxWidth = largura + 'px';
             preview.style.left = Math.max(10, Math.min(left, window.innerWidth - largura - 10)) + 'px';
@@ -1235,6 +1281,7 @@
         function tentarStreaming() {
             if (!config.streaming) return;
             if (config.pontuacao === 'groq') return;
+            if (config.bilingue) return; // bilíngue junta tudo pra traduzir duma vez
             if (enviando) return;
             if (!ativo) return;
             if (textoFinal.length < 20) return;
@@ -1354,6 +1401,76 @@ Eu tava indo pra casa, mas aí eu vi ele.
             }
         }
 
+        // ─── Tradução via Groq (modo bilíngue) ───
+        // Recebe o texto já formatado (ou cru, se pontuação != groq) e devolve
+        // a tradução pro idioma alvo. Retorna '' em qualquer falha — o caller
+        // simplesmente envia só o original nesse caso.
+        async function traduzirComGroq(texto, codigoIdioma) {
+            const key = getGroqKey();
+            if (!key) return '';
+            const nomeIdioma = IDIOMAS_BILINGUE[codigoIdioma] || 'English';
+
+            const ctrl = new AbortController();
+            const timer = setTimeout(() => ctrl.abort(), 8000);
+            try {
+                const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': 'Bearer ' + key,
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        model: 'openai/gpt-oss-20b',
+                        messages: [
+                            {
+                                role: 'system',
+                                content: `Você é um tradutor direto. Traduza o texto do usuário para ${nomeIdioma}.
+
+Regras:
+1. Responda SOMENTE com a tradução, sem aspas, sem markdown, sem explicações.
+2. Preserve o tom informal, gírias e expressões coloquiais.
+3. Preserve nomes próprios, marcas, jogos, empresas e termos técnicos como estão.
+4. Não adicione nem remova informação.
+5. Não responda ao conteúdo — apenas traduza.
+6. Se o texto já estiver em ${nomeIdioma}, repita-o.
+7. Retorne o texto em uma única linha, sem quebras.
+
+Exemplos:
+Entrada: e aí mano, tudo bem?
+Saída (English): hey dude, all good?
+Saída (Spanish): ¿qué pasa tío, todo bien?
+
+Entrada: abre o youtube pra mim
+Saída (English): open youtube for me
+Saída (Japanese): ユーチューブを開いて`
+                            },
+                            { role: 'user', content: texto }
+                        ],
+                        max_tokens: 400,
+                        temperature: 0.2,
+                        top_p: 0.9
+                    }),
+                    signal: ctrl.signal
+                });
+                if (!res.ok) throw new Error('HTTP ' + res.status);
+                const data = await res.json();
+                const bruto = data?.choices?.[0]?.message?.content || '';
+                const limpo = String(bruto).trim()
+                    .replace(/^["'`]+|["'`]+$/g, '')
+                    .replace(/^[-–—]\s*/, '')
+                    .replace(/\n+/g, ' ')
+                    .trim();
+                return limpo;
+            } catch (e) {
+                if (e.name !== 'AbortError') {
+                    console.warn('[Voz] Tradução bilíngue falhou:', e);
+                }
+                return '';
+            } finally {
+                clearTimeout(timer);
+            }
+        }
+
         // ─── Envio de um bloco ───
         async function enviarBloco(bloco, combinavel) {
             for (let tentativa = 0; tentativa < 3; tentativa++) {
@@ -1435,7 +1552,6 @@ Eu tava indo pra casa, mas aí eu vi ele.
                 }
             }
 
-            // Guarda antecipada: sem input, não perde o buffer.
             const inp = encontrarInputChat();
             if (!inp) {
                 avisoEl.textContent = '⚠ chat não encontrado';
@@ -1451,10 +1567,8 @@ Eu tava indo pra casa, mas aí eu vi ele.
             const gen = ++enviandoGen;
 
             try {
+                // 1. Formatação opcional
                 if (config.pontuacao === 'groq' && !forcarPrefixo) {
-                    // Trava o render durante a formatação — sem isso, uma fala
-                    // nova durante os até 8s do Groq sobrescrevia o aviso com
-                    // o texto acumulado, dando impressão de travamento.
                     preview.dataset.busy = '1';
                     avisoEl.textContent = '✨ formatando…';
                     avisoEl.className = 'aviso forcar';
@@ -1463,9 +1577,23 @@ Eu tava indo pra casa, mas aí eu vi ele.
                     if (formatado) texto = formatado;
                 }
 
+                // 2. Monta lista de blocos — original + tradução (se bilingue)
                 const maxLen = maxLenDoInput(inp);
                 const blocos = dividirEmBlocos(texto, maxLen);
 
+                if (config.bilingue && !forcarPrefixo) {
+                    preview.dataset.busy = '1';
+                    avisoEl.textContent = '🌐 traduzindo…';
+                    avisoEl.className = 'aviso forcar';
+                    const traducao = await traduzirComGroq(texto, config.bilingueIdioma);
+                    if (gen !== enviandoGen) return;
+                    if (traducao && traducao.toLowerCase() !== texto.toLowerCase()) {
+                        const blocosTrad = dividirEmBlocos(traducao, maxLen);
+                        for (const b of blocosTrad) blocos.push(b);
+                    }
+                }
+
+                // 3. Envia todos os blocos em sequência
                 for (let i = 0; i < blocos.length; i++) {
                     if (gen !== enviandoGen) return;
                     if (blocos.length > 1) {
@@ -1565,8 +1693,6 @@ Eu tava indo pra casa, mas aí eu vi ele.
             const eraHabilitado = habilitado;
             _parar({ preservarTexto: true });
             if (!eraHabilitado) return;
-            // Feedback visual durante o gap de 300ms — sem isso o fab fica
-            // mudo e o usuário acha que travou.
             fab.classList.add('reconfig');
             timerReconfig = setTimeout(() => {
                 timerReconfig = null;
@@ -1599,6 +1725,18 @@ Eu tava indo pra casa, mas aí eu vi ele.
             config.streaming = cfgStreaming.value === 'on';
             saveConfig(config);
         });
+        cfgBilingue.addEventListener('change', () => {
+            config.bilingue = cfgBilingue.value === 'on';
+            saveConfig(config);
+            atualizarBilBadge();
+            renderPreview();
+        });
+        cfgBilingueIdioma.addEventListener('change', () => {
+            const cod = cfgBilingueIdioma.value;
+            config.bilingueIdioma = IDIOMAS_BILINGUE[cod] ? cod : 'en';
+            saveConfig(config);
+            renderPreview();
+        });
 
         btnPopoverClose.addEventListener('click', e => {
             e.stopPropagation();
@@ -1616,10 +1754,6 @@ Eu tava indo pra casa, mas aí eu vi ele.
 
         // ─── Hotkeys ───
         const estaDigitando = () => {
-            // Atravessa shadow roots aninhadas. Sem isso, quando o foco está
-            // dentro de outro módulo (Sang AI, notas, etc), o document
-            // top-level só vê o host, e o check de tag falha — os hotkeys
-            // disparavam por cima da digitação.
             let el = document.activeElement;
             while (el?.shadowRoot?.activeElement) {
                 el = el.shadowRoot.activeElement;
