@@ -536,7 +536,9 @@
                 <code>coloca o vídeo do leo stronda</code> também são
                 detectadas, mesmo sem wake word.<br><br>
                 <strong>Envio contínuo:</strong> quando a transcrição bate no limite do
-                chat, ela é enviada na hora e o restante continua acumulando.<br><br>
+                chat, ela é enviada na hora e o restante continua acumulando.
+                Desativado automaticamente quando a pontuação é "Formatar com Sang AI",
+                pra não misturar trecho formatado com trecho cru.<br><br>
                 <strong>Modo livre:</strong> comandos disparam direto.
                 <code>enviar</code> força envio, <code>cancelar</code> limpa.
                 Use <code>digitar</code> para forçar texto ao chat.<br><br>
@@ -578,6 +580,7 @@
         let timerSilencio = null;
         let tentativasRestart = 0;
         let timerRestart = null;
+        let timerReconfig = null;
         let ultimoOnStartEm = 0;
         let enviando = false;
         let enviandoGen = 0;
@@ -592,6 +595,9 @@
         let whisperSilencioDesde = 0, whisperFalaDesde = 0;
         let whisperFila = Promise.resolve();
         let whisperGen = 0;
+        let whisperFalhasSeguidas = 0;
+        const WHISPER_MAX_FALHAS = 4;
+        let timerAutoWhisper = null;
 
         function onSilenciar(e) {
             silencioAte = Date.now() + (e?.detail?.ms || 1500);
@@ -822,11 +828,17 @@
                 .catch(e => console.warn('[Voz] Fila de transcrição:', e));
         }
 
+        function avisarFalhaWhisper(msg) {
+            avisoEl.textContent = msg;
+            avisoEl.className = 'aviso cmd';
+            preview.classList.add('visivel');
+        }
+
         async function transcreverComWhisper(blob, gen) {
             if (gen !== whisperGen) return;
             const key = getGroqKey();
             if (!key) {
-                console.warn('[Voz] Sem chave Groq — configure na Sang AI.');
+                avisarFalhaWhisper('⚠ sem chave Groq configurada');
                 return;
             }
             const form = new FormData();
@@ -840,9 +852,13 @@
                     headers: { Authorization: 'Bearer ' + key },
                     body: form
                 });
-                if (!res.ok) throw new Error('HTTP ' + res.status);
+                if (!res.ok) {
+                    const fatal = res.status === 401 || res.status === 429;
+                    throw Object.assign(new Error('HTTP ' + res.status), { fatal });
+                }
                 const data = await res.json();
                 if (gen !== whisperGen) return;
+                whisperFalhasSeguidas = 0;
                 const trecho = (data.text || '').trim();
                 if (!trecho) return;
 
@@ -852,8 +868,27 @@
                 renderPreview();
                 posicionarPreview();
                 tentarStreaming();
+
+                if (config.modo === 'auto') {
+                    if (timerAutoWhisper) clearTimeout(timerAutoWhisper);
+                    timerAutoWhisper = setTimeout(() => {
+                        timerAutoWhisper = null;
+                        if (ativo && !enviando && !whisperFalando) enviar(false);
+                    }, 400);
+                }
             } catch (e) {
                 console.warn('[Voz] Falha na transcrição Whisper:', e);
+                if (gen !== whisperGen) return;
+                whisperFalhasSeguidas++;
+                if (e.fatal || whisperFalhasSeguidas >= WHISPER_MAX_FALHAS) {
+                    avisarFalhaWhisper(e.fatal ? '⚠ chave Groq inválida/limite atingido' : '⚠ Groq indisponível — voz desativada');
+                    habilitado = false;
+                    pausado = false;
+                    _parar();
+                    dispararEstadoVoz();
+                } else {
+                    avisarFalhaWhisper('⚠ falha na transcrição, tentando de novo');
+                }
             }
         }
 
@@ -881,6 +916,7 @@
             if (!preservarTexto) whisperGen++;
             ativo = false;
             if (timerRestart) { clearTimeout(timerRestart); timerRestart = null; }
+            if (timerAutoWhisper) { clearTimeout(timerAutoWhisper); timerAutoWhisper = null; }
             if (flashTimer) { clearTimeout(flashTimer); flashTimer = null; }
             if (rec) {
                 try { rec.onend = null; rec.stop(); } catch {}
@@ -911,6 +947,7 @@
                 ultimoResultadoEm = 0;
             }
             tentativasRestart = 0;
+            whisperFalhasSeguidas = 0;
 
             if (config.motor === 'whisper') {
                 ativo = true;
@@ -919,6 +956,7 @@
                 iniciarTimerSilencio();
                 iniciarWhisper().then(ok => {
                     if (!ok && ativo) {
+                        avisarFalhaWhisper('⚠ microfone indisponível');
                         ativo = false;
                         habilitado = false;
                         pausado = false;
@@ -1099,6 +1137,7 @@
         // ─── Envio contínuo ───
         function tentarStreaming() {
             if (!config.streaming) return;
+            if (config.pontuacao === 'groq') return;
             if (enviando) return;
             if (!ativo) return;
             if (textoFinal.length < 20) return;
@@ -1109,7 +1148,7 @@
             const maxLen = maxLenDoInput(inp);
 
             if (textoFinal.length < maxLen) return;
-            if (ehInicioDeComando(textoFinal) && textoFinal.length < maxLen * 2) return;
+            if (ehInicioDeComando(textoFinal) && textoFinal.length < maxLen * 4) return;
 
             let corte = textoFinal.lastIndexOf(' ', maxLen);
             if (corte < Math.floor(maxLen * 0.5)) corte = maxLen;
@@ -1428,23 +1467,26 @@ Eu tava indo pra casa, mas aí eu vi ele.
         // ─── Config ───
         cfgModo.addEventListener('change', () => { config.modo = cfgModo.value; saveConfig(config); });
         cfgSilencio.addEventListener('change', () => { config.silencioMs = parseInt(cfgSilencio.value, 10); saveConfig(config); });
+        function reiniciarCapturaComDelay() {
+            if (timerReconfig) clearTimeout(timerReconfig);
+            const eraHabilitado = habilitado;
+            _parar({ preservarTexto: true });
+            if (!eraHabilitado) return;
+            timerReconfig = setTimeout(() => {
+                timerReconfig = null;
+                _iniciarCaptura({ preservarTexto: true });
+            }, 300);
+        }
         cfgLang.addEventListener('change', () => {
             config.lang = cfgLang.value;
             saveConfig(config);
-            if (ativo) {
-                const eraHabilitado = habilitado;
-                _parar({ preservarTexto: true });
-                if (eraHabilitado) setTimeout(() => _iniciarCaptura({ preservarTexto: true }), 300);
-            }
+            if (ativo) reiniciarCapturaComDelay();
         });
         cfgMotor.addEventListener('change', () => {
             config.motor = cfgMotor.value;
             saveConfig(config);
-            if (ativo) {
-                const eraHabilitado = habilitado;
-                _parar({ preservarTexto: true });
-                if (eraHabilitado) setTimeout(() => _iniciarCaptura({ preservarTexto: true }), 300);
-            }
+            whisperFalhasSeguidas = 0;
+            if (ativo) reiniciarCapturaComDelay();
         });
         cfgPontuacao.addEventListener('change', () => {
             config.pontuacao = cfgPontuacao.value;
@@ -1513,6 +1555,7 @@ Eu tava indo pra casa, mas aí eu vi ele.
                 window.removeEventListener('blur', onBlur);
                 window.removeEventListener('resize', onResize);
                 if (timerRestart) clearTimeout(timerRestart);
+                if (timerReconfig) clearTimeout(timerReconfig);
                 if (timerSilencio) clearInterval(timerSilencio);
                 if (flashTimer) clearTimeout(flashTimer);
                 host.remove();
