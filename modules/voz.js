@@ -1,4 +1,4 @@
-// modules/voz.js — fala vira texto no chat do Habbo
+// modules/voz.js
 (function() {
     'use strict';
     const UID = '_voz';
@@ -578,10 +578,12 @@
         let timerSilencio = null;
         let tentativasRestart = 0;
         let timerRestart = null;
+        let ultimoOnStartEm = 0;
         let enviando = false;
         let enviandoGen = 0;
         let silencioAte = 0;
         let ultimoStreamEm = 0;
+        let ultimoValorProprio = '';
         let flashTimer = null;
 
         // Whisper
@@ -611,6 +613,7 @@
             r.maxAlternatives = 1;
 
             r.onstart = () => {
+                ultimoOnStartEm = Date.now();
                 tentativasRestart = 0;
                 ativo = true;
                 fab.classList.add('ativo');
@@ -676,9 +679,14 @@
                 console.warn('[Voz] Erro:', tipo);
             };
 
+            // Cada onend recria a recognition (reusar a mesma instância depois
+            // de um erro pode deixá-la incapaz de reiniciar, travando "ativo"
+            // sem nada ouvindo de fato). Sessão que rodou estável (>1s) reinicia
+            // na hora; só entra em backoff quando cai em loop de falha rápida.
             r.onend = () => {
                 if (!ativo) { fab.classList.remove('ativo'); return; }
-                tentativasRestart++;
+                const rodouEstavel = (Date.now() - ultimoOnStartEm) > 1000;
+                tentativasRestart = rodouEstavel ? 0 : tentativasRestart + 1;
                 if (tentativasRestart > 8) {
                     console.warn('[Voz] Muitas falhas seguidas — desativando.');
                     habilitado = false;
@@ -687,11 +695,29 @@
                     dispararEstadoVoz();
                     return;
                 }
-                const espera = Math.min(30000, 1000 * Math.pow(2, tentativasRestart - 1));
+                const espera = rodouEstavel ? 0 : Math.min(30000, 1000 * Math.pow(2, tentativasRestart - 1));
                 if (timerRestart) clearTimeout(timerRestart);
                 timerRestart = setTimeout(() => {
-                    if (!ativo || !rec) return;
-                    try { rec.start(); } catch {}
+                    if (!ativo) return;
+                    rec = criarRecognition();
+                    try { rec.start(); }
+                    catch (e) {
+                        console.warn('[Voz] Falha ao reiniciar:', e);
+                        rec = null;
+                        tentativasRestart++;
+                        if (tentativasRestart <= 8) {
+                            timerRestart = setTimeout(() => {
+                                if (!ativo) return;
+                                rec = criarRecognition();
+                                try { rec.start(); } catch {}
+                            }, 500);
+                        } else {
+                            habilitado = false;
+                            pausado = false;
+                            _parar();
+                            dispararEstadoVoz();
+                        }
+                    }
                 }, espera);
             };
 
@@ -716,6 +742,10 @@
             whisperAnalyser = whisperCtx.createAnalyser();
             whisperAnalyser.fftSize = 512;
             source.connect(whisperAnalyser);
+
+            whisperStream.getAudioTracks()[0]?.addEventListener('ended', () => {
+                if (ativo && config.motor === 'whisper') { pararWhisper(); iniciarWhisper(); }
+            });
 
             iniciarSegmentoWhisper();
             whisperVadTimer = setInterval(loopVad, 80);
@@ -847,6 +877,7 @@
         function _parar(opts = {}) {
             const { preservarTexto = false } = opts;
             enviandoGen++;
+            enviando = false;
             if (!preservarTexto) whisperGen++;
             ativo = false;
             if (timerRestart) { clearTimeout(timerRestart); timerRestart = null; }
@@ -894,6 +925,8 @@
                         fab.classList.remove('ativo');
                         pararTimerSilencio();
                         dispararEstadoVoz();
+                    } else if (ok && !ativo) {
+                        pararWhisper();
                     }
                 });
                 return true;
@@ -1090,6 +1123,7 @@
 
             try {
                 setInputValue(inp, bloco);
+                ultimoValorProprio = bloco;
                 inp.focus();
             } catch (e) {
                 enviando = false;
@@ -1097,9 +1131,10 @@
             }
 
             setTimeout(() => {
-                try { pressEnter(inp); } catch {}
+                if (ativo) { try { pressEnter(inp); } catch {} }
                 enviando = false;
                 flashEnvio(bloco.length);
+                setTimeout(() => { ultimoValorProprio = ''; }, 250);
                 tentarStreaming();
             }, 60);
         }
@@ -1190,13 +1225,20 @@ Eu tava indo pra casa, mas aí eu vi ele.
                 if (inp) {
                     let final = bloco;
                     const maxLen = maxLenDoInput(inp);
-                    if (combinavel && inp.value && inp.value.trim()) {
-                        const combinado = inp.value.trim() + ' ' + final;
+                    const existente = inp.value.trim();
+                    // Só combina se o que já está no campo não for resíduo
+                    // deste próprio módulo (evita duplicar texto já enviado).
+                    if (combinavel && existente && existente !== ultimoValorProprio.trim()) {
+                        const combinado = existente + ' ' + final;
                         final = combinado.length > maxLen ? combinado.slice(-maxLen) : combinado;
                     }
                     setInputValue(inp, final);
+                    ultimoValorProprio = final;
                     inp.focus();
-                    setTimeout(() => pressEnter(inp), 80);
+                    setTimeout(() => {
+                        pressEnter(inp);
+                        setTimeout(() => { ultimoValorProprio = ''; }, 250);
+                    }, 80);
                     return true;
                 }
                 await new Promise(r => setTimeout(r, 800));
@@ -1298,6 +1340,7 @@ Eu tava indo pra casa, mas aí eu vi ele.
                         avisoEl.className = 'aviso envio';
                     }
                     const ok = await enviarBloco(blocos[i], i === 0);
+                    if (gen !== enviandoGen) return;
                     if (!ok) {
                         avisoEl.textContent = '⚠ chat não encontrado';
                         avisoEl.className = 'aviso cmd';
@@ -1307,15 +1350,23 @@ Eu tava indo pra casa, mas aí eu vi ele.
                         await new Promise(r => setTimeout(r, config.delayEntreBlocos));
                     }
                 }
-                delete preview.dataset.busy;
-                renderPreview();
+            } catch (e) {
+                console.warn('[Voz] Falha ao enviar:', e);
             } finally {
-                enviando = false;
+                // Só limpa o estado compartilhado se esta ainda for a
+                // geração corrente — evita que um envio cancelado ou
+                // superado pise no estado de um envio novo já em curso.
+                if (gen === enviandoGen) {
+                    enviando = false;
+                    delete preview.dataset.busy;
+                    renderPreview();
+                }
             }
         }
 
         function cancelar() {
             enviandoGen++;
+            enviando = false;
             textoFinal = '';
             textoInterim = '';
             ultimoResultadoEm = 0;
