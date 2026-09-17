@@ -35,6 +35,14 @@
     const WHISPER_VAD_STOP  = 0.020;
     const WHISPER_SILENCIO_MS = 900;
     const WHISPER_MIN_FALA_MS = 400;
+    // Candidatos de mimeType em ordem de preferência. Chrome/Firefox/Edge
+    // aceitam webm/opus; Safari moderno prefere mp4.
+    const MIME_CANDIDATES = [
+        'audio/webm;codecs=opus',
+        'audio/webm',
+        'audio/ogg;codecs=opus',
+        'audio/mp4'
+    ];
 
     // ─── Detecção de comando em texto (pro streaming não atropelar) ───
     const CMD_LINK_RE  = /youtube\.com|youtu\.be/i;
@@ -54,7 +62,6 @@
     };
 
     // Lê a chave Groq do mesmo storage usado pelo resto do ecossistema.
-    // Caminho principal: wrapper `_apis`. Fallback: `sang_api_keys` direto.
     function getGroqKey() {
         try {
             const viaApis = window._apis?.getKey?.('groq');
@@ -78,10 +85,26 @@
     const normalize = s => String(s || '')
         .normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
 
+    // Escolhe um mimeType suportado pelo navegador atual.
+    function detectarMimeGravar() {
+        if (typeof MediaRecorder === 'undefined') return '';
+        for (const m of MIME_CANDIDATES) {
+            try { if (MediaRecorder.isTypeSupported(m)) return m; } catch (_) {}
+        }
+        return '';
+    }
+
+    // Descobre extensão de arquivo a partir do mime — Groq usa pra decodificar.
+    function extDoMime(mime) {
+        if (!mime) return 'webm';
+        if (mime.includes('ogg')) return 'ogg';
+        if (mime.includes('mp4') || mime.includes('m4a')) return 'm4a';
+        return 'webm';
+    }
+
     // ═══ COMANDOS ═══
     const PREFIXO_FORCAR_CHAT = /^(ditar|digitar|escrever|escreve|falar|fala)\s+(.+)$/i;
 
-    // Wake words do modo prefixo. `youtube`/`yt` roteiam pro handler do YT.
     const PALAVRAS_COMANDO = ['menu', 'sang', 'comando', 'comandar', 'catapimbas', 'youtube', 'yt'];
     const PREFIXO_COMANDO = new RegExp('^(' + PALAVRAS_COMANDO.join('|') + ')[,\\s]+(.+)$', 'i');
     const COMANDO_MENU_SEM_PREFIXO = /^(mostrar?|mostra|abrir?|abre|abra|fechar?|fecha|feche|esconder?|esconde)\s+(o\s+)?menu$/;
@@ -142,10 +165,6 @@
             const n = normalize(texto);
             return COMANDOS_RESERVADOS.some(r => r.test(n)) || this._extras.some(r => r.test(n));
         },
-        // meta.opts:
-        //   wake     — string da wake word que disparou (ex: 'sang', 'youtube')
-        //   fallback — true quando é um despacho de último recurso (só handlers
-        //              com prioridade >= 0 rodam; Hub fica de fora)
         despachar(texto, meta) {
             const n = normalize(texto);
             const minPrio = meta?.fallback ? 0 : -Infinity;
@@ -259,6 +278,7 @@
     // ═══ MÓDULO ═══
     function init() {
         const config = loadConfig();
+        const recorderMime = detectarMimeGravar();
 
         const host = document.createElement('div');
         host.id = UID + '_host';
@@ -298,6 +318,12 @@
             display: flex; align-items: center; justify-content: center;
             box-shadow: 0 2px 6px rgba(0,0,0,.5);
         }
+        /* Reconfig de motor/idioma: 300ms em que a captura está off — sem isso
+           o fab fica mudo e parece travado. */
+        .fab.reconfig { opacity: .5; pointer-events: none; }
+        .fab.reconfig svg { animation: spin 1s linear infinite; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+
         @keyframes pulse {
             0%,100% { box-shadow: 0 6px 20px rgba(239,68,68,.4), 0 0 0 0 rgba(239,68,68,.6); }
             50% { box-shadow: 0 6px 20px rgba(239,68,68,.6), 0 0 0 14px rgba(239,68,68,0); }
@@ -313,6 +339,24 @@
         .fab.ativo .nivel { opacity: 1; }
         .nivel.pico { height: 11px; }
 
+        /* Badge do motor ativo — N (navegador) ou W (whisper). */
+        .motor-badge {
+            position: absolute; top: -3px; left: -3px;
+            width: 15px; height: 15px; border-radius: 50%;
+            background: #2a2a3a; color: #b8b8d0;
+            border: 1px solid rgba(255,255,255,.15);
+            font-size: 8.5px; font-weight: 900;
+            display: flex; align-items: center; justify-content: center;
+            line-height: 1;
+            pointer-events: none;
+            box-shadow: 0 2px 6px rgba(0,0,0,.5);
+        }
+        .motor-badge[data-motor="whisper"] {
+            background: linear-gradient(135deg, #a78bfa, #6d28d9);
+            color: #fff;
+            border-color: rgba(167,139,250,.55);
+        }
+
         .preview {
             position: fixed;
             background: rgba(15,15,20,.96);
@@ -322,7 +366,8 @@
             color: #e8e8f0;
             font-size: 13px;
             font-family: -apple-system, system-ui, sans-serif;
-            max-width: 460px; min-width: 220px;
+            max-width: min(460px, 92vw);
+            min-width: 220px;
             max-height: 60vh;
             overflow-y: auto;
             box-shadow: 0 8px 28px rgba(0,0,0,.7), 0 0 18px rgba(139,92,246,.2);
@@ -396,9 +441,26 @@
         .popover.visivel { display: block; }
         .popover::-webkit-scrollbar { width: 5px; }
         .popover::-webkit-scrollbar-thumb { background: rgba(139,92,246,.4); border-radius: 3px; }
-        .popover h3 {
-            margin: 0 0 12px; font-size: 11px; font-weight: 800;
+        .popover-hdr {
+            display: flex; align-items: center; justify-content: space-between;
+            margin-bottom: 12px;
+        }
+        .popover-hdr h3 {
+            margin: 0; font-size: 11px; font-weight: 800;
             text-transform: uppercase; letter-spacing: .08em; color: #a78bfa;
+        }
+        .popover-close {
+            width: 22px; height: 22px; padding: 0;
+            background: transparent; border: 1px solid rgba(255,255,255,.1);
+            color: #8b8fa3; border-radius: 6px;
+            cursor: pointer; font-size: 14px; line-height: 1;
+            display: flex; align-items: center; justify-content: center;
+            transition: background .15s, color .15s, border-color .15s;
+            font-family: inherit;
+        }
+        .popover-close:hover {
+            background: rgba(255,255,255,.08); color: #fff;
+            border-color: rgba(255,255,255,.2);
         }
         .campo { margin-bottom: 11px; }
         .campo label {
@@ -432,7 +494,7 @@
         // ─── FAB ───
         const fab = document.createElement('div');
         fab.className = 'fab';
-        fab.title = 'Voz → Chat (Alt+V) · clique direito = opções';
+        fab.title = 'Voz → Chat · clique = ativar/desativar · clique direito ou Alt+V = opções';
         fab.innerHTML = `
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
                 stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -441,7 +503,8 @@
                 <line x1="12" y1="19" x2="12" y2="23"/>
                 <line x1="8" y1="23" x2="16" y2="23"/>
             </svg>
-            <span class="nivel"></span>`;
+            <span class="nivel"></span>
+            <span class="motor-badge" aria-hidden="true"></span>`;
         const pos = {
             left: config.left ?? (window.innerWidth - 66),
             top: config.top ?? (window.innerHeight - 66)
@@ -471,7 +534,10 @@
         const popover = document.createElement('div');
         popover.className = 'popover';
         popover.innerHTML = `
-            <h3>Voz → Texto</h3>
+            <div class="popover-hdr">
+                <h3>Voz → Texto</h3>
+                <button type="button" class="popover-close" id="popoverClose" aria-label="Fechar opções">×</button>
+            </div>
             <div class="campo">
                 <label>Modo de envio</label>
                 <select id="cfgModo">
@@ -553,6 +619,7 @@
         const txtEl = preview.querySelector('#txt');
         const avisoEl = preview.querySelector('#aviso');
         const nivelEl = fab.querySelector('.nivel');
+        const motorBadge = fab.querySelector('.motor-badge');
         const cfgModo = popover.querySelector('#cfgModo');
         const cfgSilencio = popover.querySelector('#cfgSilencio');
         const cfgLang = popover.querySelector('#cfgLang');
@@ -560,6 +627,7 @@
         const cfgPontuacao = popover.querySelector('#cfgPontuacao');
         const cfgModoComando = popover.querySelector('#cfgModoComando');
         const cfgStreaming = popover.querySelector('#cfgStreaming');
+        const btnPopoverClose = popover.querySelector('#popoverClose');
 
         cfgModo.value = config.modo;
         cfgSilencio.value = String(config.silencioMs);
@@ -568,6 +636,12 @@
         cfgPontuacao.value = config.pontuacao;
         cfgModoComando.value = config.modoComando;
         cfgStreaming.value = config.streaming ? 'on' : 'off';
+
+        function atualizarMotorBadge() {
+            motorBadge.textContent = config.motor === 'whisper' ? 'W' : 'N';
+            motorBadge.dataset.motor = config.motor;
+        }
+        atualizarMotorBadge();
 
         // ─── Estado ───
         let rec = null;
@@ -598,6 +672,9 @@
         let whisperFalhasSeguidas = 0;
         const WHISPER_MAX_FALHAS = 4;
         let timerAutoWhisper = null;
+        // Piso de ruído adaptativo — começa baixo, ajusta pra cima quando
+        // detecta ambiente barulhento. Ver loopVad().
+        let pisoRuido = 0.008;
 
         function onSilenciar(e) {
             silencioAte = Date.now() + (e?.detail?.ms || 1500);
@@ -685,10 +762,6 @@
                 console.warn('[Voz] Erro:', tipo);
             };
 
-            // Cada onend recria a recognition (reusar a mesma instância depois
-            // de um erro pode deixá-la incapaz de reiniciar, travando "ativo"
-            // sem nada ouvindo de fato). Sessão que rodou estável (>1s) reinicia
-            // na hora; só entra em backoff quando cai em loop de falha rápida.
             r.onend = () => {
                 if (!ativo) { fab.classList.remove('ativo'); return; }
                 const rodouEstavel = (Date.now() - ultimoOnStartEm) > 1000;
@@ -732,6 +805,14 @@
 
         // ─── Whisper (Groq) ───
         async function iniciarWhisper() {
+            // Checa suporte ANTES de pedir microfone — evita prompt de permissão
+            // pra um motor que vai falhar de qualquer forma (WebView não-Chromium,
+            // Safari antigo, etc).
+            if (typeof MediaRecorder === 'undefined') {
+                console.warn('[Voz] MediaRecorder não disponível — Whisper indisponível.');
+                avisarFalhaWhisper('⚠ Whisper indisponível neste navegador');
+                return false;
+            }
             try {
                 whisperStream = await navigator.mediaDevices.getUserMedia({ audio: true });
             } catch (e) {
@@ -743,6 +824,7 @@
                 whisperStream = null;
                 return false;
             }
+            pisoRuido = 0.008; // reseta calibração a cada sessão nova
             whisperCtx = new (window.AudioContext || window.webkitAudioContext)();
             const source = whisperCtx.createMediaStreamSource(whisperStream);
             whisperAnalyser = whisperCtx.createAnalyser();
@@ -765,9 +847,15 @@
             whisperSilencioDesde = 0;
             whisperFalaDesde = 0;
             try {
-                whisperRecorder = new MediaRecorder(whisperStream, { mimeType: 'audio/webm' });
+                whisperRecorder = recorderMime
+                    ? new MediaRecorder(whisperStream, { mimeType: recorderMime })
+                    : new MediaRecorder(whisperStream);
             } catch (e) {
-                whisperRecorder = new MediaRecorder(whisperStream);
+                try { whisperRecorder = new MediaRecorder(whisperStream); }
+                catch (e2) {
+                    console.warn('[Voz] Falha ao criar MediaRecorder:', e2);
+                    return;
+                }
             }
             whisperRecorder.ondataavailable = e => {
                 if (e.data.size > 0) whisperChunks.push(e.data);
@@ -787,7 +875,17 @@
             }
             const rms = Math.sqrt(soma / buf.length);
             const agora = Date.now();
-            const limiar = whisperFalando ? WHISPER_VAD_STOP : WHISPER_VAD_START;
+
+            // Piso de ruído adaptativo: só aprende fora de fala, com média
+            // móvel lenta. Compensa mic com ganho alto / ambiente barulhento
+            // sem nunca descer abaixo do baseline fixo (evita falsos positivos
+            // em ambiente silencioso).
+            if (!whisperFalando) {
+                pisoRuido = pisoRuido * 0.95 + rms * 0.05;
+            }
+            const startLimiar = Math.max(WHISPER_VAD_START, pisoRuido * 2.5);
+            const stopLimiar  = Math.max(WHISPER_VAD_STOP,  pisoRuido * 1.4);
+            const limiar = whisperFalando ? stopLimiar : startLimiar;
 
             if (rms > limiar) {
                 if (!whisperFalando) { whisperFalando = true; whisperFalaDesde = agora; }
@@ -811,7 +909,8 @@
             const recorderAtual = whisperRecorder;
             recorderAtual.onstop = () => {
                 if (valido && whisperChunks.length) {
-                    const blob = new Blob(whisperChunks, { type: recorderAtual.mimeType || 'audio/webm' });
+                    const tipo = recorderAtual.mimeType || recorderMime || 'audio/webm';
+                    const blob = new Blob(whisperChunks, { type: tipo });
                     enfileirarTranscricao(blob);
                 }
                 if (ativo && config.motor === 'whisper') iniciarSegmentoWhisper();
@@ -819,8 +918,6 @@
             try { recorderAtual.stop(); } catch (e) {}
         }
 
-        // Serializa transcrições e captura a geração NO MOMENTO DO ENFILEIRAMENTO.
-        // Sem isso, um trecho enfileirado antes de desligar ainda rodava depois.
         function enfileirarTranscricao(blob) {
             const gen = whisperGen;
             whisperFila = whisperFila
@@ -842,7 +939,8 @@
                 return;
             }
             const form = new FormData();
-            form.append('file', blob, 'audio.webm');
+            const mime = blob.type || recorderMime || 'audio/webm';
+            form.append('file', blob, 'audio.' + extDoMime(mime));
             form.append('model', WHISPER_MODEL);
             form.append('language', (config.lang || 'pt-BR').split('-')[0]);
             form.append('response_format', 'json');
@@ -924,7 +1022,7 @@
             }
             pararWhisper();
             pararTimerSilencio();
-            fab.classList.remove('ativo', 'hearing');
+            fab.classList.remove('ativo', 'hearing', 'reconfig');
             nivelEl.classList.remove('pico');
             if (!preservarTexto) {
                 textoFinal = '';
@@ -938,8 +1036,6 @@
             const { preservarTexto = false } = opts;
             if (ativo) return true;
             if (preservarTexto) {
-                // Empurra o timer pra frente — sem isso a pausa longa dispara
-                // enviar() imediatamente ao retomar.
                 ultimoResultadoEm = Date.now();
             } else {
                 textoFinal = '';
@@ -956,7 +1052,6 @@
                 iniciarTimerSilencio();
                 iniciarWhisper().then(ok => {
                     if (!ok && ativo) {
-                        avisarFalhaWhisper('⚠ microfone indisponível');
                         ativo = false;
                         habilitado = false;
                         pausado = false;
@@ -1116,13 +1211,15 @@
                 left = window.innerWidth / 2 - 230;
                 top = window.innerHeight - 240;
             }
-            preview.style.left = Math.min(left, window.innerWidth - 470) + 'px';
+            // Largura real do preview (o CSS usa min(460px, 92vw)) — sem
+            // recalcular, o clamp fica negativo em viewport estreito.
+            const largura = Math.min(460, window.innerWidth - 20);
+            preview.style.maxWidth = largura + 'px';
+            preview.style.left = Math.max(10, Math.min(left, window.innerWidth - largura - 10)) + 'px';
             preview.style.top = Math.min(top, window.innerHeight - 140) + 'px';
         }
 
         // ─── Heurística de "isso é comando?" ───
-        // Inclui padrões YT pra evitar que o streaming cuspa comandos longos
-        // no chat antes do enviar() ter chance de despachar.
         function ehInicioDeComando(texto) {
             const n = normalize(texto);
             if (PREFIXO_COMANDO.test(n)) return true;
@@ -1265,8 +1362,6 @@ Eu tava indo pra casa, mas aí eu vi ele.
                     let final = bloco;
                     const maxLen = maxLenDoInput(inp);
                     const existente = inp.value.trim();
-                    // Só combina se o que já está no campo não for resíduo
-                    // deste próprio módulo (evita duplicar texto já enviado).
                     if (combinavel && existente && existente !== ultimoValorProprio.trim()) {
                         const combinado = existente + ' ' + final;
                         final = combinado.length > maxLen ? combinado.slice(-maxLen) : combinado;
@@ -1323,9 +1418,6 @@ Eu tava indo pra casa, mas aí eu vi ele.
                         renderPreview(); return;
                     }
 
-                    // Fallback prefixo: nenhuma wake word bateu, mas handlers de
-                    // prioridade >= 0 (YT, futuros) podem reconhecer texto natural.
-                    // Hub fica de fora por design (prioridade -1).
                     if (window._voiceCommands.despachar(texto, { fallback: true })) {
                         textoFinal = ''; textoInterim = ''; ultimoResultadoEm = 0;
                         renderPreview(); return;
@@ -1360,6 +1452,10 @@ Eu tava indo pra casa, mas aí eu vi ele.
 
             try {
                 if (config.pontuacao === 'groq' && !forcarPrefixo) {
+                    // Trava o render durante a formatação — sem isso, uma fala
+                    // nova durante os até 8s do Groq sobrescrevia o aviso com
+                    // o texto acumulado, dando impressão de travamento.
+                    preview.dataset.busy = '1';
                     avisoEl.textContent = '✨ formatando…';
                     avisoEl.className = 'aviso forcar';
                     const formatado = await formatarComSangAI(texto);
@@ -1392,9 +1488,6 @@ Eu tava indo pra casa, mas aí eu vi ele.
             } catch (e) {
                 console.warn('[Voz] Falha ao enviar:', e);
             } finally {
-                // Só limpa o estado compartilhado se esta ainda for a
-                // geração corrente — evita que um envio cancelado ou
-                // superado pise no estado de um envio novo já em curso.
                 if (gen === enviandoGen) {
                     enviando = false;
                     delete preview.dataset.busy;
@@ -1472,8 +1565,12 @@ Eu tava indo pra casa, mas aí eu vi ele.
             const eraHabilitado = habilitado;
             _parar({ preservarTexto: true });
             if (!eraHabilitado) return;
+            // Feedback visual durante o gap de 300ms — sem isso o fab fica
+            // mudo e o usuário acha que travou.
+            fab.classList.add('reconfig');
             timerReconfig = setTimeout(() => {
                 timerReconfig = null;
+                fab.classList.remove('reconfig');
                 _iniciarCaptura({ preservarTexto: true });
             }, 300);
         }
@@ -1485,6 +1582,7 @@ Eu tava indo pra casa, mas aí eu vi ele.
         cfgMotor.addEventListener('change', () => {
             config.motor = cfgMotor.value;
             saveConfig(config);
+            atualizarMotorBadge();
             whisperFalhasSeguidas = 0;
             if (ativo) reiniciarCapturaComDelay();
         });
@@ -1502,6 +1600,11 @@ Eu tava indo pra casa, mas aí eu vi ele.
             saveConfig(config);
         });
 
+        btnPopoverClose.addEventListener('click', e => {
+            e.stopPropagation();
+            popover.classList.remove('visivel');
+        });
+
         // ─── Popover fecha ao clicar fora ───
         function fecharPopoverFora(e) {
             if (!popover.classList.contains('visivel')) return;
@@ -1513,7 +1616,14 @@ Eu tava indo pra casa, mas aí eu vi ele.
 
         // ─── Hotkeys ───
         const estaDigitando = () => {
-            const el = document.activeElement;
+            // Atravessa shadow roots aninhadas. Sem isso, quando o foco está
+            // dentro de outro módulo (Sang AI, notas, etc), o document
+            // top-level só vê o host, e o check de tag falha — os hotkeys
+            // disparavam por cima da digitação.
+            let el = document.activeElement;
+            while (el?.shadowRoot?.activeElement) {
+                el = el.shadowRoot.activeElement;
+            }
             if (!el) return false;
             const tag = el.tagName;
             return tag === 'INPUT' || tag === 'TEXTAREA' || el.isContentEditable;
@@ -1558,6 +1668,7 @@ Eu tava indo pra casa, mas aí eu vi ele.
                 if (timerReconfig) clearTimeout(timerReconfig);
                 if (timerSilencio) clearInterval(timerSilencio);
                 if (flashTimer) clearTimeout(flashTimer);
+                if (timerAutoWhisper) clearTimeout(timerAutoWhisper);
                 host.remove();
                 delete window[UID];
                 const vc = window._voiceCommands;
