@@ -310,7 +310,6 @@
         }
     };
 
-    // ─── Cleanup global ───
     const cleanup = [];
     const on = (target, type, fn, opts) => {
         target.addEventListener(type, fn, opts);
@@ -318,9 +317,6 @@
     };
     let _alive = true;
 
-    // ═══════════════════════════════════════════════════════════════
-    // TEMA AURORA GLASS
-    // ═══════════════════════════════════════════════════════════════
     const Theme = {
         cyan:    '#22d3ee',
         violet:  '#a78bfa',
@@ -402,14 +398,17 @@
             }
             return null;
         },
-        // ✅ CORREÇÃO: length = total (4 + 2 + payload)
+        // ═══════════════════════════════════════════════════════════
+        // ✅ CORRIGIDO: length = 2 + payloadLen (não inclui os 4 bytes do prefixo)
+        // Ex: pacote "00 00 00 0A 09 92 00 00 00 06 00 00 00 03"
+        //     length field = 0x0A = 10 = 2 (header) + 8 (payload)
+        // ═══════════════════════════════════════════════════════════
         buildPacket(headerId, hexPayloadStr) {
             const cleanHex = String(hexPayloadStr || '').replace(/[^0-9A-Fa-f]/g, '');
             const payloadLen = cleanHex.length / 2;
-            const totalLen = 4 + 2 + payloadLen;
-            const buffer = new ArrayBuffer(totalLen);
+            const buffer = new ArrayBuffer(4 + 2 + payloadLen);
             const view = new DataView(buffer);
-            view.setInt32(0, totalLen, false);
+            view.setInt32(0, 2 + payloadLen, false);
             view.setInt16(4, headerId, false);
             const u8 = new Uint8Array(buffer);
             for (let i = 0; i < payloadLen; i++) {
@@ -417,7 +416,7 @@
             }
             return buffer;
         },
-        // ✅ NOVO: reconstrói bytes exatos de um fullHex capturado
+        // Reconstrói bytes exatos a partir de um fullHex capturado
         hexToArrayBuffer(fullHex) {
             const clean = String(fullHex || '').replace(/[^0-9A-Fa-f]/g, '');
             const len = clean.length / 2;
@@ -448,9 +447,6 @@
         }
     };
 
-    // ═══════════════════════════════════════════════════════════════
-    // PacketFilter
-    // ═══════════════════════════════════════════════════════════════
     const PacketFilter = {
         _normHex(s) { return String(s || '').replace(/\s/g, '').toUpperCase(); },
         _matchPayload(packet, rule) {
@@ -518,9 +514,6 @@
         clear() { this._map = {}; }
     };
 
-    // ═══════════════════════════════════════════════════════════════
-    // NOTEBOOK
-    // ═══════════════════════════════════════════════════════════════
     const Notebook = {
         _cache: null,
         _load() {
@@ -553,11 +546,6 @@
             const notas = (e.notas || []).concat([{ texto, em: Date.now() }]);
             this.update(id, { notas });
         },
-        addResultado(id, res) {
-            const e = this.get(id) || {};
-            const resultados = (e.resultados || []).concat([Object.assign({ em: Date.now() }, res)]);
-            this.update(id, { resultados });
-        },
         remover(id) {
             const n = this._load();
             delete n[id];
@@ -580,9 +568,6 @@
         }
     };
 
-    // ═══════════════════════════════════════════════════════════════
-    // CORRELATOR
-    // ═══════════════════════════════════════════════════════════════
     const Correlator = {
         _pendentes: [],
         _janelaMs: 800,
@@ -673,9 +658,6 @@
         }
     };
 
-    // ═══════════════════════════════════════════════════════════════
-    // FUZZER
-    // ═══════════════════════════════════════════════════════════════
     const Fuzzer = {
         _ativo: false,
         _runId: 0,
@@ -690,7 +672,8 @@
             const baseLen = cfg.baseLen || 16;
             const base = new ArrayBuffer(6 + baseLen);
             const baseView = new DataView(base);
-            baseView.setInt32(0, 4 + 2 + baseLen, false);
+            // ✅ CORRIGIDO: length = 2 + baseLen
+            baseView.setInt32(0, 2 + baseLen, false);
             baseView.setInt16(4, cfg.id, false);
 
             this._log(`Fuzz #${myRunId} — OUT.ID ${cfg.id}, offset ${cfg.offset}, ${cfg.from}..${cfg.to}, delay ${cfg.delay}ms`, 'info');
@@ -742,9 +725,6 @@
         parar() { this._ativo = false; this._runId++; }
     };
 
-    // ═══════════════════════════════════════════════════════════════
-    // RACE TESTER
-    // ═══════════════════════════════════════════════════════════════
     const RaceTester = {
         async enviarSimultaneo(pacotes) {
             if (!window.gameWS) throw new Error('Sem conexão WebSocket.');
@@ -778,9 +758,6 @@
         }
     };
 
-    // ═══════════════════════════════════════════════════════════════
-    // RECORDER
-    // ═══════════════════════════════════════════════════════════════
     const Recorder = {
         _gravando: false,
         _inicio: 0,
@@ -816,10 +793,7 @@
                 if (this._eventos.length % 25 === 0) this._notificar();
             } catch (e) {}
         },
-        limpar() {
-            this._eventos = [];
-            this._notificar();
-        },
+        limpar() { this._eventos = []; this._notificar(); },
         get eventos() { return this._eventos; },
         get gravando() { return this._gravando; },
         exportar() {
@@ -843,9 +817,6 @@
         }
     };
 
-    // ═══════════════════════════════════════════════════════════════
-    // REPLAY
-    // ═══════════════════════════════════════════════════════════════
     const Replay = {
         _ativo: false,
         _runId: 0,
@@ -883,7 +854,6 @@
                     }
                 }
 
-                // ✅ CORREÇÃO: usa bytes exatos quando não mutado
                 let buf;
                 if (mutated) {
                     buf = Utils.buildPacket(header, payloadHex);
@@ -917,16 +887,11 @@
         get ativo() { return this._ativo; }
     };
 
-    // ═══════════════════════════════════════════════════════════════
-    // PACKET DIFF
-    // ═══════════════════════════════════════════════════════════════
     const PacketDiff = {
         comparar(a, b) {
             if (!a || !b) return null;
-            const bufA = a instanceof ArrayBuffer ? a : null;
-            const bufB = b instanceof ArrayBuffer ? b : null;
-            const hexA = bufA ? Utils.bufferToHex(bufA).split(' ') : String(a.fullHex || '').split(' ');
-            const hexB = bufB ? Utils.bufferToHex(bufB).split(' ') : String(b.fullHex || '').split(' ');
+            const hexA = a.fullHex ? String(a.fullHex).split(' ') : [];
+            const hexB = b.fullHex ? String(b.fullHex).split(' ') : [];
             const len = Math.max(hexA.length, hexB.length);
             const bytes = [];
             let diferentes = 0;
@@ -946,9 +911,6 @@
         }
     };
 
-    // ═══════════════════════════════════════════════════════════════
-    // WATCHERS
-    // ═══════════════════════════════════════════════════════════════
     const Watchers = {
         _regras: null,
         _lastFire: new Map(),
@@ -1047,9 +1009,6 @@
         }
     };
 
-    // ═══════════════════════════════════════════════════════════════
-    // SANG AI
-    // ═══════════════════════════════════════════════════════════════
     const SangAI = {
         _busy: false,
         disponivel() { return !!(window._apis?.groq && window._apis.getKey?.('groq')); },
@@ -1068,7 +1027,7 @@
             return null;
         },
         async _chamar(systemPrompt, userContent, opts = {}) {
-            if (!this.disponivel()) throw new Error('Sang AI não configurada. Abra o módulo Sang AI e cole sua chave.');
+            if (!this.disponivel()) throw new Error('Sang AI não configurada.');
             const ctrl = new AbortController();
             const timeoutMs = opts.timeout || 25000;
             const timer = setTimeout(() => ctrl.abort(), timeoutMs);
@@ -1088,7 +1047,7 @@
                 if (e.name === 'AbortError') throw new Error('Timeout — demorou mais de ' + Math.round(timeoutMs/1000) + 's.');
                 if (e.codigo === 'cota-local') throw new Error('Limite local do Groq atingido. Aguarde 1 minuto.');
                 if (e.codigo === 'sem-chave') throw new Error('Chave do Groq não configurada.');
-                if (e.message && e.message.includes('429')) throw new Error('Rate limit da Groq. Aguarde alguns segundos.');
+                if (e.message && e.message.includes('429')) throw new Error('Rate limit da Groq.');
                 throw e;
             } finally { clearTimeout(timer); }
         },
@@ -1096,67 +1055,50 @@
             const suspeitos = Correlator.suspeitos().slice(0, 5);
             const nb = Notebook.listar().slice(0, 8);
             const regras = Watchers.listar().slice(0, 5);
-
             let extra = '';
             if (suspeitos.length) {
                 extra += '\n\nOUTs SUSPEITOS:\n';
-                extra += suspeitos.map(s =>
-                    `  ${s.outNome} (ID ${s.outId}): ${s.enviados} envios, ${s.respostas} respostas (${s.taxa}%)`
-                ).join('\n');
+                extra += suspeitos.map(s => `  ${s.outNome} (ID ${s.outId}): ${s.enviados} env, ${s.respostas} resp (${s.taxa}%)`).join('\n');
             }
             if (nb.length) {
                 extra += '\n\nNOTEBOOK:\n';
                 extra += nb.map(e => {
                     const nome = PacketNames.nome(e.id, 'SEND') || PacketNames.nome(e.id, 'RECV') || '?';
-                    return `  ID ${e.id} (${nome}): ${(e.hipoteses||[]).length} hipóteses, ${(e.resultados||[]).length} resultados`;
+                    return `  ID ${e.id} (${nome}): ${(e.hipoteses||[]).length} hip, ${(e.notas||[]).length} notas`;
                 }).join('\n');
             }
             if (regras.length) {
-                extra += '\n\nWATCHERS ATIVOS:\n';
+                extra += '\n\nWATCHERS:\n';
                 extra += regras.map(r => `  "${r.nome}" (${r.dir}, ID ${r.headerId ?? 'any'})`).join('\n');
             }
-
             return (
                 'Você é Sang AI, pesquisadora de segurança de protocolo numa sessão de jogo online ' +
-                'estilo Habbo Hotel (cliente Habblive/Habblet). O usuário está analisando o próprio tráfego WebSocket.\n\n' +
-                'PROTOCOLO: 4 bytes big-endian de length total, 2 bytes big-endian de ID, depois payload. Sem criptografia.\n\n' +
+                'estilo Habbo Hotel. O usuário está analisando o próprio tráfego WebSocket.\n\n' +
+                'PROTOCOLO: 4 bytes big-endian de length, 2 bytes big-endian de ID, depois payload. ' +
+                'O length representa header+payload (não inclui o prefixo de 4 bytes).\n\n' +
                 'OUT = cliente envia, IN = servidor responde.\n' +
                 'IDs chave: UNIT_WALK=2450, UNIT_DANCE=2865, UNIT_CHAT=1678, TRADE_CONFIRM=351, ' +
                 'TRADE_ACCEPT=2487, FURNITURE_PLACE=2761, FURNITURE_PICKUP=1360, FURNITURE_PICKUP_ALL=10003, ' +
                 'ROOM_RIGHTS_GIVE=1003, ROOM_MODEL_SAVE=395, CATALOG_PURCHASE=3655, DELETE_ITEM=10004.\n\n' +
-                'Missão: identificar campos sem validação server-side, ordem de pacotes reordenável, ' +
-                'IDs fora de contexto, estados inconsistentes que geram dupe/glitch.\n\n' +
                 'Português brasileiro, direto, específica. Nunca invente certeza.' +
                 extra
             );
         },
         async analisarPacote(packet) {
-            const nome = PacketNames.nome(packet.header, 'SEND')
-                      || PacketNames.nome(packet.header, 'RECV') || '?';
-            const payloadHexLimitado = packet.payloadHex.length > 800
-                ? packet.payloadHex.slice(0, 800) + '…' : packet.payloadHex;
-
+            const nome = PacketNames.nome(packet.header, 'SEND') || PacketNames.nome(packet.header, 'RECV') || '?';
+            const payloadHexLimitado = packet.payloadHex.length > 800 ? packet.payloadHex.slice(0, 800) + '…' : packet.payloadHex;
             const respostas = Correlator.respostasDe(packet.header);
-            const respostaTxt = respostas.length
-                ? '\nRespostas conhecidas: ' + respostas.slice(0, 3).map(r => `${r.inNome || r.inId}×${r.count}`).join(', ')
-                : '';
-
+            const respostaTxt = respostas.length ? '\nRespostas: ' + respostas.slice(0, 3).map(r => `${r.inNome || r.inId}×${r.count}`).join(', ') : '';
             const r = await this._chamar(
-                this._contextoBase() +
-                '\n\nESTRUTURA (máx 5 frases):\n1. Propósito provável\n2. Campos do payload\n3. Candidato a exploit — ângulo de teste',
-                `ID: ${packet.header} (${nome})\nTamanho: ${packet.byteLength}b | payload: ${packet.payloadLength}b\nHex: ${payloadHexLimitado}\nASCII: ${packet.ascii || '(binário)'}${respostaTxt}`,
+                this._contextoBase() + '\n\nESTRUTURA (máx 5 frases):\n1. Propósito\n2. Campos\n3. Candidato a exploit?',
+                `ID: ${packet.header} (${nome})\nTam: ${packet.byteLength}b | payload: ${packet.payloadLength}b\nHex: ${payloadHexLimitado}\nASCII: ${packet.ascii || '(binário)'}${respostaTxt}`,
                 { maxTokens: 500 }
             );
-
             try {
                 const existente = Notebook.get(packet.header);
-                if (!existente) {
-                    Notebook.update(packet.header, { nome, amostraHex: packet.fullHex.slice(0, 200), primeiraAnalise: r });
-                } else {
-                    Notebook.update(packet.header, { ultimaAnalise: r });
-                }
+                if (!existente) Notebook.update(packet.header, { nome, amostraHex: packet.fullHex.slice(0, 200), primeiraAnalise: r });
+                else Notebook.update(packet.header, { ultimaAnalise: r });
             } catch (e) {}
-
             return r;
         },
         async analisarSequencia(packets) {
@@ -1165,30 +1107,24 @@
                 const nome = PacketNames.rotulo(p.header, p.dir);
                 return `${i + 1}. [${p.dir}] ${nome} | ${p.byteLength}b | ${p.payloadHex.slice(0, 100) || '(vazio)'}`;
             }).join('\n');
-
             return this._chamar(
-                this._contextoBase() +
-                '\n\nTAREFA: analisar SEQUÊNCIA. Conte a história do fluxo. Aponte padrões suspeitos. Máx 6 frases.',
+                this._contextoBase() + '\n\nTAREFA: analisar SEQUÊNCIA. Máx 6 frases.',
                 `Sequência de ${packets.length}:\n\n${lista}`,
                 { maxTokens: 700 }
             );
         },
         async criarFiltroLinguagemNatural(descricao, amostras) {
             const amostrasTxt = amostras.length
-                ? amostras.slice(0, 20).map(p =>
-                    `ID ${p.header} (${PacketNames.rotulo(p.header, p.dir === 'SEND' ? 'SEND' : 'RECV')}) | ${p.byteLength}b | ASCII: "${p.ascii.slice(0, 40) || '(binário)'}"`
-                  ).join('\n')
-                : '(nenhuma amostra ainda)';
-
+                ? amostras.slice(0, 20).map(p => `ID ${p.header} | ${p.byteLength}b | ASCII: "${p.ascii.slice(0, 40) || '(binário)'}"`).join('\n')
+                : '(nenhuma amostra)';
             const resp = await this._chamar(
-                'Você converte pedidos em português em regras de filtro.\nResponda SOMENTE com JSON válido, sem markdown.\n\n' +
+                'Você converte pedidos em regras de filtro.\nResponda SOMENTE com JSON válido, sem markdown.\n\n' +
                 'Formato: {"ids":[123],"strings":["ABC"],"motivo":"curta"}\n\nAmostras:\n' + amostrasTxt,
                 `Pedido: "${descricao}"`,
                 { maxTokens: 400, temperature: 0.1 }
             );
-
             const dados = this._parseJson(resp);
-            if (!dados) throw new Error('A IA respondeu em formato inválido.');
+            if (!dados) throw new Error('Formato inválido.');
             return {
                 ids: Array.isArray(dados.ids) ? dados.ids.map(n => Number(n)).filter(n => Number.isFinite(n) && n > 0) : [],
                 strings: Array.isArray(dados.strings) ? dados.strings.map(s => String(s).trim()).filter(Boolean) : [],
@@ -1198,18 +1134,16 @@
         async criarRegraWatcher(descricao, amostras) {
             const amostrasTxt = amostras.length
                 ? amostras.slice(0, 15).map(p => `ID ${p.header} | ${p.byteLength}b | ASCII: "${p.ascii.slice(0, 40) || '(binário)'}"`).join('\n')
-                : '(nenhuma amostra)';
-
+                : '(nenhuma)';
             const resp = await this._chamar(
-                'Você converte pedidos em REGRAS de observação.\nResponda SOMENTE com JSON válido, sem markdown.\n\n' +
+                'Você converte pedidos em REGRAS de observação.\nResponda SOMENTE com JSON válido.\n\n' +
                 'Formato: {"nome":"curto","dir":"SEND|RECV|ANY","headerId":123,"payloadContem":"HEX ou vazio","asciiContem":"texto ou vazio","acoes":["log"]}\n\n' +
                 'Amostras:\n' + amostrasTxt,
                 `Pedido: "${descricao}"`,
                 { maxTokens: 400, temperature: 0.1 }
             );
-
             const dados = this._parseJson(resp);
-            if (!dados) throw new Error('A IA respondeu em formato inválido.');
+            if (!dados) throw new Error('Formato inválido.');
             return {
                 nome: String(dados.nome || 'Regra IA').slice(0, 60),
                 dir: ['SEND', 'RECV', 'ANY'].includes(dados.dir) ? dados.dir : 'ANY',
@@ -1221,8 +1155,7 @@
         },
         async gerarJs(descricao, contexto) {
             const codigo = await this._chamar(
-                this._contextoBase() +
-                '\n\nTAREFA: gerar CÓDIGO JAVASCRIPT puro pra fila do Sender.\n\n' +
+                this._contextoBase() + '\n\nTAREFA: gerar JS pra fila do Sender.\n\n' +
                 'AMBIENTE: window.gameWS.send(ArrayBuffer), Utils.buildPacket(id, "HEX"), sleep(ms), pode usar await.\n\n' +
                 'REGRAS:\n1. Sem ```, só código\n2. Máx 15 linhas\n3. Nunca try/catch',
                 `Pedido: "${descricao}"\nContexto: ${contexto || 'nenhum'}`,
@@ -1234,29 +1167,23 @@
             const totalDict = Object.keys(AppState.dicionario).length;
             let ctx = '\n\n--- Estado ---\n';
             if (contextoPacotes && contextoPacotes.length) {
-                ctx += `Pacotes no log: ${contextoPacotes.length}\nIDs únicos: ${totalDict}\n\nÚltimos:\n`;
+                ctx += `Pacotes: ${contextoPacotes.length} | IDs únicos: ${totalDict}\n\nÚltimos:\n`;
                 ctx += contextoPacotes.slice(0, 12).map(p => {
                     const nome = PacketNames.rotulo(p.header, p.dir);
                     return `[${p.dir}] ${nome} | ${p.byteLength}b | ${p.payloadHex.slice(0, 80) || '(vazio)'}`;
                 }).join('\n');
-            } else {
-                ctx += '(sem pacotes capturados)\n';
-            }
+            } else ctx += '(sem pacotes)\n';
             return this._chamar(this._contextoBase() + ctx, mensagem, { maxTokens: 900 });
         }
     };
 
-    // ─── Helpers de janela ───
+    // ─── Helpers ───
     function clampToViewport(targetEl, x, y) {
         const rect = targetEl.getBoundingClientRect();
         const margin = 40;
-        const maxX = window.innerWidth - margin;
-        const maxY = window.innerHeight - margin;
-        const minX = margin - rect.width;
-        const minY = 0;
         return {
-            x: Math.min(Math.max(x, minX), maxX),
-            y: Math.min(Math.max(y, minY), maxY)
+            x: Math.min(Math.max(x, margin - rect.width), window.innerWidth - margin),
+            y: Math.min(Math.max(y, 0), window.innerHeight - margin)
         };
     }
 
@@ -1291,12 +1218,10 @@
         on(document, 'mouseup', function() {
             if (!isDragging) return;
             isDragging = false;
-            if (storageKey) {
-                Storage.set(storageKey + '_pos', {
-                    left: parseInt(targetEl.style.left, 10) || 0,
-                    top: parseInt(targetEl.style.top, 10) || 0
-                });
-            }
+            if (storageKey) Storage.set(storageKey + '_pos', {
+                left: parseInt(targetEl.style.left, 10) || 0,
+                top: parseInt(targetEl.style.top, 10) || 0
+            });
         });
         handleEl.style.cursor = 'move';
     }
@@ -1328,10 +1253,8 @@
         });
         on(document, 'mousemove', (e) => {
             if (!resizing) return;
-            const newW = Math.min(Math.max(startW + (e.clientX - startX), minW), maxW);
-            const newH = Math.min(Math.max(startH + (e.clientY - startY), minH), maxH);
-            targetEl.style.width = newW + 'px';
-            targetEl.style.height = newH + 'px';
+            targetEl.style.width = Math.min(Math.max(startW + (e.clientX - startX), minW), maxW) + 'px';
+            targetEl.style.height = Math.min(Math.max(startH + (e.clientY - startY), minH), maxH) + 'px';
             targetEl.style.maxHeight = 'none';
         });
         on(document, 'mouseup', () => {
@@ -1366,32 +1289,28 @@
         Object.assign(el.style, {
             position: 'fixed', top: '0', left: '50%', transform: 'translateX(-50%)',
             display: 'flex', alignItems: 'center', gap: '6px', padding: '6px 16px',
-            background: Theme.bgPanel,
-            backdropFilter: Theme.blur, WebkitBackdropFilter: Theme.blur,
+            background: Theme.bgPanel, backdropFilter: Theme.blur, WebkitBackdropFilter: Theme.blur,
             border: '1px solid ' + Theme.line, borderTop: 'none',
             borderRadius: '0 0 12px 12px', zIndex: '100000',
             fontFamily: 'monospace', fontSize: '12px', userSelect: 'none',
             boxShadow: '0 8px 26px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.05)'
         });
         const btnBase = {
-            background: 'rgba(255,255,255,0.03)', color: Theme.text,
-            border: '1px solid ' + Theme.line,
+            background: 'rgba(255,255,255,0.03)', color: Theme.text, border: '1px solid ' + Theme.line,
             cursor: 'pointer', padding: '5px 12px', fontSize: '11px',
             fontFamily: 'monospace', borderRadius: '8px', transition: 'all 0.15s ease',
             whiteSpace: 'nowrap', outline: 'none'
         };
         const btnAnalyzer = document.createElement('button');
-        btnAnalyzer.textContent = '🔍 Analyzer';
-        btnAnalyzer.title = 'Ctrl+Alt+A';
+        btnAnalyzer.textContent = '🔍 Analyzer'; btnAnalyzer.title = 'Ctrl+Alt+A';
         Object.assign(btnAnalyzer.style, btnBase);
         const btnSender = document.createElement('button');
-        btnSender.textContent = '⚡ Sender';
-        btnSender.title = 'Ctrl+Alt+S';
+        btnSender.textContent = '⚡ Sender'; btnSender.title = 'Ctrl+Alt+S';
         Object.assign(btnSender.style, btnBase);
         const btnEye = document.createElement('button');
         btnEye.textContent = '👁️';
         Object.assign(btnEye.style, btnBase, { padding: '5px 10px', fontSize: '13px' });
-        btnEye.title = 'Mostrar/Ocultar tudo (Ctrl+Alt+Q)';
+        btnEye.title = 'Ctrl+Alt+Q';
 
         let analyzerVisible = false, senderVisible = false;
         function highlight(btn, on_) {
@@ -1407,10 +1326,7 @@
                 btn.style.boxShadow = 'none';
             }
         }
-        function updateButtons() {
-            highlight(btnAnalyzer, analyzerVisible);
-            highlight(btnSender, senderVisible);
-        }
+        function updateButtons() { highlight(btnAnalyzer, analyzerVisible); highlight(btnSender, senderVisible); }
         function setAnalyzerVisible(show) { analyzerVisible = show; AnalyzerUI.setVisible(analyzerVisible); updateButtons(); }
         function setSenderVisible(show) { senderVisible = show; SenderUI.setVisible(senderVisible); updateButtons(); }
         function toggleAnalyzer() { setAnalyzerVisible(!analyzerVisible); }
@@ -1435,7 +1351,7 @@
         return { element: el, setAnalyzerVisible, setSenderVisible, toggleAnalyzer, toggleSender, toggleBoth };
     })();
 
-    const SenderRef = { fill: null };
+    const SenderRef = { fill: null, receberLote: null };
 
     // ═══════════════════════════════════════════════════════════════
     // ANALYZER UI
@@ -1445,12 +1361,9 @@
         el.id = 'hl-analyzer';
         Object.assign(el.style, {
             position: 'fixed', top: '50px', left: '10px',
-            width: '820px', height: '700px',
-            maxHeight: 'calc(100vh - 70px)',
-            background: Theme.bgPanel,
-            backdropFilter: Theme.blur, WebkitBackdropFilter: Theme.blur,
-            color: Theme.text,
-            border: '1px solid ' + Theme.line, zIndex: '99998',
+            width: '820px', height: '700px', maxHeight: 'calc(100vh - 70px)',
+            background: Theme.bgPanel, backdropFilter: Theme.blur, WebkitBackdropFilter: Theme.blur,
+            color: Theme.text, border: '1px solid ' + Theme.line, zIndex: '99998',
             fontFamily: 'monospace', fontSize: '12px',
             borderRadius: Theme.radius, display: 'none', flexDirection: 'column',
             boxShadow: '0 20px 50px rgba(0,0,0,0.55), 0 2px 8px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.06)',
@@ -1463,15 +1376,12 @@
                 padding:11px 14px;cursor:move;
                 border-bottom:1px solid ${Theme.line};border-radius:${Theme.radius} ${Theme.radius} 0 0;
                 font-weight:bold;display:flex;justify-content:space-between;align-items:center;
-                font-size:12px;color:${Theme.text};user-select:none;letter-spacing:0.05em;
-            ">
+                font-size:12px;color:${Theme.text};user-select:none;letter-spacing:0.05em;">
                 <span style="display:flex;align-items:center;gap:10px;">
                     <span style="width:8px;height:8px;border-radius:50%;background:${Theme.cyan};
                         box-shadow:0 0 8px ${Theme.cyan},0 0 16px rgba(34,211,238,0.5);"></span>
                     <span style="background:linear-gradient(100deg,${Theme.cyan} 0%,${Theme.violet} 50%,#fff 100%);
-                        -webkit-background-clip:text;background-clip:text;color:transparent;">
-                        SANG ANALYZER
-                    </span>
+                        -webkit-background-clip:text;background-clip:text;color:transparent;">SANG ANALYZER</span>
                 </span>
                 <div id="analyzerHeaderBtns" style="display:flex;gap:5px;align-items:center;">
                     <button id="btnFontMinus" title="Fonte −" style="background:rgba(255,255,255,0.03);color:${Theme.text};border:1px solid ${Theme.line};cursor:pointer;padding:3px 8px;border-radius:6px;font-size:11px;">A−</button>
@@ -1486,7 +1396,7 @@
                 <button class="az-tab" data-tab="ia">✨ SANG AI</button>
             </div>
 
-            <div id="paneLog" style="display:flex;flex-direction:column;flex:1;overflow:hidden;min-height:0;">
+            <div id="paneLog" style="display:flex;flex-direction:column;flex:1;overflow:hidden;min-height:0;position:relative;">
                 <div style="padding:8px 12px;display:flex;gap:12px;align-items:center;background:rgba(0,0,0,0.2);border-bottom:1px solid ${Theme.line};">
                     <label style="display:flex;align-items:center;gap:5px;cursor:pointer;font-size:11px;color:${Theme.cyan};font-weight:600;">
                         <input type="checkbox" id="chkSend" checked style="accent-color:${Theme.cyan};cursor:pointer;"> OUT
@@ -1511,6 +1421,28 @@
                 </div>
 
                 <div id="logArea" style="flex:1;overflow-y:auto;padding:10px;min-height:80px;"></div>
+
+                <div id="selToolbar" style="
+                    position:absolute;bottom:12px;left:50%;transform:translateX(-50%);
+                    display:none;align-items:center;gap:8px;
+                    padding:8px 12px;
+                    background:linear-gradient(135deg, rgba(34,211,238,0.15), rgba(167,139,250,0.15)), rgba(9,9,14,0.95);
+                    backdrop-filter:blur(12px);
+                    border:1px solid rgba(34,211,238,0.4);
+                    border-radius:12px;
+                    box-shadow:0 12px 40px rgba(0,0,0,0.6), 0 0 0 1px rgba(34,211,238,0.15), inset 0 1px 0 rgba(255,255,255,0.08);
+                    z-index:20;
+                    font-size:11px;
+                    white-space:nowrap;
+                    animation:selBarIn 0.22s cubic-bezier(0.34,1.56,0.64,1);
+                ">
+                    <span id="selCount" style="color:${Theme.cyan};font-weight:bold;letter-spacing:0.03em;">0 selecionados</span>
+                    <span style="width:1px;height:16px;background:${Theme.line2};"></span>
+                    <button id="selSendDelay" class="az-grad-btn" style="padding:6px 14px;">→ Sender (com delay)</button>
+                    <button id="selSendFast" class="az-mini" style="color:${Theme.cyan};border-color:${Theme.cyan};">→ Sender (rápido)</button>
+                    <button id="selAddQueue" class="az-mini" style="color:${Theme.violet};border-color:${Theme.violet};">+ Adicionar à fila</button>
+                    <button id="selClear" class="az-mini" style="color:${Theme.err};border-color:${Theme.err};">✕</button>
+                </div>
             </div>
 
             <div id="paneFiltros" style="display:none;flex-direction:column;flex:1;overflow:hidden;min-height:0;padding:14px;gap:14px;">
@@ -1554,8 +1486,7 @@
                     <div style="display:flex;gap:6px;">
                         <input id="nlFiltro" type="text" placeholder="Ex: esconde pacotes de movimento…"
                             style="flex:1;background:rgba(0,0,0,0.3);color:${Theme.text};border:1px solid rgba(167,139,250,0.3);
-                            padding:8px 10px;font-size:11px;border-radius:8px;outline:none;
-                            font-family:monospace;box-sizing:border-box;min-width:0;">
+                            padding:8px 10px;font-size:11px;border-radius:8px;outline:none;font-family:monospace;box-sizing:border-box;min-width:0;">
                         <button id="btnNlFiltro" class="az-grad-btn">GERAR</button>
                     </div>
                     <div id="nlFiltroResultado" style="margin-top:8px;font-size:10.5px;color:${Theme.textMute};line-height:1.5;"></div>
@@ -1603,8 +1534,7 @@
                 <div id="pesqFuzz" class="pesq-pane" style="display:none;flex-direction:column;flex:1;overflow:hidden;min-height:0;">
                     <div style="padding:10px 12px;background:rgba(0,0,0,0.2);border-bottom:1px solid ${Theme.line};display:flex;flex-direction:column;gap:8px;">
                         <div style="font-size:10px;color:${Theme.textMute};line-height:1.5;">
-                            Testa um byte por vez e observa se o servidor reage.
-                            <strong style="color:${Theme.warn};">Sem resposta = campo IGNORADO (candidato)</strong>.
+                            Testa um byte por vez. <strong style="color:${Theme.warn};">Sem resposta = campo IGNORADO.</strong>
                         </div>
                         <div style="display:flex;gap:6px;flex-wrap:wrap;">
                             <label class="az-label">ID<input id="fuzzId" type="number" placeholder="2865" class="az-input-xs"></label>
@@ -1642,7 +1572,7 @@
                 <div id="pesqRecorder" class="pesq-pane" style="display:none;flex-direction:column;flex:1;overflow:hidden;min-height:0;">
                     <div style="padding:10px 12px;background:rgba(0,0,0,0.2);border-bottom:1px solid ${Theme.line};display:flex;flex-direction:column;gap:8px;">
                         <div style="font-size:10px;color:${Theme.textMute};line-height:1.5;">
-                            Grava uma janela de tráfego (OUT + IN) com timestamps. Depois reproduza ou exporte.
+                            Grava tráfego (OUT + IN). Depois exporte ou envie pro Sender.
                         </div>
                         <div style="display:flex;gap:6px;flex-wrap:wrap;">
                             <button id="recIniciar" style="background:linear-gradient(135deg,${Theme.err},#b91c1c);color:#fff;border:none;cursor:pointer;padding:8px 18px;border-radius:8px;font-weight:bold;font-size:11px;font-family:monospace;">⏺ GRAVAR</button>
@@ -1650,6 +1580,7 @@
                             <button id="recExportar" class="az-mini" style="color:${Theme.cyan};border-color:${Theme.cyan};">⬇ EXPORTAR</button>
                             <button id="recImportar" class="az-mini" style="color:${Theme.violet};border-color:${Theme.violet};">⬆ IMPORTAR</button>
                             <button id="recLimpar" class="az-mini" style="color:${Theme.err};border-color:${Theme.err};">🗑 LIMPAR</button>
+                            <button id="recSenderAll" class="az-mini" style="color:${Theme.cyan};border-color:${Theme.cyan};">→ Sender (todos OUT)</button>
                             <div style="flex:1"></div>
                             <span id="recCounter" style="font-size:10px;color:${Theme.textMute};align-self:center;">0 eventos</span>
                         </div>
@@ -1659,22 +1590,14 @@
 
                 <div id="pesqReplay" class="pesq-pane" style="display:none;flex-direction:column;flex:1;overflow:hidden;min-height:0;">
                     <div style="padding:10px 12px;background:rgba(0,0,0,0.2);border-bottom:1px solid ${Theme.line};display:flex;flex-direction:column;gap:8px;">
-                        <div style="font-size:10px;color:${Theme.textMute};line-height:1.5;">
-                            Reproduz a gravação com os delays originais. Opcional: mutar um byte por pacote.
-                        </div>
+                        <div style="font-size:10px;color:${Theme.textMute};line-height:1.5;">Reproduz a gravação com delays originais.</div>
                         <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
-                            <label class="az-label">Velocidade
-                                <input id="repSpeed" type="number" value="1" step="0.25" min="0.25" max="10" class="az-input-xs">
-                            </label>
+                            <label class="az-label">Velocidade<input id="repSpeed" type="number" value="1" step="0.25" min="0.25" max="10" class="az-input-xs"></label>
                             <label style="display:flex;align-items:center;gap:5px;font-size:10.5px;color:${Theme.textMute};">
                                 <input type="checkbox" id="repMutar" style="accent-color:${Theme.violet};"> Mutar
                             </label>
-                            <label class="az-label">Offset
-                                <input id="repOffset" type="number" value="0" class="az-input-xs">
-                            </label>
-                            <label class="az-label">Byte
-                                <input id="repByte" type="text" value="00" maxlength="2" class="az-input-xs" style="width:36px;text-transform:uppercase;">
-                            </label>
+                            <label class="az-label">Offset<input id="repOffset" type="number" value="0" class="az-input-xs"></label>
+                            <label class="az-label">Byte<input id="repByte" type="text" value="00" maxlength="2" class="az-input-xs" style="width:36px;text-transform:uppercase;"></label>
                             <button id="repExecutar" class="az-grad-btn">▶ EXECUTAR</button>
                             <button id="repParar" class="az-mini" style="color:${Theme.err};border-color:${Theme.err};display:none;">⏹ PARAR</button>
                             <div style="flex:1"></div>
@@ -1686,9 +1609,7 @@
 
                 <div id="pesqDiff" class="pesq-pane" style="display:none;flex-direction:column;flex:1;overflow:hidden;min-height:0;">
                     <div style="padding:10px 12px;background:rgba(0,0,0,0.2);border-bottom:1px solid ${Theme.line};display:flex;flex-direction:column;gap:8px;">
-                        <div style="font-size:10px;color:${Theme.textMute};line-height:1.5;">
-                            Compara os dois últimos pacotes de um ID, byte a byte.
-                        </div>
+                        <div style="font-size:10px;color:${Theme.textMute};line-height:1.5;">Compara os dois últimos pacotes de um ID, byte a byte.</div>
                         <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;">
                             <label class="az-label">ID<input id="diffId" type="number" placeholder="2865" class="az-input-xs"></label>
                             <button id="diffComparar" class="az-grad-btn">⇄ COMPARAR</button>
@@ -1703,7 +1624,7 @@
                 <div id="pesqWatchers" class="pesq-pane" style="display:none;flex-direction:column;flex:1;overflow:hidden;min-height:0;">
                     <div style="padding:10px 12px;background:rgba(0,0,0,0.2);border-bottom:1px solid ${Theme.line};display:flex;flex-direction:column;gap:8px;">
                         <div style="font-size:10px;color:${Theme.textMute};line-height:1.5;">
-                            Regras declarativas. Ações: <strong>log</strong>, <strong>nota</strong>, <strong>bloquear</strong> (OUT), <strong>notify</strong>.
+                            Regras declarativas. Ações: <strong>log</strong>, <strong>nota</strong>, <strong>bloquear</strong>, <strong>notify</strong>.
                         </div>
                         <div style="display:flex;gap:6px;flex-wrap:wrap;">
                             <input id="wNome" type="text" placeholder="Nome" class="az-input-flex">
@@ -1747,8 +1668,7 @@
                     <textarea id="iaInput" rows="1" placeholder="Pergunte algo…"
                         style="flex:1;background:rgba(0,0,0,0.25);color:${Theme.text};border:1px solid ${Theme.line};
                         padding:8px 10px;font-size:11.5px;border-radius:8px;outline:none;
-                        font-family:monospace;resize:none;min-height:36px;max-height:100px;
-                        box-sizing:border-box;line-height:1.4;"></textarea>
+                        font-family:monospace;resize:none;min-height:36px;max-height:100px;box-sizing:border-box;line-height:1.4;"></textarea>
                     <button id="iaSend" class="az-grad-btn">ENVIAR</button>
                 </div>
             </div>
@@ -1760,9 +1680,7 @@
         const closeBtn = createCloseButton(() => Toolbar.setAnalyzerVisible(false));
         el.querySelector('#analyzerHeaderBtns').appendChild(closeBtn);
 
-        const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({
-            '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
-        }[c]));
+        const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 
         const logArea = el.querySelector('#logArea');
         logArea.style.fontSize = AppState.fontSize + 'px';
@@ -1771,6 +1689,75 @@
         const chkSend = el.querySelector('#chkSend');
         const chkRecv = el.querySelector('#chkRecv');
 
+        // ── Seleção múltipla ──
+        const selecionados = new Set();   // Set de objetos log
+        const selToolbar = el.querySelector('#selToolbar');
+        const selCount = el.querySelector('#selCount');
+
+        function updateSelToolbar() {
+            if (selecionados.size === 0) {
+                selToolbar.style.display = 'none';
+                return;
+            }
+            selToolbar.style.display = 'flex';
+            selCount.textContent = selecionados.size + ' selecionado' + (selecionados.size > 1 ? 's' : '');
+        }
+
+        function toggleSelecao(log, checkboxEl) {
+            if (selecionados.has(log)) {
+                selecionados.delete(log);
+                if (checkboxEl) checkboxEl.checked = false;
+                log.el.style.borderLeftWidth = '3px';
+                log.el.style.background = 'rgba(255,255,255,0.02)';
+            } else {
+                selecionados.add(log);
+                if (checkboxEl) checkboxEl.checked = true;
+                log.el.style.borderLeftWidth = '5px';
+                log.el.style.background = 'rgba(34,211,238,0.08)';
+            }
+            updateSelToolbar();
+        }
+
+        function limparSelecao() {
+            selecionados.forEach(log => {
+                log.el.style.borderLeftWidth = '3px';
+                log.el.style.background = 'rgba(255,255,255,0.02)';
+                const cb = log.el.querySelector('.log-check');
+                if (cb) cb.checked = false;
+            });
+            selecionados.clear();
+            updateSelToolbar();
+        }
+
+        // Envia lote pro Sender
+        function enviarSelecaoParaSender(opts) {
+            if (!selecionados.size) return;
+            const logs = Array.from(selecionados).sort((a, b) => a.ts - b.ts);
+            if (!SenderRef.receberLote) return;
+
+            const resultado = SenderRef.receberLote(logs, opts);
+            limparSelecao();
+
+            // Abre o Sender
+            Toolbar.setSenderVisible(true);
+
+            // Notifica
+            const delayInfo = opts.usarDelay !== false
+                ? ` (com ${resultado.delays} pausas)`
+                : ' (rápido)';
+            try {
+                if (window._hubUI && typeof window._hubUI.toast === 'function') {
+                    window._hubUI.toast(`${resultado.total} pacotes → Sender${delayInfo}`, 'ok');
+                }
+            } catch (e) {}
+        }
+
+        on(el.querySelector('#selSendDelay'), 'click', () => enviarSelecaoParaSender({ usarDelay: true }));
+        on(el.querySelector('#selSendFast'), 'click', () => enviarSelecaoParaSender({ usarDelay: false }));
+        on(el.querySelector('#selAddQueue'), 'click', () => enviarSelecaoParaSender({ usarDelay: true, appendMode: true }));
+        on(el.querySelector('#selClear'), 'click', limparSelecao);
+
+        // ── Tabs ──
         const tabs = el.querySelectorAll('.az-tab');
         const panes = {
             log: el.querySelector('#paneLog'),
@@ -1788,14 +1775,8 @@
                 else if (!isActive && u) u.remove();
             });
             Object.keys(panes).forEach(k => { panes[k].style.display = (k === name) ? 'flex' : 'none'; });
-            if (name === 'pesquisa' && !panes.pesquisa.dataset.iniciado) {
-                panes.pesquisa.dataset.iniciado = '1';
-                pesquisaInit();
-            }
-            if (name === 'ia' && !panes.ia.dataset.iniciado) {
-                panes.ia.dataset.iniciado = '1';
-                iaInit();
-            }
+            if (name === 'pesquisa' && !panes.pesquisa.dataset.iniciado) { panes.pesquisa.dataset.iniciado = '1'; pesquisaInit(); }
+            if (name === 'ia' && !panes.ia.dataset.iniciado) { panes.ia.dataset.iniciado = '1'; iaInit(); }
         }
         tabs.forEach(t => on(t, 'click', () => setActiveTab(t.dataset.tab)));
         setTimeout(() => setActiveTab('log'), 0);
@@ -1839,6 +1820,7 @@
 
         on(el.querySelector('#btnClearLogs'), 'click', () => {
             logArea.innerHTML = ''; AppState.logs = []; logCounter.textContent = '0';
+            limparSelecao();
         });
         on(el.querySelector('#btnCopyAll'), 'click', () => {
             if (AppState.logs.length === 0) return;
@@ -1879,6 +1861,7 @@
         on(chkRecv, 'change', () => { AppState.showRecv = chkRecv.checked; refreshVisibility(); });
         on(searchInp, 'input', refreshVisibility);
 
+        // ── Filtros ──
         function createTag(type, act, rawVal, displayVal, cor) {
             const d = document.createElement('div');
             Object.assign(d.style, {
@@ -1908,12 +1891,12 @@
             if (!AppState.blIds.size && !AppState.blPayloads.length) {
                 const e = document.createElement('div');
                 e.style.cssText = `color:${Theme.textMute};font-size:10px;text-align:center;padding:14px;font-style:italic;`;
-                e.textContent = 'Nenhum filtro — tudo aparece.'; lv.appendChild(e);
+                e.textContent = 'Nenhum filtro.'; lv.appendChild(e);
             }
             if (!AppState.dropIds.size && !AppState.dropPayloads.length) {
                 const e = document.createElement('div');
                 e.style.cssText = `color:${Theme.textMute};font-size:10px;text-align:center;padding:14px;font-style:italic;`;
-                e.textContent = 'Nenhum bloqueio — todo envio passa.'; ld.appendChild(e);
+                e.textContent = 'Nenhum bloqueio.'; ld.appendChild(e);
             }
         }
         renderFilters();
@@ -1940,15 +1923,14 @@
                 const amostras = AppState.logs.slice(-15).map(l => l.packet);
                 const r = await SangAI.criarFiltroLinguagemNatural(desc, amostras);
                 if (!r.ids.length && !r.strings.length) {
-                    nlResult.innerHTML = `<span style="color:${Theme.warn};">⚠ Sem filtros concretos.</span>` + (r.motivo ? `<br><span style="color:${Theme.textMute};">${esc(r.motivo)}</span>` : '');
+                    nlResult.innerHTML = `<span style="color:${Theme.warn};">⚠ Sem filtros concretos.</span>`;
                     return;
                 }
                 r.ids.forEach(id => PacketFilter.manageList('VISUAL', 'ADD_ID', String(id)));
                 r.strings.forEach(s => PacketFilter.manageList('VISUAL', 'ADD_STR', s));
                 renderFilters();
-                nlResult.innerHTML = `<span style="color:${Theme.ok};">✓ Aplicado em OCULTAR</span>` +
-                    (r.ids.length ? `<br><span style="color:${Theme.violet};">IDs: ${r.ids.join(', ')}</span>` : '') +
-                    (r.strings.length ? `<br><span style="color:${Theme.violet};">Strings: ${esc(r.strings.join(', '))}</span>` : '');
+                nlResult.innerHTML = `<span style="color:${Theme.ok};">✓ Aplicado</span>` +
+                    (r.ids.length ? `<br><span style="color:${Theme.violet};">IDs: ${r.ids.join(', ')}</span>` : '');
                 nlInput.value = '';
             } catch (e) {
                 nlResult.innerHTML = `<span style="color:${Theme.err};">Erro: ${esc(e.message || e)}</span>`;
@@ -1959,6 +1941,7 @@
         on(nlBtn, 'click', gerarFiltroNL);
         on(nlInput, 'keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); gerarFiltroNL(); } });
 
+        // ── IA chat ──
         const iaChat = el.querySelector('#iaChat');
         const iaInput = el.querySelector('#iaInput');
         const iaSendBtn = el.querySelector('#iaSend');
@@ -1967,35 +1950,26 @@
         function iaInit() {
             if (iaPronto) return;
             iaPronto = true;
-            iaAdd('ia', 'Sang AI online. Dicionário do protocolo carregado (~400 IDs).\n\n' +
-                '• **Analisar pacote** — clique no 🧠 em qualquer item do log\n' +
-                '• **Botões rápidos** abaixo do chat\n' +
-                '• **Gerar regras de Watcher** na aba Watch');
-            if (!SangAI.disponivel()) {
-                iaAdd('erro', '⚠ Configure a Sang AI (chave Groq).');
-            }
+            iaAdd('ia', 'Sang AI online. ~400 IDs mapeados.\n\n• Clique no 🧠 de um pacote pra analisar\n• Botões rápidos abaixo');
+            if (!SangAI.disponivel()) iaAdd('erro', '⚠ Configure a Sang AI (chave Groq).');
         }
 
         function iaAdd(tipo, texto) {
             const div = document.createElement('div');
-            div.style.cssText = 'max-width:88%;padding:10px 14px;border-radius:12px;font-size:12px;line-height:1.55;white-space:pre-wrap;word-wrap:break-word;animation:iaMsgIn 0.28s cubic-bezier(0.34,1.56,0.64,1);';
+            div.style.cssText = 'max-width:88%;padding:10px 14px;border-radius:12px;font-size:12px;line-height:1.55;white-space:pre-wrap;word-wrap:break-word;animation:iaMsgIn 0.28s;';
             if (tipo === 'user') {
-                div.style.background = Theme.grad;
-                div.style.color = '#0b0b10';
-                div.style.alignSelf = 'flex-end';
-                div.style.borderBottomRightRadius = '4px';
+                div.style.background = Theme.grad; div.style.color = '#0b0b10';
+                div.style.alignSelf = 'flex-end'; div.style.borderBottomRightRadius = '4px';
                 div.style.fontWeight = '600';
             } else if (tipo === 'ia') {
                 div.style.background = 'rgba(167,139,250,0.08)';
                 div.style.border = '1px solid rgba(167,139,250,0.2)';
-                div.style.color = '#e9d5ff';
-                div.style.alignSelf = 'flex-start';
+                div.style.color = '#e9d5ff'; div.style.alignSelf = 'flex-start';
                 div.style.borderBottomLeftRadius = '4px';
             } else if (tipo === 'erro') {
                 div.style.background = 'rgba(251,113,133,0.08)';
                 div.style.border = '1px solid rgba(251,113,133,0.25)';
-                div.style.color = '#fecdd3';
-                div.style.alignSelf = 'center';
+                div.style.color = '#fecdd3'; div.style.alignSelf = 'center';
                 div.style.fontSize = '11px';
             }
             const html = esc(texto)
@@ -2075,7 +2049,7 @@
                 } else if (q === 'exploit') {
                     iaEnviar('Quais dos últimos pacotes são candidatos a exploit? Lista curta com ângulo de teste.');
                 } else if (q === 'anomalias') {
-                    iaEnviar('Algo anormal nos últimos pacotes? Tamanho incomum, IDs raros, sequências estranhas.');
+                    iaEnviar('Algo anormal nos últimos pacotes?');
                 } else if (q === 'resumo') {
                     iaEnviar('Resumo do tráfego capturado.');
                 }
@@ -2092,7 +2066,10 @@
             });
             on(btn, 'mouseenter', () => { btn.style.background = '#b8a3ff'; });
             on(btn, 'mouseleave', () => { btn.style.background = Theme.violet; });
-            on(btn, 'click', (e) => { e.stopPropagation(); if (SenderRef.fill) SenderRef.fill(packet.header, packet.payloadHex); });
+            on(btn, 'click', (e) => {
+                e.stopPropagation();
+                if (SenderRef.fill) SenderRef.fill(packet.header, packet.payloadHex, packet.fullHex);
+            });
             return btn;
         }
 
@@ -2174,6 +2151,7 @@
         function addLog(packet, dir, isDropped) {
             AppState.globalPacketCount++;
             const id = AppState.globalPacketCount;
+            const now = Date.now();
             const time = new Date().toLocaleTimeString();
             atualizarDicionario(packet);
 
@@ -2186,12 +2164,36 @@
             const rawText = `${time} | #${id}\n${dirLabel} ID: ${packet.header}${nomePktRaw ? ' (' + nomePktRaw + ')' : ''} | ${packet.byteLength} bytes\n${packet.fullHex}\n${packet.ascii}`;
 
             const item = document.createElement('div');
-            item.style.cssText = `border-left:3px solid ${borderColor};background:rgba(255,255,255,0.02);border-radius:0 8px 8px 0;margin-bottom:8px;padding:9px 11px;`;
+            item.style.cssText = `border-left:3px solid ${borderColor};background:rgba(255,255,255,0.02);border-radius:0 8px 8px 0;margin-bottom:8px;padding:9px 11px;transition:background 0.15s,border-left-width 0.15s;`;
 
             const top = document.createElement('div');
             top.style.cssText = 'display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:6px;flex-wrap:wrap;';
             const left = document.createElement('div');
             left.style.cssText = `display:flex;align-items:center;gap:6px;font-size:0.85em;color:${Theme.textMute};flex-wrap:wrap;`;
+
+            // ── Checkbox de seleção ──
+            const logObj = { el: item, dir, packet, ts: now, rawText: '' };
+            const cb = document.createElement('input');
+            cb.type = 'checkbox';
+            cb.className = 'log-check';
+            cb.title = 'Selecionar para envio em lote';
+            cb.style.cssText = `accent-color:${Theme.cyan};cursor:pointer;width:14px;height:14px;margin:0;flex-shrink:0;`;
+            on(cb, 'change', (e) => {
+                e.stopPropagation();
+                if (cb.checked && !selecionados.has(logObj)) {
+                    selecionados.add(logObj);
+                    item.style.borderLeftWidth = '5px';
+                    item.style.background = 'rgba(34,211,238,0.08)';
+                } else if (!cb.checked && selecionados.has(logObj)) {
+                    selecionados.delete(logObj);
+                    item.style.borderLeftWidth = '3px';
+                    item.style.background = 'rgba(255,255,255,0.02)';
+                }
+                updateSelToolbar();
+            });
+            on(cb, 'click', (e) => e.stopPropagation());
+            left.appendChild(cb);
+
             const numBadge = document.createElement('span');
             numBadge.textContent = '#' + id;
             numBadge.style.cssText = 'background:rgba(255,255,255,0.06);color:' + Theme.textMute + ';padding:1px 6px;border-radius:4px;font-size:0.9em;';
@@ -2256,17 +2258,25 @@
 
             logArea.appendChild(item);
             packet.dir = dir;
-            AppState.logs.push({ el: item, dir, searchString, rawText, packet });
+            logObj.searchString = searchString;
+            logObj.rawText = rawText;
+            AppState.logs.push(logObj);
 
+            // Limpa logs antigos + seleção correspondente
             while (AppState.logs.length > AppState.maxLogs) {
                 const old = AppState.logs.shift();
                 if (old.el.parentNode) old.el.parentNode.removeChild(old.el);
+                if (selecionados.has(old)) {
+                    selecionados.delete(old);
+                    updateSelToolbar();
+                }
             }
             const isBottom = logArea.scrollHeight - logArea.clientHeight <= logArea.scrollTop + 40;
             if (isBottom) logArea.scrollTop = logArea.scrollHeight;
             logCounter.textContent = AppState.logs.length;
         }
 
+        // ── Sub-tabs PESQUISA ──
         const pesqTabs = el.querySelectorAll('.pesq-tab');
         const pesqPanes = {
             notebook: el.querySelector('#pesqNotebook'),
@@ -2304,7 +2314,7 @@
             if (!lista.length) {
                 const vazio = document.createElement('div');
                 vazio.style.cssText = `color:${Theme.textMute};font-size:11px;text-align:center;padding:24px;font-style:italic;`;
-                vazio.textContent = 'Notebook vazio. Clique no 🧠 de um pacote pra começar.';
+                vazio.textContent = 'Notebook vazio.';
                 container.appendChild(vazio);
                 return;
             }
@@ -2326,11 +2336,7 @@
                     <div style="font-size:10px;color:${Theme.textMute};margin-bottom:6px;">
                         ${hipoteses.length} hip · ${notas.length} notas · ${new Date(entry.atualizado || entry.criado).toLocaleString('pt-BR')}
                     </div>
-                    ${analise ? `
-                        <div style="background:rgba(167,139,250,0.06);border-left:2px solid ${Theme.violet};padding:6px 10px;border-radius:0 4px 4px 0;font-size:10.5px;color:#c4b5fd;line-height:1.5;margin-bottom:6px;white-space:pre-wrap;">
-                            ${esc(analise.slice(0, 400))}${analise.length > 400 ? '…' : ''}
-                        </div>
-                    ` : ''}
+                    ${analise ? `<div style="background:rgba(167,139,250,0.06);border-left:2px solid ${Theme.violet};padding:6px 10px;border-radius:0 4px 4px 0;font-size:10.5px;color:#c4b5fd;line-height:1.5;margin-bottom:6px;white-space:pre-wrap;">${esc(analise.slice(0, 400))}${analise.length > 400 ? '…' : ''}</div>` : ''}
                     <div class="nb-hipoteses" style="font-size:10.5px;color:${Theme.textDim};margin-bottom:4px;"></div>
                     <div class="nb-notas" style="font-size:10.5px;color:${Theme.textDim};"></div>
                     <div style="display:flex;gap:4px;margin-top:8px;">
@@ -2340,44 +2346,28 @@
                     </div>
                 `;
                 const hipEl = div.querySelector('.nb-hipoteses');
-                if (hipoteses.length) {
-                    hipEl.innerHTML = `<div style="color:${Theme.violet};font-weight:bold;margin-bottom:3px;">Hipóteses:</div>` +
-                        hipoteses.map(h => `<div style="padding-left:8px;">• ${esc(h.texto)}</div>`).join('');
-                }
+                if (hipoteses.length) hipEl.innerHTML = `<div style="color:${Theme.violet};font-weight:bold;margin-bottom:3px;">Hipóteses:</div>` + hipoteses.map(h => `<div style="padding-left:8px;">• ${esc(h.texto)}</div>`).join('');
                 const notaEl = div.querySelector('.nb-notas');
-                if (notas.length) {
-                    notaEl.innerHTML = `<div style="color:${Theme.cyan};font-weight:bold;margin-bottom:3px;margin-top:6px;">Notas:</div>` +
-                        notas.map(n => `<div style="padding-left:8px;">• ${esc(n.texto)}</div>`).join('');
-                }
+                if (notas.length) notaEl.innerHTML = `<div style="color:${Theme.cyan};font-weight:bold;margin-bottom:3px;margin-top:6px;">Notas:</div>` + notas.map(n => `<div style="padding-left:8px;">• ${esc(n.texto)}</div>`).join('');
                 const inp = div.querySelector('.nb-input-hip');
                 div.querySelector('.nb-add-hip').addEventListener('click', () => {
-                    const v = inp.value.trim();
-                    if (!v) return;
-                    Notebook.addHipotese(entry.id, v);
-                    pesquisarRender();
+                    const v = inp.value.trim(); if (!v) return;
+                    Notebook.addHipotese(entry.id, v); pesquisarRender();
                 });
                 div.querySelector('.nb-add-nota').addEventListener('click', () => {
-                    const v = inp.value.trim();
-                    if (!v) return;
-                    Notebook.addNota(entry.id, v);
-                    pesquisarRender();
+                    const v = inp.value.trim(); if (!v) return;
+                    Notebook.addNota(entry.id, v); pesquisarRender();
                 });
-                inp.addEventListener('keydown', (e) => {
-                    if (e.key === 'Enter') { e.preventDefault(); div.querySelector('.nb-add-hip').click(); }
-                });
+                inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); div.querySelector('.nb-add-hip').click(); } });
                 div.querySelector('.nb-del').addEventListener('click', () => {
-                    if (confirm('Remover entrada ' + entry.id + '?')) {
-                        Notebook.remover(entry.id);
-                        pesquisarRender();
-                    }
+                    if (confirm('Remover entrada ' + entry.id + '?')) { Notebook.remover(entry.id); pesquisarRender(); }
                 });
                 container.appendChild(div);
             });
         }
 
         on(el.querySelector('#nbExportar'), 'click', () => {
-            const json = Notebook.exportar();
-            const blob = new Blob([json], { type: 'application/json' });
+            const blob = new Blob([Notebook.exportar()], { type: 'application/json' });
             const url = URL.createObjectURL(blob);
             const a = document.createElement('a');
             a.href = url;
@@ -2389,13 +2379,9 @@
             const inp = document.createElement('input');
             inp.type = 'file'; inp.accept = '.json,application/json';
             inp.onchange = (e) => {
-                const f = e.target.files[0];
-                if (!f) return;
+                const f = e.target.files[0]; if (!f) return;
                 const r = new FileReader();
-                r.onload = () => {
-                    if (Notebook.importar(r.result)) pesquisarRender();
-                    else alert('Arquivo inválido.');
-                };
+                r.onload = () => { if (Notebook.importar(r.result)) pesquisarRender(); else alert('Arquivo inválido.'); };
                 r.readAsText(f);
             };
             inp.click();
@@ -2412,16 +2398,12 @@
             const container = el.querySelector('#corrConteudo');
             const suspeitos = Correlator.suspeitos();
             const pares = Correlator._pares || {};
-            const totalPares = Object.keys(pares).length;
-            el.querySelector('#corrCounter').textContent = totalPares + ' OUTs';
-
+            el.querySelector('#corrCounter').textContent = Object.keys(pares).length + ' OUTs';
             let html = '';
             html += `<div style="background:linear-gradient(135deg,rgba(251,113,133,0.08),rgba(167,139,250,0.04));border:1px solid rgba(251,113,133,0.25);border-radius:10px;padding:12px;margin-bottom:14px;">`;
-            html += `<div style="color:${Theme.err};font-weight:bold;font-size:11.5px;margin-bottom:8px;">⚠ OUTS SEM RESPOSTA CONSISTENTE</div>`;
-            html += `<div style="font-size:10px;color:${Theme.textMute};margin-bottom:8px;line-height:1.5;">Enviados com frequência, raramente geram resposta. Candidatos a exploit.</div>`;
-            if (!suspeitos.length) {
-                html += `<div style="color:${Theme.textMute};font-size:10.5px;font-style:italic;">Nenhum suspeito ainda.</div>`;
-            } else {
+            html += `<div style="color:${Theme.err};font-weight:bold;font-size:11.5px;margin-bottom:8px;">⚠ OUTS SEM RESPOSTA</div>`;
+            if (!suspeitos.length) html += `<div style="color:${Theme.textMute};font-size:10.5px;font-style:italic;">Nenhum suspeito ainda.</div>`;
+            else {
                 html += '<div style="display:flex;flex-direction:column;gap:4px;">';
                 suspeitos.slice(0, 12).forEach(s => {
                     html += `<div style="background:rgba(0,0,0,0.25);border:1px solid ${Theme.line};border-radius:8px;padding:7px 10px;font-size:11px;display:flex;justify-content:space-between;align-items:center;gap:8px;">
@@ -2432,22 +2414,18 @@
                 html += '</div>';
             }
             html += '</div>';
-
             html += `<div style="background:rgba(255,255,255,0.02);border:1px solid ${Theme.line};border-radius:10px;padding:12px;">`;
-            html += `<div style="color:${Theme.violet};font-weight:bold;font-size:11.5px;margin-bottom:8px;">🔗 RESPOSTAS CONHECIDAS</div>`;
+            html += `<div style="color:${Theme.violet};font-weight:bold;font-size:11.5px;margin-bottom:8px;">🔗 RESPOSTAS</div>`;
             const outs = Object.keys(pares).map(Number).sort((a, b) => a - b);
-            if (!outs.length) {
-                html += `<div style="color:${Theme.textMute};font-size:10.5px;font-style:italic;">Sem correlações ainda.</div>`;
-            } else {
+            if (!outs.length) html += `<div style="color:${Theme.textMute};font-size:10.5px;font-style:italic;">Sem correlações ainda.</div>`;
+            else {
                 html += '<div style="display:flex;flex-direction:column;gap:5px;">';
                 outs.slice(0, 50).forEach(outId => {
                     const respostas = Correlator.respostasDe(outId);
                     const outNome = PacketNames.nome(outId, 'SEND') || '?';
                     html += `<div style="background:rgba(0,0,0,0.25);border:1px solid ${Theme.line};border-radius:8px;padding:7px 10px;font-size:11px;">
-                        <div style="color:${Theme.text};font-weight:bold;margin-bottom:3px;">OUT.${esc(outNome)} <span style="color:${Theme.textMute};font-weight:normal;">(ID ${outId})</span></div>
-                        <div style="color:${Theme.textDim};font-size:10px;padding-left:8px;">
-                            ${respostas.slice(0, 5).map(r => `→ ${esc(r.inNome || String(r.inId))} ×${r.count}`).join('<br>')}
-                        </div>
+                        <div style="color:${Theme.text};font-weight:bold;margin-bottom:3px;">OUT.${esc(outNome)} <span style="color:${Theme.textMute};font-weight:normal;">(${outId})</span></div>
+                        <div style="color:${Theme.textDim};font-size:10px;padding-left:8px;">${respostas.slice(0, 5).map(r => `→ ${esc(r.inNome || String(r.inId))} ×${r.count}`).join('<br>')}</div>
                     </div>`;
                 });
                 html += '</div>';
@@ -2458,8 +2436,7 @@
         on(el.querySelector('#corrAtualizar'), 'click', correlacaoRender);
         on(el.querySelector('#corrLimpar'), 'click', () => {
             if (!confirm('Apagar dados de correlação?')) return;
-            Correlator.limpar();
-            correlacaoRender();
+            Correlator.limpar(); correlacaoRender();
         });
 
         const fuzzLogEl = el.querySelector('#fuzzLog');
@@ -2509,8 +2486,7 @@
                 const vazio = document.createElement('div');
                 vazio.style.cssText = `color:${Theme.textMute};font-size:10.5px;text-align:center;padding:12px;font-style:italic;`;
                 vazio.textContent = 'Fila vazia.';
-                raceListaEl.appendChild(vazio);
-                return;
+                raceListaEl.appendChild(vazio); return;
             }
             raceFila.forEach((p, i) => {
                 const linha = document.createElement('div');
@@ -2534,8 +2510,7 @@
             const qtd = Math.max(1, Math.min(10, Number(el.querySelector('#raceQtd').value) || 1));
             if (!Number.isFinite(id)) return;
             for (let i = 0; i < qtd; i++) raceFila.push({ id, hex });
-            el.querySelector('#raceId').value = '';
-            el.querySelector('#raceHex').value = '';
+            el.querySelector('#raceId').value = ''; el.querySelector('#raceHex').value = '';
             raceRender();
         });
         on(el.querySelector('#raceEnviar'), 'click', async () => {
@@ -2549,23 +2524,17 @@
                     raceLog(`➡ ${i+1}. ${nome} (ID ${p.id})`, Theme.ok);
                 });
                 const respostas = Object.entries(r.respostas);
-                if (!respostas.length) {
-                    raceLog('⚠ Nenhuma resposta do servidor.', Theme.warn);
-                } else {
+                if (!respostas.length) raceLog('⚠ Nenhuma resposta.', Theme.warn);
+                else {
                     respostas.forEach(([inId, count]) => {
                         const nome = PacketNames.nome(Number(inId), 'RECV') || '?';
                         raceLog(`⬅ ${nome} (ID ${inId}) ×${count}`, Theme.violet);
                     });
                     raceLog('✓ Concluído.', Theme.ok);
                 }
-            } catch (e) {
-                raceLog('Erro: ' + (e.message || e), Theme.err);
-            }
+            } catch (e) { raceLog('Erro: ' + (e.message || e), Theme.err); }
         });
-        on(el.querySelector('#raceLimpar'), 'click', () => {
-            raceFila.length = 0;
-            raceRender();
-        });
+        on(el.querySelector('#raceLimpar'), 'click', () => { raceFila.length = 0; raceRender(); });
         raceRender();
 
         const recPreview = el.querySelector('#recPreview');
@@ -2602,8 +2571,7 @@
             replayRender();
         });
         on(el.querySelector('#recExportar'), 'click', () => {
-            const json = Recorder.exportar();
-            const blob = new Blob([json], { type: 'application/json' });
+            const blob = new Blob([Recorder.exportar()], { type: 'application/json' });
             const url = URL.createObjectURL(blob);
             const a = document.createElement('a');
             a.href = url;
@@ -2615,8 +2583,7 @@
             const inp = document.createElement('input');
             inp.type = 'file'; inp.accept = '.json,application/json';
             inp.onchange = (e) => {
-                const f = e.target.files[0];
-                if (!f) return;
+                const f = e.target.files[0]; if (!f) return;
                 const r = new FileReader();
                 r.onload = () => {
                     if (Recorder.importar(r.result)) { recorderRender(); replayRender(); }
@@ -2628,9 +2595,29 @@
         });
         on(el.querySelector('#recLimpar'), 'click', () => {
             if (!confirm('Apagar gravação?')) return;
-            Recorder.limpar();
-            recorderRender();
-            replayRender();
+            Recorder.limpar(); recorderRender(); replayRender();
+        });
+        // ── Enviar gravação inteira pro Sender ──
+        on(el.querySelector('#recSenderAll'), 'click', () => {
+            const outs = Recorder.eventos.filter(e => e.dir === 'SEND');
+            if (!outs.length) { alert('Nenhum OUT gravado.'); return; }
+            if (!SenderRef.receberLote) return;
+            const logs = outs.map(e => ({
+                ts: e.t,
+                packet: {
+                    header: e.header,
+                    fullHex: e.fullHex,
+                    payloadHex: e.payloadHex,
+                    byteLength: e.byteLength
+                }
+            }));
+            const r = SenderRef.receberLote(logs, { usarDelay: true });
+            Toolbar.setSenderVisible(true);
+            try {
+                if (window._hubUI && window._hubUI.toast) {
+                    window._hubUI.toast(`${r.total} pacotes → Sender (${r.delays} pausas)`, 'ok');
+                }
+            } catch (e) {}
         });
         Emitter.on('recorder:changed', () => {
             if (pesqPanes.recorder.style.display !== 'none') recorderRender();
@@ -2683,9 +2670,8 @@
         const diffRes = el.querySelector('#diffResultado');
         let diffBaseline = null;
         function diffRender() {
-            if (!diffBaseline) {
-                el.querySelector('#diffBaselineInfo').textContent = '';
-            } else {
+            if (!diffBaseline) el.querySelector('#diffBaselineInfo').textContent = '';
+            else {
                 const nome = PacketNames.nome(diffBaseline.header, diffBaseline._dir || 'SEND') || '?';
                 el.querySelector('#diffBaselineInfo').textContent = `Baseline: ${nome} (${diffBaseline.header})`;
             }
@@ -2728,13 +2714,12 @@
             if (!Number.isFinite(id)) { diffRes.innerHTML = `<div style="color:${Theme.err};">ID inválido.</div>`; return; }
             const matches = AppState.logs.filter(l => l.packet.header === id).slice(-2).map(l => l.packet);
             if (matches.length < 2 && !diffBaseline) {
-                diffRes.innerHTML = `<div style="color:${Theme.warn};">Preciso de 2 pacotes com ID ${id} (ou fixe baseline).</div>`;
+                diffRes.innerHTML = `<div style="color:${Theme.warn};">Preciso de 2 pacotes com ID ${id}.</div>`;
                 return;
             }
             const a = diffBaseline || matches[0];
             const b = matches[matches.length - 1];
-            const diff = PacketDiff.comparar(a, b);
-            renderDiff(diff, id);
+            renderDiff(PacketDiff.comparar(a, b), id);
         });
         on(el.querySelector('#diffFixarBaseline'), 'click', () => {
             const id = Number(el.querySelector('#diffId').value);
@@ -2744,7 +2729,7 @@
             diffBaseline = m.packet;
             diffBaseline._dir = m.dir;
             diffRender();
-            diffRes.innerHTML = `<div style="color:${Theme.ok};">📌 Baseline fixado: ${PacketNames.nome(id, m.dir) || id}.</div>`;
+            diffRes.innerHTML = `<div style="color:${Theme.ok};">📌 Baseline fixado.</div>`;
         });
         on(el.querySelector('#diffLimparBaseline'), 'click', () => {
             diffBaseline = null;
@@ -2794,9 +2779,7 @@
             const headerIdRaw = el.querySelector('#wHeaderId').value;
             const headerId = headerIdRaw !== '' && !isNaN(Number(headerIdRaw)) ? Number(headerIdRaw) : null;
             Watchers.adicionar({
-                nome,
-                dir: el.querySelector('#wDir').value,
-                headerId,
+                nome, dir: el.querySelector('#wDir').value, headerId,
                 payloadContem: el.querySelector('#wPayload').value,
                 acoes: ['log']
             });
@@ -2807,8 +2790,7 @@
         });
         on(el.querySelector('#wLimpar'), 'click', () => {
             if (!confirm('Apagar todas as regras?')) return;
-            Watchers.limpar();
-            watchersRender();
+            Watchers.limpar(); watchersRender();
         });
         on(el.querySelector('#wAiGerar'), 'click', async () => {
             const desc = el.querySelector('#wAiDesc').value.trim();
@@ -2825,9 +2807,8 @@
                 Watchers.adicionar(cfg);
                 el.querySelector('#wAiDesc').value = '';
                 watchersRender();
-            } catch (e) {
-                alert('Erro: ' + (e.message || e));
-            } finally {
+            } catch (e) { alert('Erro: ' + (e.message || e)); }
+            finally {
                 SangAI._busy = false;
                 btn.textContent = original; btn.disabled = false;
             }
@@ -2879,11 +2860,9 @@
         el.id = 'hl-sender';
         Object.assign(el.style, {
             position: 'fixed', top: '50px', right: '10px',
-            width: '400px',
-            background: Theme.bgPanel,
-            backdropFilter: Theme.blur, WebkitBackdropFilter: Theme.blur,
-            color: Theme.text,
-            border: '1px solid ' + Theme.line, zIndex: '99999',
+            width: '420px',
+            background: Theme.bgPanel, backdropFilter: Theme.blur, WebkitBackdropFilter: Theme.blur,
+            color: Theme.text, border: '1px solid ' + Theme.line, zIndex: '99999',
             fontFamily: 'monospace', fontSize: '12px',
             borderRadius: Theme.radius, display: 'none', flexDirection: 'column',
             boxShadow: '0 20px 50px rgba(0,0,0,0.55), 0 2px 8px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.06)',
@@ -2896,20 +2875,16 @@
                 padding:11px 14px;cursor:move;
                 border-bottom:1px solid ${Theme.line};border-radius:${Theme.radius} ${Theme.radius} 0 0;
                 font-weight:bold;font-size:12px;color:${Theme.text};user-select:none;
-                display:flex;justify-content:space-between;align-items:center;letter-spacing:0.05em;
-            ">
+                display:flex;justify-content:space-between;align-items:center;letter-spacing:0.05em;">
                 <span style="display:flex;align-items:center;gap:10px;">
                     <span style="width:8px;height:8px;border-radius:50%;background:${Theme.violet};
                         box-shadow:0 0 8px ${Theme.violet},0 0 16px rgba(167,139,250,0.5);"></span>
                     <span style="background:linear-gradient(100deg,${Theme.cyan} 0%,${Theme.violet} 50%,#fff 100%);
-                        -webkit-background-clip:text;background-clip:text;color:transparent;">
-                        SANG SENDER
-                    </span>
+                        -webkit-background-clip:text;background-clip:text;color:transparent;">SANG SENDER</span>
                 </span>
                 <div id="senderHeaderBtns"></div>
             </div>
             <div style="display:flex;flex-direction:column;flex:1;overflow-y:auto;min-height:0;">
-
                 <div style="padding:10px 12px;display:flex;gap:6px;border-bottom:1px solid ${Theme.line};background:rgba(0,0,0,0.2);">
                     <select id="selProfile" class="az-input-select" style="flex:1;"></select>
                     <button id="btnNewProf" class="az-mini" style="color:${Theme.violet};border-color:${Theme.violet};">+</button>
@@ -2918,7 +2893,7 @@
                 <div style="padding:10px 12px;background:rgba(0,0,0,0.2);display:flex;flex-direction:column;gap:8px;border-bottom:1px solid ${Theme.line};">
                     <div style="display:flex;gap:6px;">
                         <input id="sndId" type="number" placeholder="ID" style="width:64px;background:rgba(0,0,0,0.25);color:${Theme.text};border:1px solid ${Theme.line};padding:7px 10px;border-radius:6px;font-size:11px;font-family:monospace;outline:none;box-sizing:border-box;">
-                        <input id="sndHex" type="text" placeholder="Payload HEX (opcional)" style="flex:1;background:rgba(0,0,0,0.25);color:${Theme.text};border:1px solid ${Theme.line};padding:7px 10px;border-radius:6px;font-size:11px;font-family:monospace;outline:none;min-width:0;box-sizing:border-box;">
+                        <input id="sndHex" type="text" placeholder="Payload HEX (ou full hex)" style="flex:1;background:rgba(0,0,0,0.25);color:${Theme.text};border:1px solid ${Theme.line};padding:7px 10px;border-radius:6px;font-size:11px;font-family:monospace;outline:none;min-width:0;box-sizing:border-box;">
                         <button id="btnAddSnd" class="az-grad-btn" style="padding:7px 14px;">ADD</button>
                     </div>
                     <div style="display:flex;gap:4px;">
@@ -2959,8 +2934,7 @@
                     <button id="btnSpamAction" style="
                         background:linear-gradient(135deg,${Theme.ok},#059669);color:#0b0b10;border:none;cursor:pointer;
                         padding:12px;font-weight:bold;width:100%;border-radius:8px;font-size:13px;
-                        font-family:monospace;transition:all 0.15s;letter-spacing:0.05em;
-                    ">🚀 INICIAR</button>
+                        font-family:monospace;transition:all 0.15s;letter-spacing:0.05em;">🚀 INICIAR</button>
                     <div id="sndStatus" style="font-size:10px;color:${Theme.textMute};text-align:center;min-height:14px;font-family:monospace;"></div>
                 </div>
             </div>
@@ -3084,11 +3058,39 @@
         on(el.querySelector('#btnAddSnd'), 'click', () => {
             const idVal = el.querySelector('#sndId').value;
             const hexVal = el.querySelector('#sndHex').value || '';
-            if (idVal !== '' && !isNaN(Number(idVal))) {
-                AppState.profiles[AppState.currentProfileId].packets.push({ id: Number(idVal), hex: hexVal });
-                el.querySelector('#sndId').value = ''; el.querySelector('#sndHex').value = '';
+
+            // Se veio do ↗ do log (fullHex em stash), adiciona como RAW byte-exato
+            if (el._pendingFullHex) {
+                AppState.profiles[AppState.currentProfileId].packets.push({ isRaw: true, fullHex: el._pendingFullHex });
+                el._pendingFullHex = null;
+                el.querySelector('#sndId').value = '';
+                el.querySelector('#sndHex').value = '';
                 saveCurrentProfile(); renderPackets();
+                return;
             }
+
+            if (idVal === '' || isNaN(Number(idVal))) return;
+
+            // Detecta se o usuário colou um full hex completo no campo
+            const clean = hexVal.replace(/[^0-9A-Fa-f]/g, '');
+            let isFull = false;
+            if (clean.length >= 12 && clean.length % 2 === 0) {
+                const declaredLen = parseInt(clean.substr(0, 8), 16);
+                const actualRemaining = (clean.length - 8) / 2;
+                // Aceita as duas convenções: header+payload OU total-4
+                if (declaredLen === actualRemaining || declaredLen === actualRemaining + 4) {
+                    isFull = true;
+                }
+            }
+
+            if (isFull) {
+                AppState.profiles[AppState.currentProfileId].packets.push({ isRaw: true, fullHex: hexVal.trim() });
+            } else {
+                AppState.profiles[AppState.currentProfileId].packets.push({ id: Number(idVal), hex: hexVal });
+            }
+            el.querySelector('#sndId').value = '';
+            el.querySelector('#sndHex').value = '';
+            saveCurrentProfile(); renderPackets();
         });
         on(el.querySelector('#btnAddWait'), 'click', () => {
             const ms = parseInt(prompt('Pausar por quantos ms?'));
@@ -3098,7 +3100,7 @@
             }
         });
         on(el.querySelector('#btnAddRaw'), 'click', () => {
-            const rawHex = prompt('Full HEX do pacote (ex: 00 00 00 0E 04 00 ...):');
+            const rawHex = prompt('Full HEX do pacote (ex: 00 00 00 0A 09 92 00 00 00 06 00 00 00 03):');
             if (!rawHex || !rawHex.trim()) return;
             const clean = rawHex.replace(/[^0-9A-Fa-f]/g, '');
             if (clean.length < 12 || clean.length % 2 !== 0) {
@@ -3136,11 +3138,8 @@
                     saveCurrentProfile(); renderPackets();
                     nlJs.value = '';
                 }
-            } catch (e) {
-                alert('Erro: ' + (e.message || e));
-            } finally {
-                SangAI._busy = false; btnNlJs.disabled = false; btnNlJs.textContent = 'IA';
-            }
+            } catch (e) { alert('Erro: ' + (e.message || e)); }
+            finally { SangAI._busy = false; btnNlJs.disabled = false; btnNlJs.textContent = 'IA'; }
         }
         on(btnNlJs, 'click', gerarJsNL);
         on(nlJs, 'keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); gerarJsNL(); } });
@@ -3291,18 +3290,72 @@
             }
         }
 
-        function fillFields(headerId, hexPayload) {
+        function fillFields(headerId, hexPayload, fullHex) {
             el.querySelector('#sndId').value = headerId;
             el.querySelector('#sndHex').value = hexPayload;
+            el._pendingFullHex = fullHex || null;
             const addBtn = el.querySelector('#btnAddSnd');
             addBtn.classList.add('flash');
             clearTimeout(addBtn._flashTimer);
             addBtn._flashTimer = setTimeout(() => addBtn.classList.remove('flash'), 280);
         }
 
+        // ═══════════════════════════════════════════════════════════
+        // ✅ NOVO: recebe lote do Analyzer, replica delays entre pacotes
+        // ═══════════════════════════════════════════════════════════
+        function receberLote(logs, opts = {}) {
+            const usarDelay = opts.usarDelay !== false;
+            const appendMode = opts.appendMode === true;
+            if (!logs || !logs.length) return { total: 0, delays: 0 };
+
+            // Ordena por timestamp
+            const ordenados = logs.slice().sort((a, b) => a.ts - b.ts);
+
+            // Cria novo perfil para receber o lote (ou reaproveita se appendMode)
+            let prof;
+            if (!appendMode) {
+                const novoId = 'lote_' + Date.now();
+                const agora = new Date();
+                AppState.profiles[novoId] = {
+                    name: 'Lote ' + agora.toLocaleTimeString('pt-BR').slice(0, 5),
+                    packets: [],
+                    spamInterval: 300,
+                    spamQtd: 1
+                };
+                AppState.currentProfileId = novoId;
+                prof = AppState.profiles[novoId];
+                renderProfiles();
+            } else {
+                prof = AppState.profiles[AppState.currentProfileId];
+            }
+
+            let delays = 0;
+            for (let i = 0; i < ordenados.length; i++) {
+                const log = ordenados[i];
+
+                // Delay entre este e o anterior (imitando REC)
+                if (usarDelay && i > 0) {
+                    const delta = log.ts - ordenados[i - 1].ts;
+                    if (delta > 0 && delta < 30000) {
+                        prof.packets.push({ isDelay: true, ms: delta });
+                        delays++;
+                    }
+                }
+
+                // Usa fullHex byte-exato (garante que o servidor receba o mesmo bytes)
+                prof.packets.push({ isRaw: true, fullHex: log.packet.fullHex });
+            }
+
+            saveCurrentProfile();
+            renderPackets();
+
+            return { total: ordenados.length, delays };
+        }
+
         renderProfiles();
         renderPackets();
         SenderRef.fill = fillFields;
+        SenderRef.receberLote = receberLote;
 
         return { element: el, setVisible };
     })();
@@ -3318,6 +3371,10 @@
             0%, 60%, 100% { opacity: 0.3; transform: translateY(0); }
             30% { opacity: 1; transform: translateY(-4px); }
         }
+        @keyframes selBarIn {
+            from { opacity: 0; transform: translateX(-50%) translateY(10px) scale(0.95); }
+            to { opacity: 1; transform: translateX(-50%) translateY(0) scale(1); }
+        }
         .ia-dot {
             width: 6px; height: 6px; border-radius: 50%; background: ${Theme.violet};
             display: inline-block; animation: iaDot 1.2s ease-in-out infinite;
@@ -3327,222 +3384,108 @@
 
         #hl-analyzer .az-tab,
         #hl-analyzer .pesq-tab {
-            background: transparent;
-            color: ${Theme.textMute};
-            border: none;
-            cursor: pointer;
-            padding: 10px 16px;
-            font-size: 11px;
-            font-family: monospace;
-            letter-spacing: 0.05em;
-            position: relative;
-            transition: color 0.15s;
-            outline: none;
-            white-space: nowrap;
+            background: transparent; color: ${Theme.textMute}; border: none; cursor: pointer;
+            padding: 10px 16px; font-size: 11px; font-family: monospace; letter-spacing: 0.05em;
+            position: relative; transition: color 0.15s; outline: none; white-space: nowrap;
         }
-        #hl-analyzer .pesq-tab {
-            padding: 8px 12px;
-            font-size: 10.5px;
-        }
+        #hl-analyzer .pesq-tab { padding: 8px 12px; font-size: 10.5px; }
         #hl-analyzer .az-tab:hover,
-        #hl-analyzer .pesq-tab:hover {
-            color: ${Theme.text};
-        }
+        #hl-analyzer .pesq-tab:hover { color: ${Theme.text}; }
 
         #hl-analyzer .az-btn {
-            flex: 1;
-            background: rgba(255,255,255,0.03);
-            color: ${Theme.text};
-            border: 1px solid ${Theme.line};
-            cursor: pointer;
-            padding: 6px 10px;
-            border-radius: 8px;
-            font-size: 11px;
-            font-family: monospace;
-            transition: all 0.15s;
+            flex: 1; background: rgba(255,255,255,0.03); color: ${Theme.text};
+            border: 1px solid ${Theme.line}; cursor: pointer; padding: 6px 10px;
+            border-radius: 8px; font-size: 11px; font-family: monospace; transition: all 0.15s;
         }
-        #hl-analyzer .az-btn:hover {
-            background: rgba(255,255,255,0.06);
-            border-color: ${Theme.line2};
-        }
+        #hl-analyzer .az-btn:hover { background: rgba(255,255,255,0.06); border-color: ${Theme.line2}; }
 
         #hl-analyzer .az-mini,
         #hl-sender .az-mini {
-            background: rgba(255,255,255,0.03);
-            color: ${Theme.text};
-            border: 1px solid ${Theme.line};
-            cursor: pointer;
-            padding: 6px 12px;
-            border-radius: 6px;
-            font-size: 11px;
-            font-family: monospace;
-            transition: all 0.15s;
-            white-space: nowrap;
+            background: rgba(255,255,255,0.03); color: ${Theme.text};
+            border: 1px solid ${Theme.line}; cursor: pointer; padding: 6px 12px;
+            border-radius: 6px; font-size: 11px; font-family: monospace;
+            transition: all 0.15s; white-space: nowrap;
         }
         #hl-analyzer .az-mini:hover,
-        #hl-sender .az-mini:hover {
-            background: rgba(255,255,255,0.07);
-        }
+        #hl-sender .az-mini:hover { background: rgba(255,255,255,0.07); }
 
         #hl-analyzer .az-mini-full {
-            width: 100%;
-            background: rgba(255,255,255,0.03);
-            color: ${Theme.text};
-            border: 1px solid ${Theme.line};
-            cursor: pointer;
-            padding: 5px;
-            border-radius: 6px;
-            font-size: 10px;
-            font-family: monospace;
-            transition: all 0.15s;
+            width: 100%; background: rgba(255,255,255,0.03); color: ${Theme.text};
+            border: 1px solid ${Theme.line}; cursor: pointer; padding: 5px;
+            border-radius: 6px; font-size: 10px; font-family: monospace; transition: all 0.15s;
         }
 
         #hl-analyzer .az-grad-btn,
         #hl-sender .az-grad-btn {
-            background: ${Theme.grad};
-            color: #0b0b10;
-            border: none;
-            cursor: pointer;
-            padding: 7px 16px;
-            border-radius: 8px;
-            font-weight: bold;
-            font-size: 11px;
-            font-family: monospace;
-            white-space: nowrap;
-            transition: all 0.15s;
-            letter-spacing: 0.03em;
+            background: ${Theme.grad}; color: #0b0b10; border: none; cursor: pointer;
+            padding: 7px 16px; border-radius: 8px; font-weight: bold; font-size: 11px;
+            font-family: monospace; white-space: nowrap; transition: all 0.15s; letter-spacing: 0.03em;
         }
         #hl-analyzer .az-grad-btn:hover,
-        #hl-sender .az-grad-btn:hover {
-            filter: brightness(1.1);
-            transform: translateY(-1px);
-        }
+        #hl-sender .az-grad-btn:hover { filter: brightness(1.1); transform: translateY(-1px); }
         #hl-analyzer .az-grad-btn:disabled,
-        #hl-sender .az-grad-btn:disabled {
-            opacity: 0.5;
-            cursor: not-allowed;
-            transform: none;
-        }
-        /* ✅ CORREÇÃO do bug do botão branco: classe de flash */
+        #hl-sender .az-grad-btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
         #hl-sender .az-grad-btn.flash {
             box-shadow: 0 0 0 3px rgba(34,211,238,0.55), 0 0 18px rgba(34,211,238,0.45) !important;
             filter: brightness(1.35);
         }
 
         #hl-analyzer .az-card {
-            flex: 1;
-            display: flex;
-            flex-direction: column;
-            min-width: 0;
-            background: rgba(255,255,255,0.025);
-            border: 1px solid ${Theme.line};
-            border-radius: 10px;
-            padding: 12px;
+            flex: 1; display: flex; flex-direction: column; min-width: 0;
+            background: rgba(255,255,255,0.025); border: 1px solid ${Theme.line};
+            border-radius: 10px; padding: 12px;
         }
         #hl-analyzer .az-card-title {
-            font-weight: bold;
-            margin-bottom: 6px;
-            font-size: 11px;
-            letter-spacing: 0.05em;
-            display: flex;
-            align-items: center;
-            gap: 6px;
+            font-weight: bold; margin-bottom: 6px; font-size: 11px; letter-spacing: 0.05em;
+            display: flex; align-items: center; gap: 6px;
         }
-        #hl-analyzer .az-card-desc {
-            font-size: 10px;
-            color: ${Theme.textMute};
-            margin-bottom: 8px;
-            line-height: 1.5;
-        }
+        #hl-analyzer .az-card-desc { font-size: 10px; color: ${Theme.textMute}; margin-bottom: 8px; line-height: 1.5; }
 
         #hl-analyzer .az-label,
-        #hl-sender .az-label {
-            font-size: 10.5px;
-            color: ${Theme.textMute};
-            display: inline-flex;
-            align-items: center;
-            gap: 4px;
-        }
+        #hl-sender .az-label { font-size: 10.5px; color: ${Theme.textMute}; display: inline-flex; align-items: center; gap: 4px; }
         #hl-analyzer .az-input-xs,
         #hl-sender .az-input-xs {
-            width: 55px;
-            background: rgba(0,0,0,0.25);
-            color: ${Theme.text};
-            border: 1px solid ${Theme.line};
-            padding: 5px 7px;
-            border-radius: 6px;
-            font-size: 11px;
-            font-family: monospace;
-            outline: none;
-            margin-left: 4px;
-            box-sizing: border-box;
+            width: 55px; background: rgba(0,0,0,0.25); color: ${Theme.text};
+            border: 1px solid ${Theme.line}; padding: 5px 7px; border-radius: 6px;
+            font-size: 11px; font-family: monospace; outline: none; margin-left: 4px; box-sizing: border-box;
         }
         #hl-analyzer .az-input-flex,
         #hl-sender .az-input-flex {
-            flex: 1;
-            background: rgba(0,0,0,0.25);
-            color: ${Theme.text};
-            border: 1px solid ${Theme.line};
-            padding: 6px 10px;
-            border-radius: 6px;
-            font-size: 11px;
-            font-family: monospace;
-            outline: none;
-            min-width: 0;
-            box-sizing: border-box;
+            flex: 1; background: rgba(0,0,0,0.25); color: ${Theme.text};
+            border: 1px solid ${Theme.line}; padding: 6px 10px; border-radius: 6px;
+            font-size: 11px; font-family: monospace; outline: none; min-width: 0; box-sizing: border-box;
         }
         #hl-analyzer .az-input-select,
         #hl-sender .az-input-select {
-            background: rgba(0,0,0,0.25);
-            color: ${Theme.text};
-            border: 1px solid ${Theme.line};
-            padding: 6px 10px;
-            border-radius: 6px;
-            font-size: 11px;
-            font-family: monospace;
-            outline: none;
-            cursor: pointer;
+            background: rgba(0,0,0,0.25); color: ${Theme.text}; border: 1px solid ${Theme.line};
+            padding: 6px 10px; border-radius: 6px; font-size: 11px;
+            font-family: monospace; outline: none; cursor: pointer;
         }
 
         #hl-analyzer .ia-quick {
-            background: rgba(255,255,255,0.03);
-            color: #c4b5fd;
-            border: 1px solid rgba(167,139,250,0.3);
-            cursor: pointer;
-            padding: 5px 10px;
-            border-radius: 6px;
-            font-size: 10px;
-            font-family: monospace;
-            transition: all 0.15s;
+            background: rgba(255,255,255,0.03); color: #c4b5fd;
+            border: 1px solid rgba(167,139,250,0.3); cursor: pointer;
+            padding: 5px 10px; border-radius: 6px; font-size: 10px;
+            font-family: monospace; transition: all 0.15s;
         }
-        #hl-analyzer .ia-quick:hover {
-            background: rgba(167,139,250,0.12);
-            border-color: rgba(167,139,250,0.5);
-        }
+        #hl-analyzer .ia-quick:hover { background: rgba(167,139,250,0.12); border-color: rgba(167,139,250,0.5); }
 
         #hl-analyzer::-webkit-scrollbar,
         #hl-sender::-webkit-scrollbar,
         #hl-analyzer *::-webkit-scrollbar,
         #hl-sender *::-webkit-scrollbar { width: 6px; height: 6px; }
-
         #hl-analyzer::-webkit-scrollbar-track,
         #hl-sender::-webkit-scrollbar-track,
         #hl-analyzer *::-webkit-scrollbar-track,
         #hl-sender *::-webkit-scrollbar-track { background: rgba(0,0,0,0.2); }
-
         #hl-analyzer::-webkit-scrollbar-thumb,
         #hl-sender::-webkit-scrollbar-thumb,
         #hl-analyzer *::-webkit-scrollbar-thumb,
-        #hl-sender *::-webkit-scrollbar-thumb {
-            background: rgba(255,255,255,0.08);
-            border-radius: 3px;
-        }
+        #hl-sender *::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.08); border-radius: 3px; }
         #hl-analyzer::-webkit-scrollbar-thumb:hover,
         #hl-sender::-webkit-scrollbar-thumb:hover,
         #hl-analyzer *::-webkit-scrollbar-thumb:hover,
-        #hl-sender *::-webkit-scrollbar-thumb:hover {
-            background: rgba(255,255,255,0.16);
-        }
+        #hl-sender *::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.16); }
 
         #hl-analyzer input:focus,
         #hl-sender input:focus,
@@ -3648,17 +3591,10 @@
     function deveBloquear(packet, dir) {
         try {
             if (AppState.killSwitchActive && dir === 'SEND') return true;
-            try {
-                if (Watchers.avaliar(packet, dir)) return true;
-            } catch (e) { console.error('[Analyzer] Watchers error:', e); }
-            try {
-                if (dir === 'SEND' && PacketFilter.isNetworkDropped(packet)) return true;
-            } catch (e) { console.error('[Analyzer] isNetworkDropped error:', e); }
+            try { if (Watchers.avaliar(packet, dir)) return true; } catch (e) {}
+            try { if (dir === 'SEND' && PacketFilter.isNetworkDropped(packet)) return true; } catch (e) {}
             return false;
-        } catch (e) {
-            console.error('[Analyzer] deveBloquear fatal:', e);
-            return false;
-        }
+        } catch (e) { return false; }
     }
 
     function wrapSend(ws) {
@@ -3672,15 +3608,12 @@
             try {
                 const buf = Utils.normalizeToArrayBuffer(data);
                 if (!buf) return originalSend(data);
-
                 const packet = Utils.parseData(buf);
                 if (!packet) return originalSend(data);
-
                 if (deveBloquear(packet, 'SEND')) {
                     handleTraffic(buf, 'SEND', true);
                     return;
                 }
-
                 handleTraffic(buf, 'SEND', false);
                 return originalSend(buf);
             } catch (e) {
@@ -3699,11 +3632,8 @@
             }
             const buf = Utils.normalizeToArrayBuffer(data);
             if (!buf) return;
-            const modifiedData = InboundTransformer.transform(buf);
-            handleTraffic(modifiedData, 'RECV');
-        } catch (e) {
-            console.error('[Analyzer] handleInbound error:', e);
-        }
+            handleTraffic(InboundTransformer.transform(buf), 'RECV');
+        } catch (e) { console.error('[Analyzer] handleInbound error:', e); }
     }
 
     window.gameWS = window._hubSocket.getActive();
@@ -3731,18 +3661,13 @@
         try { Emitter.clear(); } catch (e) {}
         try {
             if (window.gameWS && window.gameWS._analyzerSendWrapped) {
-                if (window.gameWS._analyzerOriginalSend) {
-                    window.gameWS.send = window.gameWS._analyzerOriginalSend;
-                }
+                if (window.gameWS._analyzerOriginalSend) window.gameWS.send = window.gameWS._analyzerOriginalSend;
                 delete window.gameWS._analyzerSendWrapped;
                 delete window.gameWS._analyzerOriginalSend;
             }
         } catch (e) {}
         try { Storage.set('dicionario', AppState.dicionario); } catch (e) {}
-        while (cleanup.length) {
-            const fn = cleanup.pop();
-            try { fn(); } catch (e) {}
-        }
+        while (cleanup.length) { const fn = cleanup.pop(); try { fn(); } catch (e) {} }
         try {
             [Toolbar.element, AnalyzerUI.element, SenderUI.element].forEach(elem => {
                 if (elem && elem.parentNode) elem.parentNode.removeChild(elem);
