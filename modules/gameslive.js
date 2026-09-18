@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Games
 // @namespace    devchris
-// @version      9.4-module-library
+// @version      9.5-chrome-fix
 // @description  Biblioteca de jogos estilo launcher
 // @grant        GM_registerMenuCommand
 // @grant        GM_setValue
@@ -28,7 +28,7 @@
   // ======= CONFIGURAÇÃO =======
   const MANIFEST_URL = 'https://raw.githubusercontent.com/zBeyond5/GamesHUB/refs/heads/main/TMGames/manifest.json';
 
-  const TIMEOUT_DETECCAO_MS = 4000;
+  const TIMEOUT_DETECCAO_MS = 6000;
   const TIMEOUT_MANIFEST_MS = 8000;
   const LARGURA_MIN = 280;
   const ALTURA_MIN = 200;
@@ -79,7 +79,11 @@
   --hub-radius-sm: 12px;
   --hub-font: 'Geist', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
 }
-.gl-scope, .gl-scope * { box-sizing: border-box; font-family: var(--hub-font); }
+.gl-scope, .gl-scope * {
+  box-sizing: border-box;
+  font-family: var(--hub-font);
+  color-scheme: dark;
+}
 .gl-scope { color: var(--hub-text); }
 
 @keyframes gl-fade-in { from { opacity: 0; transform: translateY(4px) scale(0.98); } to { opacity: 1; transform: translateY(0) scale(1); } }
@@ -138,6 +142,18 @@
 }
 .gl-input:focus, .gl-select:focus { border-color: var(--hub-cyan); box-shadow: 0 0 0 3px rgba(34,211,238,.15); }
 .gl-input::placeholder { color: var(--hub-muted); }
+
+/* Fix: dropdown e campos nativos do Chrome/Edge/Brave em dark */
+.gl-select { color-scheme: dark; background-color: #0f0f16; }
+.gl-select option {
+  background: #0f0f16;
+  color: var(--hub-text);
+  padding: 6px 10px;
+}
+.gl-select option:checked {
+  background: linear-gradient(120deg, #22d3ee, #a78bfa);
+  color: #06080d;
+}
 
 .gl-backdrop {
   position: fixed; inset: 0; z-index: 2147483647;
@@ -397,11 +413,11 @@
 }
 .gl-resize-handle:hover::after { background: linear-gradient(135deg, transparent 50%, var(--hub-cyan) 50%); }
 .gl-dica {
-  position: absolute; top: 44px; right: 8px; z-index: 20; max-width: 220px;
+  position: absolute; top: 44px; right: 8px; z-index: 20; max-width: 260px;
   background: linear-gradient(175deg, rgba(20,20,28,.95) 0%, rgba(9,9,14,.98) 100%);
   backdrop-filter: blur(14px) saturate(140%);
-  color: var(--hub-text); font-size: 11.5px; line-height: 1.4;
-  padding: 9px 11px; border-radius: var(--hub-radius-sm); border: 1px solid rgba(255,255,255,.08);
+  color: var(--hub-text); font-size: 11.5px; line-height: 1.5;
+  padding: 10px 12px; border-radius: var(--hub-radius-sm); border: 1px solid rgba(34,211,238,.3);
   box-shadow: 0 8px 24px rgba(0,0,0,.5); animation: gl-fade-in 150ms ease;
 }
     `;
@@ -430,6 +446,7 @@
       baixar: '<path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M4 21h16"/>',
       relogio: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/>',
       buscar: '<circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/>',
+      linkExterno: '<path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M21 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5"/>',
     };
     return `<svg viewBox="0 0 24 24" width="${t}" height="${t}" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${mapa[nome] || ''}</svg>`;
   }
@@ -695,6 +712,9 @@
     card.setAttribute('aria-modal', 'true');
     card.setAttribute('aria-label', 'Adicionar jogo temporário');
 
+    // Impede que cliques no card borbulhem para o backdrop e fechem o modal
+    card.addEventListener('mousedown', (e) => e.stopPropagation());
+
     const titulo = document.createElement('div');
     titulo.className = 'gl-card-title';
     titulo.innerHTML = `${icone('mais', 16)} Jogo temporário`;
@@ -717,24 +737,28 @@
       return campo;
     }
 
-    const inputNome = document.createElement('input');
-    inputNome.className = 'gl-input';
-    inputNome.placeholder = 'Nome do jogo';
+    function criarInput(placeholder) {
+      const i = document.createElement('input');
+      i.className = 'gl-input';
+      i.type = 'text';
+      i.placeholder = placeholder;
+      i.autocomplete = 'off';
+      i.autocorrect = 'off';
+      i.autocapitalize = 'off';
+      i.spellcheck = false;
+      return i;
+    }
+
+    const inputNome = criarInput('Nome do jogo');
     const campoNome = campoComLabel('Nome', inputNome, 'nome');
 
-    const inputUrl = document.createElement('input');
-    inputUrl.className = 'gl-input';
-    inputUrl.placeholder = 'https://...';
+    const inputUrl = criarInput('https://...');
     const campoUrl = campoComLabel('URL', inputUrl, 'url');
 
-    const inputImagem = document.createElement('input');
-    inputImagem.className = 'gl-input';
-    inputImagem.placeholder = 'URL da imagem (opcional)';
+    const inputImagem = criarInput('URL da imagem (opcional)');
     const campoImagem = campoComLabel('Imagem (opcional)', inputImagem, 'imagem');
 
-    const inputGenero = document.createElement('input');
-    inputGenero.className = 'gl-input';
-    inputGenero.placeholder = 'ex: Corrida, RPG';
+    const inputGenero = criarInput('ex: Corrida, RPG');
     const campoGenero = campoComLabel('Gênero (opcional)', inputGenero, 'genero');
 
     const erro = document.createElement('div');
@@ -766,15 +790,26 @@
     card.appendChild(linhaBotoes);
     fundo.appendChild(card);
     root.appendChild(fundo);
-    inputNome.focus();
+
+    // Foco com rAF duplo — garante que o shadow DOM já esteja pintado
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        try { inputNome.focus(); } catch (e) {}
+      });
+    });
 
     function fechar() {
       fundo.remove();
       document.removeEventListener('keydown', aoTeclar);
     }
+
     function aoTeclar(e) {
-      if (e.key === 'Escape') fechar();
-      if (e.key === 'Enter') confirmarBtn.click();
+      if (e.key === 'Escape') { fechar(); return; }
+      if (e.key !== 'Enter') return;
+      const tag = (e.target && e.target.tagName) || '';
+      if (tag === 'TEXTAREA') return; // Enter em textarea = quebra de linha
+      e.preventDefault();
+      confirmarBtn.click();
     }
     document.addEventListener('keydown', aoTeclar, { signal: ac.signal });
     cancelarBtn.addEventListener('click', fechar);
@@ -807,9 +842,6 @@
   }
 
   // ---------- Tratamento de capa: crop consistente + fallback com iniciais ----------
-  // A imagem, quando existe, nunca dita o layout: aspect-ratio fixo + object-fit:
-  // cover garante um grid uniforme mesmo com fontes de imagem heterogêneas (o
-  // manifest normalmente traz screenshots soltos, não box-art padronizada).
   function corDeterministica(nome) {
     let hash = 0;
     const texto = nome || '?';
@@ -936,8 +968,11 @@
     buscaWrap.innerHTML = icone('buscar', 14);
     const buscaInput = document.createElement('input');
     buscaInput.className = 'gl-input';
+    buscaInput.type = 'text';
     buscaInput.placeholder = 'Buscar na biblioteca...';
     buscaInput.setAttribute('aria-label', 'Buscar jogo pelo nome');
+    buscaInput.autocomplete = 'off';
+    buscaInput.spellcheck = false;
     let buscaTimer = null;
     buscaInput.addEventListener('input', () => {
       clearTimeout(buscaTimer);
@@ -1371,13 +1406,17 @@
     }
 
     const voltarBtn = botao('voltar', 'Voltar pro menu de jogos');
-    const mutarBtn = botao('somOn', 'Mutar (script não alcança áudio de outra origem — clique pra ver como mutar pelo navegador)');
+    const mutarBtn = botao('somOn', 'Mutar (clique se quiser ver como silenciar pelo navegador)');
+    const novaAbaBtn = botao('linkExterno', 'Abrir em nova aba (fallback manual)');
     const minimizarBtn = botao('minimizar', 'Minimizar');
     const maximizarBtn = botao('maximizar', 'Maximizar');
     const fecharBtn = botao('fechar', 'Fechar', 'gl-btn-danger');
 
+    novaAbaBtn.addEventListener('click', () => window.open(jogo.url, '_blank', 'noopener'));
+
     controles.appendChild(voltarBtn);
     controles.appendChild(mutarBtn);
+    controles.appendChild(novaAbaBtn);
     controles.appendChild(minimizarBtn);
     controles.appendChild(maximizarBtn);
     controles.appendChild(fecharBtn);
@@ -1405,19 +1444,26 @@
     corpo.appendChild(capa);
 
     let carregou = false;
+
     iframe.addEventListener('load', () => {
       carregou = true;
       statusTexto.textContent = jogo.nome;
       if (aoMudarStatus) aoMudarStatus('ok');
+      const dicaAberta = overlay.querySelector('#gl-dica');
+      if (dicaAberta) dicaAberta.style.display = 'none';
     });
 
     iframe.src = jogo.url;
+
+    // Se demorar pra dar load, mostra dica discreta.
+    // NÃO abre nova aba automaticamente — o usuário decide pelo botão 🔗.
     setTimeout(() => {
-      if (!carregou) {
-        fecharJogo();
-        window.open(jogo.url, '_blank');
-        if (aoMudarStatus) aoMudarStatus('bloqueado');
-      }
+      if (carregou) return;
+      statusTexto.textContent = `${jogo.nome} — se a tela ficar em branco, use 🔗`;
+      mostrarDica(
+        'Alguns sites bloqueiam ser exibidos dentro de outros (X-Frame-Options/CSP). ' +
+        'Se a área abaixo ficar em branco, clique no botão 🔗 do cabeçalho pra abrir em nova aba.'
+      );
     }, TIMEOUT_DETECCAO_MS);
 
     function estadoAtual() {
@@ -1463,7 +1509,7 @@
       dica.textContent = texto;
       dica.style.display = 'block';
       clearTimeout(dicaTimeout);
-      dicaTimeout = setTimeout(() => { dica.style.display = 'none'; }, 6000);
+      dicaTimeout = setTimeout(() => { dica.style.display = 'none'; }, 8000);
     }
     mutarBtn.addEventListener('click', () => {
       mutado = !mutado;
@@ -1743,15 +1789,27 @@
     window._hubUI?.markProtected?.(host);
     root = host.attachShadow({ mode: 'open' });
 
-    host.addEventListener('keydown', (e) => {
-      const tag = (e.target && e.target.tagName) || '';
-      if ((tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') && e.key !== 'Escape') {
-        e.stopPropagation();
-      }
-    }, { signal: ac.signal });
-    ['keyup', 'keypress', 'input', 'beforeinput'].forEach((t) =>
-      host.addEventListener(t, (e) => e.stopPropagation(), { signal: ac.signal })
-    );
+    // ═══════════════════════════════════════════════════════════════
+    // Blindagem de eventos — evita que teclas vazem pro site hospedeiro,
+    // MAS libera completamente os campos de formulário do nosso UI.
+    // ═══════════════════════════════════════════════════════════════
+    function ehCampoFormulario(el) {
+      if (!el) return false;
+      const tag = (el.tagName || '').toUpperCase();
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true;
+      if (el.isContentEditable) return true;
+      return false;
+    }
+
+    function bloquearSeForaDeCampo(e) {
+      if (ehCampoFormulario(e.target)) return;  // campo trabalha normalmente
+      if (e.key === 'Escape') return;            // deixa Escape passar
+      e.stopPropagation();
+    }
+
+    ['keydown', 'keyup', 'keypress', 'input', 'beforeinput',
+     'compositionstart', 'compositionupdate', 'compositionend']
+      .forEach((t) => host.addEventListener(t, bloquearSeForaDeCampo, { signal: ac.signal }));
 
     injetarEstilos();
     criarBotaoFlutuante();
