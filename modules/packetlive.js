@@ -1,4 +1,4 @@
-// modules/packetlive.js 
+// modules/packetlive.js
 (function() {
     'use strict';
     const UID = '_analyzer';
@@ -319,7 +319,7 @@
     let _alive = true;
 
     // ═══════════════════════════════════════════════════════════════
-    // TEMA AURORA GLASS — paleta unificada
+    // TEMA AURORA GLASS
     // ═══════════════════════════════════════════════════════════════
     const Theme = {
         cyan:    '#22d3ee',
@@ -340,7 +340,6 @@
         radius:  '16px'
     };
 
-    // ─── Storage ───
     const Storage = {
         get(key, def) {
             try {
@@ -373,7 +372,7 @@
     };
 
     // ═══════════════════════════════════════════════════════════════
-    // Utils — robusto a tipos alternativos (String, TypedArray, etc.)
+    // Utils
     // ═══════════════════════════════════════════════════════════════
     const Utils = {
         bufferToHex(buffer) {
@@ -388,15 +387,12 @@
                 return new TextDecoder('utf-8').decode(buffer).replace(/[^\x20-\x7E]/g, '\u00B7');
             } catch (e) { return ''; }
         },
-        // Converte qualquer tipo aceito por WebSocket.send em ArrayBuffer.
-        // Retorna null se não for convertível (ex: Blob assíncrono, objeto).
         normalizeToArrayBuffer(data) {
             if (data == null) return null;
             if (data instanceof ArrayBuffer) return data;
             if (ArrayBuffer.isView(data)) {
-                try {
-                    return data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength);
-                } catch (e) { return null; }
+                try { return data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength); }
+                catch (e) { return null; }
             }
             if (typeof data === 'string') {
                 try {
@@ -406,18 +402,31 @@
             }
             return null;
         },
+        // ✅ CORREÇÃO: length = total (4 + 2 + payload)
         buildPacket(headerId, hexPayloadStr) {
             const cleanHex = String(hexPayloadStr || '').replace(/[^0-9A-Fa-f]/g, '');
             const payloadLen = cleanHex.length / 2;
-            const buffer = new ArrayBuffer(4 + 2 + payloadLen);
+            const totalLen = 4 + 2 + payloadLen;
+            const buffer = new ArrayBuffer(totalLen);
             const view = new DataView(buffer);
-            view.setInt32(0, 2 + payloadLen, false);
+            view.setInt32(0, totalLen, false);
             view.setInt16(4, headerId, false);
             const u8 = new Uint8Array(buffer);
             for (let i = 0; i < payloadLen; i++) {
                 u8[6 + i] = parseInt(cleanHex.substr(i * 2, 2), 16) || 0;
             }
             return buffer;
+        },
+        // ✅ NOVO: reconstrói bytes exatos de um fullHex capturado
+        hexToArrayBuffer(fullHex) {
+            const clean = String(fullHex || '').replace(/[^0-9A-Fa-f]/g, '');
+            const len = clean.length / 2;
+            const buf = new ArrayBuffer(len);
+            const u8 = new Uint8Array(buf);
+            for (let i = 0; i < len; i++) {
+                u8[i] = parseInt(clean.substr(i * 2, 2), 16) || 0;
+            }
+            return buf;
         },
         parseData(data) {
             if (!(data instanceof ArrayBuffer) || data.byteLength < 6) return null;
@@ -440,13 +449,12 @@
     };
 
     // ═══════════════════════════════════════════════════════════════
-    // PacketFilter — bloqueio blindado, nunca falha
+    // PacketFilter
     // ═══════════════════════════════════════════════════════════════
     const PacketFilter = {
         _normHex(s) { return String(s || '').replace(/\s/g, '').toUpperCase(); },
         _matchPayload(packet, rule) {
             if (!rule) return false;
-            // Regra pode ser HEX (só 0-9A-F, sem espaços) ou texto ASCII
             const limpaRegra = String(rule).trim();
             if (!limpaRegra) return false;
             const regraHex = this._normHex(limpaRegra);
@@ -462,9 +470,7 @@
                 for (const rule of AppState.blPayloads) {
                     if (this._matchPayload(packet, rule)) return true;
                 }
-            } catch (e) {
-                console.error('[Analyzer] isVisualBlocked error:', e);
-            }
+            } catch (e) { console.error('[Analyzer] isVisualBlocked:', e); }
             return false;
         },
         isNetworkDropped(packet) {
@@ -474,9 +480,7 @@
                 for (const rule of AppState.dropPayloads) {
                     if (this._matchPayload(packet, rule)) return true;
                 }
-            } catch (e) {
-                console.error('[Analyzer] isNetworkDropped error:', e);
-            }
+            } catch (e) { console.error('[Analyzer] isNetworkDropped:', e); }
             return false;
         },
         manageList(type, action, val) {
@@ -494,15 +498,12 @@
                 if (action === 'REMOVE_ID' && !isNaN(val)) { targetSet.delete(Number(val)); Storage.set(storeKeyId, [...targetSet]); }
                 if (action === 'REMOVE_STR' && val) { const idx = targetArr.indexOf(val); if (idx > -1) targetArr.splice(idx, 1); Storage.set(storeKeyStr, targetArr); }
                 if (action === 'CLEAR') { targetSet.clear(); targetArr.length = 0; Storage.set(storeKeyId, []); Storage.set(storeKeyStr, []); }
-            } catch (e) {
-                console.error('[Analyzer] manageList error:', e);
-            }
+            } catch (e) { console.error('[Analyzer] manageList:', e); }
         }
     };
 
     const InboundTransformer = { rules: {}, transform(data) { return data; } };
 
-    // ─── Emitter interno  ───
     const Emitter = {
         _map: {},
         on(evt, cb) {
@@ -517,8 +518,8 @@
         clear() { this._map = {}; }
     };
 
-     // ═══════════════════════════════════════════════════════════════
-    // NOTEBOOK — base de conhecimento por pacote, persistente
+    // ═══════════════════════════════════════════════════════════════
+    // NOTEBOOK
     // ═══════════════════════════════════════════════════════════════
     const Notebook = {
         _cache: null,
@@ -580,7 +581,7 @@
     };
 
     // ═══════════════════════════════════════════════════════════════
-    // CORRELATOR — pareia OUT (envio) com IN (resposta) por janela temporal
+    // CORRELATOR
     // ═══════════════════════════════════════════════════════════════
     const Correlator = {
         _pendentes: [],
@@ -673,7 +674,7 @@
     };
 
     // ═══════════════════════════════════════════════════════════════
-    // FUZZER — itera um byte de um pacote e observa a resposta
+    // FUZZER
     // ═══════════════════════════════════════════════════════════════
     const Fuzzer = {
         _ativo: false,
@@ -689,7 +690,7 @@
             const baseLen = cfg.baseLen || 16;
             const base = new ArrayBuffer(6 + baseLen);
             const baseView = new DataView(base);
-            baseView.setInt32(0, 2 + baseLen, false);
+            baseView.setInt32(0, 4 + 2 + baseLen, false);
             baseView.setInt16(4, cfg.id, false);
 
             this._log(`Fuzz #${myRunId} — OUT.ID ${cfg.id}, offset ${cfg.offset}, ${cfg.from}..${cfg.to}, delay ${cfg.delay}ms`, 'info');
@@ -742,7 +743,7 @@
     };
 
     // ═══════════════════════════════════════════════════════════════
-    // RACE TESTER — envia N pacotes no mesmo tick
+    // RACE TESTER
     // ═══════════════════════════════════════════════════════════════
     const RaceTester = {
         async enviarSimultaneo(pacotes) {
@@ -778,12 +779,12 @@
     };
 
     // ═══════════════════════════════════════════════════════════════
-    // RECORDER — grava janela de tráfego real (OUT + IN) com timestamps
+    // RECORDER
     // ═══════════════════════════════════════════════════════════════
     const Recorder = {
         _gravando: false,
         _inicio: 0,
-        _eventos: [],   // { t, dir, header, payloadHex, byteLength, fullHex }
+        _eventos: [],
         _limite: 2000,
         _notificar() { Emitter.emit('recorder:changed', { gravando: this._gravando, total: this._eventos.length }); },
         iniciar() {
@@ -798,11 +799,7 @@
             if (!this._gravando) return null;
             this._gravando = false;
             this._notificar();
-            return {
-                inicio: this._inicio,
-                duracao: Date.now() - this._inicio,
-                eventos: this._eventos.slice()
-            };
+            return { inicio: this._inicio, duracao: Date.now() - this._inicio, eventos: this._eventos.slice() };
         },
         capturar(packet, dir) {
             if (!this._gravando) return;
@@ -847,7 +844,7 @@
     };
 
     // ═══════════════════════════════════════════════════════════════
-    // REPLAY — reproduz gravação, respeitando delays originais, com hooks de mutação
+    // REPLAY
     // ═══════════════════════════════════════════════════════════════
     const Replay = {
         _ativo: false,
@@ -863,7 +860,6 @@
             const myRunId = ++this._runId;
             const speed = opts.speed || 1;
             const mutar = typeof opts.mutar === 'function' ? opts.mutar : null;
-            const baseT = outs[0].t;
 
             this._log(`▶ Replay #${myRunId} — ${outs.length} OUTs, speed ${speed}×${mutar ? ', com mutação' : ''}`, 'info');
 
@@ -873,22 +869,33 @@
                 const ev = outs[i];
                 let header = ev.header;
                 let payloadHex = ev.payloadHex;
+                let mutated = false;
 
                 if (mutar) {
                     const m = mutar({ header, payloadHex, indice: i });
                     if (m === false) { this._log(`⊘ #${i+1} pulado por mutação`, 'aviso'); continue; }
                     if (m && typeof m === 'object') {
-                        header = Number.isFinite(m.header) ? m.header : header;
-                        payloadHex = typeof m.payloadHex === 'string' ? m.payloadHex : payloadHex;
+                        const novoHeader = Number.isFinite(m.header) ? m.header : header;
+                        const novoPayload = typeof m.payloadHex === 'string' ? m.payloadHex : payloadHex;
+                        if (novoHeader !== header || novoPayload !== payloadHex) mutated = true;
+                        header = novoHeader;
+                        payloadHex = novoPayload;
                     }
                 }
 
-                const buf = Utils.buildPacket(header, payloadHex);
+                // ✅ CORREÇÃO: usa bytes exatos quando não mutado
+                let buf;
+                if (mutated) {
+                    buf = Utils.buildPacket(header, payloadHex);
+                } else {
+                    buf = Utils.hexToArrayBuffer(ev.fullHex);
+                }
+
                 try { window.gameWS.send(buf); }
                 catch (e) { this._log(`Erro no #${i+1}: ${e.message || e}`, 'erro'); break; }
 
                 const nome = PacketNames.nome(header, 'SEND') || '?';
-                this._log(`➡ #${i+1} ${nome} (ID ${header})`, 'envio');
+                this._log(`➡ #${i+1} ${nome} (ID ${header})${mutated ? ' [mutado]' : ''}`, 'envio');
 
                 if (i < outs.length - 1) {
                     const delta = (outs[i + 1].t - ev.t) / speed;
@@ -911,7 +918,7 @@
     };
 
     // ═══════════════════════════════════════════════════════════════
-    // PACKET DIFF — compara dois pacotes do mesmo ID byte a byte
+    // PACKET DIFF
     // ═══════════════════════════════════════════════════════════════
     const PacketDiff = {
         comparar(a, b) {
@@ -931,37 +938,20 @@
                 bytes.push({ offset: i, a: va, b: vb, igual });
             }
             return {
-                bytes,
-                total: len,
-                diferentes,
+                bytes, total: len, diferentes,
                 igual: len > 0 && diferentes === 0,
                 byteLengthA: hexA.length,
                 byteLengthB: hexB.length
             };
-        },
-        // Agrupa logs por header e retorna mapa id → lista de pacotes
-        agruparPorId(logs) {
-            const mapa = new Map();
-            for (const l of logs) {
-                const id = l.packet.header;
-                if (!mapa.has(id)) mapa.set(id, []);
-                mapa.get(id).push(l.packet);
-            }
-            return mapa;
-        },
-        // Diff contra uma referência fixa (baseline) para destacar só divergências
-        compararComBaseline(packet, baseline) {
-            return this.comparar(packet, baseline);
         }
     };
 
     // ═══════════════════════════════════════════════════════════════
-    // WATCHERS — regras declarativas que disparam ações em pacotes
+    // WATCHERS
     // ═══════════════════════════════════════════════════════════════
     const Watchers = {
         _regras: null,
-        _limite: 5000,
-        _lastFire: new Map(),   // regraId → timestamp da última execução
+        _lastFire: new Map(),
         _init() {
             if (this._regras) return;
             this._regras = Storage.get('watchers_regras', []);
@@ -977,14 +967,14 @@
                 id: 'r_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6),
                 nome: String(cfg.nome || 'Sem nome').slice(0, 60),
                 ativo: cfg.ativo !== false,
-                dir: cfg.dir || 'ANY',                 // 'SEND' | 'RECV' | 'ANY'
+                dir: cfg.dir || 'ANY',
                 headerId: Number.isFinite(cfg.headerId) ? cfg.headerId : null,
                 payloadContem: String(cfg.payloadContem || '').trim(),
                 asciiContem: String(cfg.asciiContem || '').trim(),
                 minBytes: Number.isFinite(cfg.minBytes) ? cfg.minBytes : null,
                 maxBytes: Number.isFinite(cfg.maxBytes) ? cfg.maxBytes : null,
                 cooldownMs: Number.isFinite(cfg.cooldownMs) ? cfg.cooldownMs : 200,
-                acoes: Array.isArray(cfg.acoes) ? cfg.acoes : ['log'],  // 'log' | 'nota' | 'bloquear' | 'notify'
+                acoes: Array.isArray(cfg.acoes) ? cfg.acoes : ['log'],
                 notaTexto: String(cfg.notaTexto || '').slice(0, 200),
                 disparos: 0
             };
@@ -1019,7 +1009,6 @@
                 return true;
             } catch (e) { return false; }
         },
-        // Retorna true se alguma regra pediu bloqueio de rede
         avaliar(packet, dir) {
             this._init();
             if (!this._regras.length) return false;
@@ -1034,7 +1023,6 @@
                 this._executarAcoes(regra, packet, dir);
                 if (regra.acoes.includes('bloquear') && dir === 'SEND') bloquear = true;
             }
-            if (this._regras.length % 50 === 0) this._save();
             return bloquear;
         },
         _executarAcoes(regra, packet, dir) {
@@ -1060,15 +1048,11 @@
     };
 
     // ═══════════════════════════════════════════════════════════════
-    // SANG AI SERVICE — prompts orientados a pesquisa de exploit
+    // SANG AI
     // ═══════════════════════════════════════════════════════════════
     const SangAI = {
         _busy: false,
-
-        disponivel() {
-            return !!(window._apis?.groq && window._apis.getKey?.('groq'));
-        },
-
+        disponivel() { return !!(window._apis?.groq && window._apis.getKey?.('groq')); },
         _limpar(txt) {
             return String(txt || '')
                 .replace(/^```[a-zA-Z]*\n?/gm, '')
@@ -1076,7 +1060,6 @@
                 .replace(/^["'`]+|["'`]+$/g, '')
                 .trim();
         },
-
         _parseJson(txt) {
             const limpo = this._limpar(txt).replace(/```json|```/g, '').trim();
             try { return JSON.parse(limpo); } catch(e) {}
@@ -1084,7 +1067,6 @@
             if (m) { try { return JSON.parse(m[0]); } catch(e) {} }
             return null;
         },
-
         async _chamar(systemPrompt, userContent, opts = {}) {
             if (!this.disponivel()) throw new Error('Sang AI não configurada. Abra o módulo Sang AI e cole sua chave.');
             const ctrl = new AbortController();
@@ -1100,7 +1082,7 @@
                     maxTokens: opts.maxTokens || 800,
                     temperature: opts.temperature ?? 0.4
                 }, { signal: ctrl.signal, forceRefresh: true });
-                if (!resposta || !String(resposta).trim()) throw new Error('Sang AI respondeu vazio. Tente de novo.');
+                if (!resposta || !String(resposta).trim()) throw new Error('Sang AI respondeu vazio.');
                 return this._limpar(resposta);
             } catch (e) {
                 if (e.name === 'AbortError') throw new Error('Timeout — demorou mais de ' + Math.round(timeoutMs/1000) + 's.');
@@ -1110,7 +1092,6 @@
                 throw e;
             } finally { clearTimeout(timer); }
         },
-
         _contextoBase() {
             const suspeitos = Correlator.suspeitos().slice(0, 5);
             const nb = Notebook.listar().slice(0, 8);
@@ -1118,92 +1099,59 @@
 
             let extra = '';
             if (suspeitos.length) {
-                extra += '\n\nOUTs SUSPEITOS (enviados sem resposta consistente — candidatos a exploit):\n';
+                extra += '\n\nOUTs SUSPEITOS:\n';
                 extra += suspeitos.map(s =>
                     `  ${s.outNome} (ID ${s.outId}): ${s.enviados} envios, ${s.respostas} respostas (${s.taxa}%)`
                 ).join('\n');
             }
             if (nb.length) {
-                extra += '\n\nNOTEBOOK (conhecimento acumulado):\n';
+                extra += '\n\nNOTEBOOK:\n';
                 extra += nb.map(e => {
                     const nome = PacketNames.nome(e.id, 'SEND') || PacketNames.nome(e.id, 'RECV') || '?';
-                    const nH = (e.hipoteses || []).length;
-                    const nR = (e.resultados || []).length;
-                    const nota = (e.notas || []).slice(-1)[0];
-                    return `  ID ${e.id} (${nome}): ${nH} hipóteses, ${nR} resultados` +
-                        (nota ? ` — última nota: "${nota.texto.slice(0, 80)}"` : '');
+                    return `  ID ${e.id} (${nome}): ${(e.hipoteses||[]).length} hipóteses, ${(e.resultados||[]).length} resultados`;
                 }).join('\n');
             }
             if (regras.length) {
                 extra += '\n\nWATCHERS ATIVOS:\n';
-                extra += regras.map(r => `  "${r.nome}" (${r.dir}, ID ${r.headerId ?? 'any'}, ações: ${r.acoes.join('+')})`).join('\n');
+                extra += regras.map(r => `  "${r.nome}" (${r.dir}, ID ${r.headerId ?? 'any'})`).join('\n');
             }
 
             return (
                 'Você é Sang AI, pesquisadora de segurança de protocolo numa sessão de jogo online ' +
-                'estilo Habbo Hotel (cliente Habblive/Habblet). Você está analisando o tráfego WebSocket ' +
-                'do próprio usuário — sessão legítima dele.\n\n' +
-                'CONTEXTO TÉCNICO DO PROTOCOLO:\n' +
-                'Formato do pacote: 4 bytes big-endian com tamanho total, 2 bytes big-endian com ID do ' +
-                'pacote, depois o payload (restante). Sem criptografia.\n\n' +
-                'VOCABULÁRIO (ID → nome semântico):\n' +
-                '  OUT.xxx = cliente envia pro servidor\n' +
-                '  IN.xxx  = servidor responde\n' +
-                'IDs com potencial de exploit: UNIT_WALK=2450, UNIT_DANCE=2865, UNIT_CHAT=1678, ' +
-                'TRADE_CONFIRM=351, TRADE_ACCEPT=2487, FURNITURE_PLACE=2761, FURNITURE_PICKUP=1360, ' +
-                'FURNITURE_PICKUP_ALL=10003, ROOM_RIGHTS_GIVE=1003, ROOM_MODEL_SAVE=395, ' +
-                'CATALOG_PURCHASE=3655, DELETE_ITEM=10004, MARKETPLACE_SELL_ITEM=446.\n\n' +
-                'MISSÃO:\n' +
-                'Ajudar o usuário a entender pacotes e identificar oportunidades de manipulação: ' +
-                'campos sem validação server-side, ações em que o servidor confia no cliente, ' +
-                'ordens de pacote reordenáveis, IDs enviáveis fora de contexto, estados inconsistentes ' +
-                'que geram dupe/glitch. Pense como pesquisador de bug bounty.\n\n' +
-                'REGRAS:\n' +
-                '- Português brasileiro, direto, específica.\n' +
-                '- Sem introdução, sem "claro", sem "vamos lá".\n' +
-                '- Nunca invente certeza. Se não souber, diga "provavelmente" ou "possivelmente".\n' +
-                '- Mencione IDs e nomes de pacote concretos.\n' +
-                '- Se detectar ângulo explorável, diga: "teste assim: ...".' +
+                'estilo Habbo Hotel (cliente Habblive/Habblet). O usuário está analisando o próprio tráfego WebSocket.\n\n' +
+                'PROTOCOLO: 4 bytes big-endian de length total, 2 bytes big-endian de ID, depois payload. Sem criptografia.\n\n' +
+                'OUT = cliente envia, IN = servidor responde.\n' +
+                'IDs chave: UNIT_WALK=2450, UNIT_DANCE=2865, UNIT_CHAT=1678, TRADE_CONFIRM=351, ' +
+                'TRADE_ACCEPT=2487, FURNITURE_PLACE=2761, FURNITURE_PICKUP=1360, FURNITURE_PICKUP_ALL=10003, ' +
+                'ROOM_RIGHTS_GIVE=1003, ROOM_MODEL_SAVE=395, CATALOG_PURCHASE=3655, DELETE_ITEM=10004.\n\n' +
+                'Missão: identificar campos sem validação server-side, ordem de pacotes reordenável, ' +
+                'IDs fora de contexto, estados inconsistentes que geram dupe/glitch.\n\n' +
+                'Português brasileiro, direto, específica. Nunca invente certeza.' +
                 extra
             );
         },
-
         async analisarPacote(packet) {
             const nome = PacketNames.nome(packet.header, 'SEND')
-                      || PacketNames.nome(packet.header, 'RECV')
-                      || '?';
+                      || PacketNames.nome(packet.header, 'RECV') || '?';
             const payloadHexLimitado = packet.payloadHex.length > 800
-                ? packet.payloadHex.slice(0, 800) + '…'
-                : packet.payloadHex;
+                ? packet.payloadHex.slice(0, 800) + '…' : packet.payloadHex;
 
             const respostas = Correlator.respostasDe(packet.header);
             const respostaTxt = respostas.length
-                ? '\nRespostas conhecidas (OUT): ' + respostas.slice(0, 3)
-                    .map(r => `${r.inNome || r.inId}×${r.count}`).join(', ')
+                ? '\nRespostas conhecidas: ' + respostas.slice(0, 3).map(r => `${r.inNome || r.inId}×${r.count}`).join(', ')
                 : '';
 
             const r = await this._chamar(
                 this._contextoBase() +
-                '\n\nESTRUTURA DA RESPOSTA (máx 5 frases):\n' +
-                '1. Propósito provável do pacote\n' +
-                '2. O que cada campo do payload representa\n' +
-                '3. Se é candidato a exploit — e qual ângulo testar',
-                `Analise este pacote:\n\n` +
-                `ID: ${packet.header} (nome conhecido: ${nome})\n` +
-                `Tamanho total: ${packet.byteLength} bytes | payload: ${packet.payloadLength} bytes\n` +
-                `Hex do payload: ${payloadHexLimitado}\n` +
-                `ASCII: ${packet.ascii || '(binário)'}${respostaTxt}`,
+                '\n\nESTRUTURA (máx 5 frases):\n1. Propósito provável\n2. Campos do payload\n3. Candidato a exploit — ângulo de teste',
+                `ID: ${packet.header} (${nome})\nTamanho: ${packet.byteLength}b | payload: ${packet.payloadLength}b\nHex: ${payloadHexLimitado}\nASCII: ${packet.ascii || '(binário)'}${respostaTxt}`,
                 { maxTokens: 500 }
             );
 
             try {
                 const existente = Notebook.get(packet.header);
                 if (!existente) {
-                    Notebook.update(packet.header, {
-                        nome,
-                        amostraHex: packet.fullHex.slice(0, 200),
-                        primeiraAnalise: r
-                    });
+                    Notebook.update(packet.header, { nome, amostraHex: packet.fullHex.slice(0, 200), primeiraAnalise: r });
                 } else {
                     Notebook.update(packet.header, { ultimaAnalise: r });
                 }
@@ -1211,7 +1159,6 @@
 
             return r;
         },
-
         async analisarSequencia(packets) {
             if (!packets.length) throw new Error('Sem pacotes capturados ainda.');
             const lista = packets.slice(0, 20).map((p, i) => {
@@ -1221,14 +1168,11 @@
 
             return this._chamar(
                 this._contextoBase() +
-                '\n\nTAREFA: analisar uma SEQUÊNCIA. Conte a história do fluxo entre cliente e servidor. ' +
-                'Se houver padrão suspeito (repetição, reordenação, IDs fora de contexto, resposta ausente ' +
-                'a um request esperado), aponte. Máximo 6 frases.',
-                `Sequência de ${packets.length} pacotes:\n\n${lista}`,
+                '\n\nTAREFA: analisar SEQUÊNCIA. Conte a história do fluxo. Aponte padrões suspeitos. Máx 6 frases.',
+                `Sequência de ${packets.length}:\n\n${lista}`,
                 { maxTokens: 700 }
             );
         },
-
         async criarFiltroLinguagemNatural(descricao, amostras) {
             const amostrasTxt = amostras.length
                 ? amostras.slice(0, 20).map(p =>
@@ -1237,14 +1181,8 @@
                 : '(nenhuma amostra ainda)';
 
             const resp = await this._chamar(
-                'Você converte pedidos em português em regras de filtro para um analisador de pacotes.\n' +
-                'Responda SOMENTE com JSON válido, sem markdown.\n\n' +
-                'Formato EXATO:\n' +
-                '{"ids":[123,456],"strings":["ABC"],"motivo":"explicação curta"}\n\n' +
-                '- "ids": array de inteiros. Vazio se não aplicável.\n' +
-                '- "strings": array de strings hex/ascii. Vazio se não aplicável.\n' +
-                '- "motivo": frase curta.\n\n' +
-                'Amostras recentes:\n' + amostrasTxt,
+                'Você converte pedidos em português em regras de filtro.\nResponda SOMENTE com JSON válido, sem markdown.\n\n' +
+                'Formato: {"ids":[123],"strings":["ABC"],"motivo":"curta"}\n\nAmostras:\n' + amostrasTxt,
                 `Pedido: "${descricao}"`,
                 { maxTokens: 400, temperature: 0.1 }
             );
@@ -1257,25 +1195,15 @@
                 motivo: typeof dados.motivo === 'string' ? dados.motivo : ''
             };
         },
-
         async criarRegraWatcher(descricao, amostras) {
             const amostrasTxt = amostras.length
-                ? amostras.slice(0, 15).map(p =>
-                    `ID ${p.header} | ${p.byteLength}b | ASCII: "${p.ascii.slice(0, 40) || '(binário)'}"`
-                  ).join('\n')
+                ? amostras.slice(0, 15).map(p => `ID ${p.header} | ${p.byteLength}b | ASCII: "${p.ascii.slice(0, 40) || '(binário)'}"`).join('\n')
                 : '(nenhuma amostra)';
 
             const resp = await this._chamar(
-                'Você converte pedidos em português em REGRAS de observação de pacote.\n' +
-                'Responda SOMENTE com JSON válido, sem markdown.\n\n' +
-                'Formato EXATO:\n' +
-                '{"nome":"curto","dir":"SEND|RECV|ANY","headerId":123,"payloadContem":"HEX ou vazio","asciiContem":"texto ou vazio","acoes":["log"]}\n\n' +
-                '- "dir": qual direção observar\n' +
-                '- "headerId": ID numérico ou null\n' +
-                '- "payloadContem": trecho em HEX (só 0-9A-F) ou ""\n' +
-                '- "asciiContem": texto que deve estar no ASCII ou ""\n' +
-                '- "acoes": subconjunto de ["log","nota","bloquear","notify"]\n\n' +
-                'Amostras recentes:\n' + amostrasTxt,
+                'Você converte pedidos em REGRAS de observação.\nResponda SOMENTE com JSON válido, sem markdown.\n\n' +
+                'Formato: {"nome":"curto","dir":"SEND|RECV|ANY","headerId":123,"payloadContem":"HEX ou vazio","asciiContem":"texto ou vazio","acoes":["log"]}\n\n' +
+                'Amostras:\n' + amostrasTxt,
                 `Pedido: "${descricao}"`,
                 { maxTokens: 400, temperature: 0.1 }
             );
@@ -1291,53 +1219,33 @@
                 acoes: Array.isArray(dados.acoes) ? dados.acoes.filter(a => ['log','nota','bloquear','notify'].includes(a)) : ['log']
             };
         },
-
         async gerarJs(descricao, contexto) {
             const codigo = await this._chamar(
                 this._contextoBase() +
-                '\n\nTAREFA: gerar CÓDIGO JAVASCRIPT puro pra fila de ações do Sender.\n\n' +
-                'AMBIENTE (novo Function com esses args):\n' +
-                '  window.gameWS.send(ArrayBuffer) — envia pacote\n' +
-                '  Utils.buildPacket(id, "HEX string") — monta ArrayBuffer\n' +
-                '  sleep(ms) — aguarda\n' +
-                '  Pode usar await.\n\n' +
-                'REGRAS:\n' +
-                '1. Responda SOMENTE com o código. Sem ```js, sem ```.\n' +
-                '2. Máximo 15 linhas.\n' +
-                '3. Use IDs conhecidos quando fizer sentido: UNIT_DANCE=2865, UNIT_WALK=2450, ' +
-                'UNIT_CHAT=1678, TRADE_CONFIRM=351, FURNITURE_PLACE=2761, FURNITURE_PICKUP=1360, ' +
-                'ROOM_ENTER=2031, ROOM_MODEL_SAVE=395, ROOM_RIGHTS_GIVE=1003, CATALOG_PURCHASE=3655.\n' +
-                '4. Exemplo "dançar 3x com pausa 500ms":\n' +
-                '   for (let i = 0; i < 3; i++) { window.gameWS.send(Utils.buildPacket(2865, "")); await sleep(500); }\n' +
-                '5. Nunca inclua try/catch.',
+                '\n\nTAREFA: gerar CÓDIGO JAVASCRIPT puro pra fila do Sender.\n\n' +
+                'AMBIENTE: window.gameWS.send(ArrayBuffer), Utils.buildPacket(id, "HEX"), sleep(ms), pode usar await.\n\n' +
+                'REGRAS:\n1. Sem ```, só código\n2. Máx 15 linhas\n3. Nunca try/catch',
                 `Pedido: "${descricao}"\nContexto: ${contexto || 'nenhum'}`,
                 { maxTokens: 500, temperature: 0.1 }
             );
             return codigo.replace(/```js|```javascript|```/g, '').trim();
         },
-
         async chatLivre(mensagem, contextoPacotes) {
             const totalDict = Object.keys(AppState.dicionario).length;
-            let ctx = '\n\n--- Estado atual ---\n';
+            let ctx = '\n\n--- Estado ---\n';
             if (contextoPacotes && contextoPacotes.length) {
-                ctx += `Pacotes no log: ${contextoPacotes.length}\n`;
-                ctx += `IDs únicos no dicionário: ${totalDict}\n\n`;
-                ctx += `Últimos pacotes:\n`;
+                ctx += `Pacotes no log: ${contextoPacotes.length}\nIDs únicos: ${totalDict}\n\nÚltimos:\n`;
                 ctx += contextoPacotes.slice(0, 12).map(p => {
                     const nome = PacketNames.rotulo(p.header, p.dir);
                     return `[${p.dir}] ${nome} | ${p.byteLength}b | ${p.payloadHex.slice(0, 80) || '(vazio)'}`;
                 }).join('\n');
             } else {
-                ctx += '(sem pacotes capturados no momento)\n';
+                ctx += '(sem pacotes capturados)\n';
             }
-
-            return this._chamar(
-                this._contextoBase() + ctx,
-                mensagem,
-                { maxTokens: 900 }
-            );
+            return this._chamar(this._contextoBase() + ctx, mensagem, { maxTokens: 900 });
         }
     };
+
     // ─── Helpers de janela ───
     function clampToViewport(targetEl, x, y) {
         const rect = targetEl.getBoundingClientRect();
@@ -1473,15 +1381,15 @@
             whiteSpace: 'nowrap', outline: 'none'
         };
         const btnAnalyzer = document.createElement('button');
-        btnAnalyzer.textContent = '\uD83D\uDD0D Analyzer';
-        btnAnalyzer.title = 'Atalho: Ctrl+Alt+A';
+        btnAnalyzer.textContent = '🔍 Analyzer';
+        btnAnalyzer.title = 'Ctrl+Alt+A';
         Object.assign(btnAnalyzer.style, btnBase);
         const btnSender = document.createElement('button');
-        btnSender.textContent = '\u26A1 Sender';
-        btnSender.title = 'Atalho: Ctrl+Alt+S';
+        btnSender.textContent = '⚡ Sender';
+        btnSender.title = 'Ctrl+Alt+S';
         Object.assign(btnSender.style, btnBase);
         const btnEye = document.createElement('button');
-        btnEye.textContent = '\uD83D\uDC41\uFE0F';
+        btnEye.textContent = '👁️';
         Object.assign(btnEye.style, btnBase, { padding: '5px 10px', fontSize: '13px' });
         btnEye.title = 'Mostrar/Ocultar tudo (Ctrl+Alt+Q)';
 
@@ -1530,7 +1438,7 @@
     const SenderRef = { fill: null };
 
     // ═══════════════════════════════════════════════════════════════
-    // ANALYZER UI (tabs: LOG | FILTROS | PESQUISA | SANG AI)
+    // ANALYZER UI
     // ═══════════════════════════════════════════════════════════════
     const AnalyzerUI = (function() {
         const el = document.createElement('div');
@@ -1566,8 +1474,8 @@
                     </span>
                 </span>
                 <div id="analyzerHeaderBtns" style="display:flex;gap:5px;align-items:center;">
-                    <button id="btnFontMinus" title="Diminuir fonte" style="background:rgba(255,255,255,0.03);color:${Theme.text};border:1px solid ${Theme.line};cursor:pointer;padding:3px 8px;border-radius:6px;font-size:11px;">A−</button>
-                    <button id="btnFontPlus" title="Aumentar fonte" style="background:rgba(255,255,255,0.03);color:${Theme.text};border:1px solid ${Theme.line};cursor:pointer;padding:3px 8px;border-radius:6px;font-size:11px;">A+</button>
+                    <button id="btnFontMinus" title="Fonte −" style="background:rgba(255,255,255,0.03);color:${Theme.text};border:1px solid ${Theme.line};cursor:pointer;padding:3px 8px;border-radius:6px;font-size:11px;">A−</button>
+                    <button id="btnFontPlus" title="Fonte +" style="background:rgba(255,255,255,0.03);color:${Theme.text};border:1px solid ${Theme.line};cursor:pointer;padding:3px 8px;border-radius:6px;font-size:11px;">A+</button>
                 </div>
             </div>
 
@@ -1581,17 +1489,17 @@
             <div id="paneLog" style="display:flex;flex-direction:column;flex:1;overflow:hidden;min-height:0;">
                 <div style="padding:8px 12px;display:flex;gap:12px;align-items:center;background:rgba(0,0,0,0.2);border-bottom:1px solid ${Theme.line};">
                     <label style="display:flex;align-items:center;gap:5px;cursor:pointer;font-size:11px;color:${Theme.cyan};font-weight:600;">
-                        <input type="checkbox" id="chkSend" checked style="accent-color:${Theme.cyan};cursor:pointer;"> ENVIADOS
+                        <input type="checkbox" id="chkSend" checked style="accent-color:${Theme.cyan};cursor:pointer;"> OUT
                     </label>
                     <label style="display:flex;align-items:center;gap:5px;cursor:pointer;font-size:11px;color:${Theme.violet};font-weight:600;">
-                        <input type="checkbox" id="chkRecv" checked style="accent-color:${Theme.violet};cursor:pointer;"> RECEBIDOS
+                        <input type="checkbox" id="chkRecv" checked style="accent-color:${Theme.violet};cursor:pointer;"> IN
                     </label>
                     <div style="flex:1;min-width:0;">
-                        <input id="logSearch" type="text" placeholder="🔍 ID, nome do pacote, hex, texto…"
+                        <input id="logSearch" type="text" placeholder="🔍 ID, nome, hex, texto…"
                             style="width:100%;background:rgba(255,255,255,0.03);color:${Theme.text};border:1px solid ${Theme.line};
                             padding:6px 10px;font-size:11px;border-radius:8px;font-family:monospace;outline:none;box-sizing:border-box;">
                     </div>
-                    <span id="logCounter" style="font-size:10px;color:${Theme.textMute};white-space:nowrap;">0 logs</span>
+                    <span id="logCounter" style="font-size:10px;color:${Theme.textMute};white-space:nowrap;">0</span>
                 </div>
 
                 <div style="padding:6px 12px;display:flex;gap:6px;background:rgba(0,0,0,0.2);border-bottom:1px solid ${Theme.line};">
@@ -1644,7 +1552,7 @@
                 <div class="az-card" style="background:linear-gradient(135deg, rgba(167,139,250,0.08), rgba(34,211,238,0.04));border-color:rgba(167,139,250,0.25);">
                     <div class="az-card-title" style="color:${Theme.violet};">✨ FILTRO EM LINGUAGEM NATURAL</div>
                     <div style="display:flex;gap:6px;">
-                        <input id="nlFiltro" type="text" placeholder="Ex: esconde pacotes de movimento, oculta chats próximos…"
+                        <input id="nlFiltro" type="text" placeholder="Ex: esconde pacotes de movimento…"
                             style="flex:1;background:rgba(0,0,0,0.3);color:${Theme.text};border:1px solid rgba(167,139,250,0.3);
                             padding:8px 10px;font-size:11px;border-radius:8px;outline:none;
                             font-family:monospace;box-sizing:border-box;min-width:0;">
@@ -1655,14 +1563,19 @@
             </div>
 
             <div id="panePesquisa" style="display:none;flex-direction:column;flex:1;overflow:hidden;min-height:0;">
-                <div id="pesquisaSubtabs" style="display:flex;background:rgba(0,0,0,0.25);border-bottom:1px solid ${Theme.line};padding:0 10px;gap:2px;overflow-x:auto;flex-shrink:0;">
-                    <button class="pesq-tab active" data-ptab="notebook">📓 Notebook</button>
+                <div id="pesquisaSubtabs" style="display:flex;background:rgba(0,0,0,0.25);border-bottom:1px solid ${Theme.line};padding:0 10px;gap:2px;overflow-x:auto;flex-shrink:0;align-items:center;">
+                    <span style="color:${Theme.textMute};font-size:9px;letter-spacing:0.1em;padding:0 4px;">ANÁLISE</span>
+                    <button class="pesq-tab active" data-ptab="notebook">📓 Notas</button>
                     <button class="pesq-tab" data-ptab="correlacao">🔗 Correlação</button>
+                    <button class="pesq-tab" data-ptab="diff">⇄ Diff</button>
+                    <span style="color:${Theme.line2};padding:0 6px;">│</span>
+                    <span style="color:${Theme.textMute};font-size:9px;letter-spacing:0.1em;padding:0 4px;">TESTES</span>
                     <button class="pesq-tab" data-ptab="fuzz">💥 Fuzz</button>
                     <button class="pesq-tab" data-ptab="race">⚡ Race</button>
-                    <button class="pesq-tab" data-ptab="recorder">⏺ Gravação</button>
                     <button class="pesq-tab" data-ptab="replay">▶ Replay</button>
-                    <button class="pesq-tab" data-ptab="diff">⇄ Diff</button>
+                    <span style="color:${Theme.line2};padding:0 6px;">│</span>
+                    <span style="color:${Theme.textMute};font-size:9px;letter-spacing:0.1em;padding:0 4px;">AUTO</span>
+                    <button class="pesq-tab" data-ptab="recorder">⏺ Gravar</button>
                     <button class="pesq-tab" data-ptab="watchers">👁 Watch</button>
                 </div>
 
@@ -1690,8 +1603,8 @@
                 <div id="pesqFuzz" class="pesq-pane" style="display:none;flex-direction:column;flex:1;overflow:hidden;min-height:0;">
                     <div style="padding:10px 12px;background:rgba(0,0,0,0.2);border-bottom:1px solid ${Theme.line};display:flex;flex-direction:column;gap:8px;">
                         <div style="font-size:10px;color:${Theme.textMute};line-height:1.5;">
-                            Testa um byte por vez de um pacote OUT e observa se o servidor reage.
-                            <strong style="color:${Theme.warn};">Sem resposta = campo ignorado (candidato a exploit)</strong>.
+                            Testa um byte por vez e observa se o servidor reage.
+                            <strong style="color:${Theme.warn};">Sem resposta = campo IGNORADO (candidato)</strong>.
                         </div>
                         <div style="display:flex;gap:6px;flex-wrap:wrap;">
                             <label class="az-label">ID<input id="fuzzId" type="number" placeholder="2865" class="az-input-xs"></label>
@@ -1709,7 +1622,7 @@
                 <div id="pesqRace" class="pesq-pane" style="display:none;flex-direction:column;flex:1;overflow:hidden;min-height:0;">
                     <div style="padding:10px 12px;background:rgba(0,0,0,0.2);border-bottom:1px solid ${Theme.line};display:flex;flex-direction:column;gap:8px;">
                         <div style="font-size:10px;color:${Theme.textMute};line-height:1.5;">
-                            Envia <strong>N pacotes no mesmo tick</strong> (sem delay). Útil pra testar race conditions.
+                            Envia <strong>N pacotes no mesmo tick</strong>. Testa race conditions.
                         </div>
                         <div style="display:flex;gap:6px;">
                             <input id="raceId" type="number" placeholder="ID" style="width:70px;background:rgba(0,0,0,0.25);color:${Theme.text};border:1px solid ${Theme.line};padding:6px 8px;border-radius:6px;font-size:11px;font-family:monospace;outline:none;box-sizing:border-box;">
@@ -1729,9 +1642,9 @@
                 <div id="pesqRecorder" class="pesq-pane" style="display:none;flex-direction:column;flex:1;overflow:hidden;min-height:0;">
                     <div style="padding:10px 12px;background:rgba(0,0,0,0.2);border-bottom:1px solid ${Theme.line};display:flex;flex-direction:column;gap:8px;">
                         <div style="font-size:10px;color:${Theme.textMute};line-height:1.5;">
-                            Grava uma janela de tráfego real (OUT + IN) com timestamps. Depois você pode <strong>exportar</strong>, <strong>importar</strong> ou <strong>reproduzir</strong>.
+                            Grava uma janela de tráfego (OUT + IN) com timestamps. Depois reproduza ou exporte.
                         </div>
-                        <div style="display:flex;gap:6px;">
+                        <div style="display:flex;gap:6px;flex-wrap:wrap;">
                             <button id="recIniciar" style="background:linear-gradient(135deg,${Theme.err},#b91c1c);color:#fff;border:none;cursor:pointer;padding:8px 18px;border-radius:8px;font-weight:bold;font-size:11px;font-family:monospace;">⏺ GRAVAR</button>
                             <button id="recParar" class="az-mini" style="color:${Theme.err};border-color:${Theme.err};display:none;">⏹ PARAR</button>
                             <button id="recExportar" class="az-mini" style="color:${Theme.cyan};border-color:${Theme.cyan};">⬇ EXPORTAR</button>
@@ -1747,25 +1660,25 @@
                 <div id="pesqReplay" class="pesq-pane" style="display:none;flex-direction:column;flex:1;overflow:hidden;min-height:0;">
                     <div style="padding:10px 12px;background:rgba(0,0,0,0.2);border-bottom:1px solid ${Theme.line};display:flex;flex-direction:column;gap:8px;">
                         <div style="font-size:10px;color:${Theme.textMute};line-height:1.5;">
-                            Reproduz a gravação atual, respeitando os delays originais. Altere a <strong>velocidade</strong> ou aplique uma <strong>mutação</strong> em cada pacote OUT antes do envio.
+                            Reproduz a gravação com os delays originais. Opcional: mutar um byte por pacote.
                         </div>
                         <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
                             <label class="az-label">Velocidade
                                 <input id="repSpeed" type="number" value="1" step="0.25" min="0.25" max="10" class="az-input-xs">
                             </label>
                             <label style="display:flex;align-items:center;gap:5px;font-size:10.5px;color:${Theme.textMute};">
-                                <input type="checkbox" id="repMutar" style="accent-color:${Theme.violet};"> Mutação
+                                <input type="checkbox" id="repMutar" style="accent-color:${Theme.violet};"> Mutar
                             </label>
-                            <label class="az-label">Offset mutação
+                            <label class="az-label">Offset
                                 <input id="repOffset" type="number" value="0" class="az-input-xs">
                             </label>
-                            <label class="az-label">Byte (hex)
+                            <label class="az-label">Byte
                                 <input id="repByte" type="text" value="00" maxlength="2" class="az-input-xs" style="width:36px;text-transform:uppercase;">
                             </label>
                             <button id="repExecutar" class="az-grad-btn">▶ EXECUTAR</button>
                             <button id="repParar" class="az-mini" style="color:${Theme.err};border-color:${Theme.err};display:none;">⏹ PARAR</button>
                             <div style="flex:1"></div>
-                            <span id="repCounter" style="font-size:10px;color:${Theme.textMute};">0 OUTs prontos</span>
+                            <span id="repCounter" style="font-size:10px;color:${Theme.textMute};">0 OUTs</span>
                         </div>
                     </div>
                     <div id="repLog" style="flex:1;overflow-y:auto;padding:10px;font-size:11px;line-height:1.6;"></div>
@@ -1774,13 +1687,13 @@
                 <div id="pesqDiff" class="pesq-pane" style="display:none;flex-direction:column;flex:1;overflow:hidden;min-height:0;">
                     <div style="padding:10px 12px;background:rgba(0,0,0,0.2);border-bottom:1px solid ${Theme.line};display:flex;flex-direction:column;gap:8px;">
                         <div style="font-size:10px;color:${Theme.textMute};line-height:1.5;">
-                            Escolha um <strong>ID</strong> e compare os dois últimos pacotes capturados desse ID. Bytes diferentes aparecem destacados.
+                            Compara os dois últimos pacotes de um ID, byte a byte.
                         </div>
                         <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;">
                             <label class="az-label">ID<input id="diffId" type="number" placeholder="2865" class="az-input-xs"></label>
                             <button id="diffComparar" class="az-grad-btn">⇄ COMPARAR</button>
                             <button id="diffFixarBaseline" class="az-mini" style="color:${Theme.cyan};border-color:${Theme.cyan};">📌 FIXAR BASELINE</button>
-                            <button id="diffLimparBaseline" class="az-mini" style="color:${Theme.err};border-color:${Theme.err};">Limpar baseline</button>
+                            <button id="diffLimparBaseline" class="az-mini" style="color:${Theme.err};border-color:${Theme.err};">Limpar</button>
                             <span id="diffBaselineInfo" style="font-size:10px;color:${Theme.textMute};"></span>
                         </div>
                     </div>
@@ -1790,10 +1703,10 @@
                 <div id="pesqWatchers" class="pesq-pane" style="display:none;flex-direction:column;flex:1;overflow:hidden;min-height:0;">
                     <div style="padding:10px 12px;background:rgba(0,0,0,0.2);border-bottom:1px solid ${Theme.line};display:flex;flex-direction:column;gap:8px;">
                         <div style="font-size:10px;color:${Theme.textMute};line-height:1.5;">
-                            Regras que disparam ações quando um pacote bate. Ações: <strong>log</strong> (aparece no painel), <strong>nota</strong> (salva no Notebook), <strong>bloquear</strong> (impede envio OUT), <strong>notify</strong> (notificação do Hub).
+                            Regras declarativas. Ações: <strong>log</strong>, <strong>nota</strong>, <strong>bloquear</strong> (OUT), <strong>notify</strong>.
                         </div>
-                        <div style="display:flex;gap:6px;">
-                            <input id="wNome" type="text" placeholder="Nome da regra" class="az-input-flex">
+                        <div style="display:flex;gap:6px;flex-wrap:wrap;">
+                            <input id="wNome" type="text" placeholder="Nome" class="az-input-flex">
                             <select id="wDir" class="az-input-select">
                                 <option value="ANY">ANY</option>
                                 <option value="SEND">OUT</option>
@@ -1804,18 +1717,18 @@
                             <button id="wAdicionar" class="az-grad-btn">+ ADICIONAR</button>
                         </div>
                         <div style="display:flex;gap:6px;align-items:center;">
-                            <input id="wAiDesc" type="text" placeholder="✨ Descreva a regra — ex: quando receber chat com palavra X, marcar no notebook" class="az-input-flex" style="border-color:rgba(167,139,250,0.3);">
-                            <button id="wAiGerar" class="az-grad-btn">✨ GERAR COM IA</button>
-                            <button id="wLimpar" class="az-mini" style="color:${Theme.err};border-color:${Theme.err};">🗑 LIMPAR TUDO</button>
+                            <input id="wAiDesc" type="text" placeholder="✨ Descreva a regra…" class="az-input-flex" style="border-color:rgba(167,139,250,0.3);">
+                            <button id="wAiGerar" class="az-grad-btn">✨ IA</button>
+                            <button id="wLimpar" class="az-mini" style="color:${Theme.err};border-color:${Theme.err};">🗑 TUDO</button>
                         </div>
                     </div>
                     <div style="display:flex;gap:6px;flex:1;min-height:0;padding:10px;">
                         <div style="flex:1;display:flex;flex-direction:column;min-width:0;">
-                            <div style="font-size:10px;color:${Theme.textMute};margin-bottom:6px;letter-spacing:0.05em;">REGRAS ATIVAS</div>
+                            <div style="font-size:10px;color:${Theme.textMute};margin-bottom:6px;">REGRAS</div>
                             <div id="wLista" style="flex:1;overflow-y:auto;background:rgba(0,0,0,0.2);border:1px solid ${Theme.line};border-radius:8px;padding:6px;"></div>
                         </div>
                         <div style="flex:1;display:flex;flex-direction:column;min-width:0;">
-                            <div style="font-size:10px;color:${Theme.textMute};margin-bottom:6px;letter-spacing:0.05em;">HITS RECENTES</div>
+                            <div style="font-size:10px;color:${Theme.textMute};margin-bottom:6px;">HITS</div>
                             <div id="wHits" style="flex:1;overflow-y:auto;background:rgba(0,0,0,0.2);border:1px solid ${Theme.line};border-radius:8px;padding:6px;font-size:10.5px;line-height:1.5;"></div>
                         </div>
                     </div>
@@ -1828,10 +1741,10 @@
                     <button class="ia-quick" data-q="seq10">Últimos 10</button>
                     <button class="ia-quick" data-q="exploit">Candidatos a exploit</button>
                     <button class="ia-quick" data-q="anomalias">Anomalias</button>
-                    <button class="ia-quick" data-q="resumo">Resumir tráfego</button>
+                    <button class="ia-quick" data-q="resumo">Resumir</button>
                 </div>
                 <div style="padding:10px 12px;background:rgba(0,0,0,0.2);border-top:1px solid ${Theme.line};display:flex;gap:6px;align-items:flex-end;">
-                    <textarea id="iaInput" rows="1" placeholder="Pergunte algo ou descreva o que procura…"
+                    <textarea id="iaInput" rows="1" placeholder="Pergunte algo…"
                         style="flex:1;background:rgba(0,0,0,0.25);color:${Theme.text};border:1px solid ${Theme.line};
                         padding:8px 10px;font-size:11.5px;border-radius:8px;outline:none;
                         font-family:monospace;resize:none;min-height:36px;max-height:100px;
@@ -1858,7 +1771,6 @@
         const chkSend = el.querySelector('#chkSend');
         const chkRecv = el.querySelector('#chkRecv');
 
-        // ─── Tabs principais ───
         const tabs = el.querySelectorAll('.az-tab');
         const panes = {
             log: el.querySelector('#paneLog'),
@@ -1888,7 +1800,6 @@
         tabs.forEach(t => on(t, 'click', () => setActiveTab(t.dataset.tab)));
         setTimeout(() => setActiveTab('log'), 0);
 
-        // ─── Fonte ───
         on(el.querySelector('#btnFontPlus'), 'click', () => {
             AppState.fontSize = Math.min(24, AppState.fontSize + 1);
             logArea.style.fontSize = AppState.fontSize + 'px';
@@ -1900,7 +1811,6 @@
             Storage.set('font_size', AppState.fontSize);
         });
 
-        // ─── Kill switch ───
         const btnKill = el.querySelector('#btnKillSwitch');
         on(btnKill, 'click', () => {
             AppState.killSwitchActive = !AppState.killSwitchActive;
@@ -1913,7 +1823,6 @@
             }
         });
 
-        // ─── Pause ───
         const btnPause = el.querySelector('#btnPauseLogs');
         on(btnPause, 'click', () => {
             AppState.isPaused = !AppState.isPaused;
@@ -1929,14 +1838,13 @@
         });
 
         on(el.querySelector('#btnClearLogs'), 'click', () => {
-            logArea.innerHTML = ''; AppState.logs = []; logCounter.textContent = '0 logs';
+            logArea.innerHTML = ''; AppState.logs = []; logCounter.textContent = '0';
         });
         on(el.querySelector('#btnCopyAll'), 'click', () => {
             if (AppState.logs.length === 0) return;
             navigator.clipboard.writeText(AppState.logs.map(l => l.rawText).join('\n\n-----------------\n\n'));
         });
 
-        // ─── Rec toggle (na toolbar do LOG) ───
         const btnRecToggle = el.querySelector('#btnRecToggle');
         function syncRecBtn() {
             const on_ = Recorder.gravando;
@@ -1965,13 +1873,12 @@
                 item.el.style.display = visible ? 'block' : 'none';
                 if (visible) v++;
             }
-            logCounter.textContent = v + ' de ' + AppState.logs.length;
+            logCounter.textContent = v + '/' + AppState.logs.length;
         }
         on(chkSend, 'change', () => { AppState.showSend = chkSend.checked; refreshVisibility(); });
         on(chkRecv, 'change', () => { AppState.showRecv = chkRecv.checked; refreshVisibility(); });
         on(searchInp, 'input', refreshVisibility);
 
-        // ─── Tags de filtro ───
         function createTag(type, act, rawVal, displayVal, cor) {
             const d = document.createElement('div');
             Object.assign(d.style, {
@@ -2018,7 +1925,6 @@
         on(el.querySelector('#btnAddDStr'), 'click', () => { PacketFilter.manageList('DROP', 'ADD_STR', el.querySelector('#dStr').value); el.querySelector('#dStr').value = ''; renderFilters(); });
         on(el.querySelector('#btnClrD'), 'click', () => { PacketFilter.manageList('DROP', 'CLEAR'); renderFilters(); });
 
-        // ─── Filtro NL ───
         const nlInput = el.querySelector('#nlFiltro');
         const nlBtn = el.querySelector('#btnNlFiltro');
         const nlResult = el.querySelector('#nlFiltroResultado');
@@ -2029,20 +1935,18 @@
             if (SangAI._busy) return;
             SangAI._busy = true;
             nlBtn.disabled = true; nlBtn.textContent = '⏳';
-            nlResult.innerHTML = `<span style="color:${Theme.textMute};">Consultando SangMax…</span>`;
+            nlResult.innerHTML = `<span style="color:${Theme.textMute};">Consultando…</span>`;
             try {
                 const amostras = AppState.logs.slice(-15).map(l => l.packet);
                 const r = await SangAI.criarFiltroLinguagemNatural(desc, amostras);
                 if (!r.ids.length && !r.strings.length) {
-                    nlResult.innerHTML = `<span style="color:${Theme.warn};">⚠ Não consegui extrair filtros concretos.</span>` + (r.motivo ? `<br><span style="color:${Theme.textMute};">${esc(r.motivo)}</span>` : '');
+                    nlResult.innerHTML = `<span style="color:${Theme.warn};">⚠ Sem filtros concretos.</span>` + (r.motivo ? `<br><span style="color:${Theme.textMute};">${esc(r.motivo)}</span>` : '');
                     return;
                 }
                 r.ids.forEach(id => PacketFilter.manageList('VISUAL', 'ADD_ID', String(id)));
                 r.strings.forEach(s => PacketFilter.manageList('VISUAL', 'ADD_STR', s));
                 renderFilters();
-                nlResult.innerHTML =
-                    `<span style="color:${Theme.ok};">✓ Aplicado em OCULTAR DO LOG</span>` +
-                    (r.motivo ? `<br><span style="color:${Theme.textMute};">${esc(r.motivo)}</span>` : '') +
+                nlResult.innerHTML = `<span style="color:${Theme.ok};">✓ Aplicado em OCULTAR</span>` +
                     (r.ids.length ? `<br><span style="color:${Theme.violet};">IDs: ${r.ids.join(', ')}</span>` : '') +
                     (r.strings.length ? `<br><span style="color:${Theme.violet};">Strings: ${esc(r.strings.join(', '))}</span>` : '');
                 nlInput.value = '';
@@ -2055,7 +1959,6 @@
         on(nlBtn, 'click', gerarFiltroNL);
         on(nlInput, 'keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); gerarFiltroNL(); } });
 
-        // ─── IA chat ───
         const iaChat = el.querySelector('#iaChat');
         const iaInput = el.querySelector('#iaInput');
         const iaSendBtn = el.querySelector('#iaSend');
@@ -2064,19 +1967,12 @@
         function iaInit() {
             if (iaPronto) return;
             iaPronto = true;
-            iaAdd('ia',
-                'Sang AI online. Contexto carregado: **dicionário do protocolo Habbo** com ~400 IDs mapeados.\n\n' +
-                'Posso:\n' +
-                '• **Analisar um pacote específico** — clica no 🧠 em qualquer item do log\n' +
-                '• **Analisar os últimos N pacotes** — botão "Últimos 10"\n' +
-                '• **Apontar candidatos a exploit** — botão "Candidatos a exploit"\n' +
-                '• **Sugerir filtros** com base no tráfego\n' +
-                '• **Gerar regras de Watcher** automaticamente\n' +
-                '• **Responder perguntas** sobre IDs, campos e padrões do protocolo\n\n' +
-                'Pergunta à vontade.'
-            );
+            iaAdd('ia', 'Sang AI online. Dicionário do protocolo carregado (~400 IDs).\n\n' +
+                '• **Analisar pacote** — clique no 🧠 em qualquer item do log\n' +
+                '• **Botões rápidos** abaixo do chat\n' +
+                '• **Gerar regras de Watcher** na aba Watch');
             if (!SangAI.disponivel()) {
-                iaAdd('erro', '⚠ Sang AI não configurada. Abra o módulo **Sang AI** e cole sua chave da Groq (console.groq.com/keys).');
+                iaAdd('erro', '⚠ Configure a Sang AI (chave Groq).');
             }
         }
 
@@ -2101,14 +1997,6 @@
                 div.style.color = '#fecdd3';
                 div.style.alignSelf = 'center';
                 div.style.fontSize = '11px';
-            } else if (tipo === 'sys') {
-                div.style.background = 'rgba(255,255,255,0.03)';
-                div.style.color = Theme.textMute;
-                div.style.alignSelf = 'center';
-                div.style.fontSize = '10.5px';
-                div.style.fontStyle = 'italic';
-                div.style.padding = '6px 12px';
-                div.style.borderRadius = '20px';
             }
             const html = esc(texto)
                 .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
@@ -2121,7 +2009,7 @@
 
         function iaAddLoading(texto) {
             const div = document.createElement('div');
-            div.style.cssText = `align-self:flex-start;background:rgba(167,139,250,0.08);border:1px solid rgba(167,139,250,0.2);border-radius:12px;border-bottom-left-radius:4px;padding:11px 16px;display:flex;align-items:center;gap:8px;animation:iaMsgIn 0.28s;font-size:11px;color:#c4b5fd;`;
+            div.style.cssText = `align-self:flex-start;background:rgba(167,139,250,0.08);border:1px solid rgba(167,139,250,0.2);border-radius:12px;border-bottom-left-radius:4px;padding:11px 16px;display:flex;align-items:center;gap:8px;font-size:11px;color:#c4b5fd;`;
             div.innerHTML = `<span class="ia-dot"></span><span class="ia-dot"></span><span class="ia-dot"></span><span style="margin-left:6px;">${esc(texto || 'pensando…')}</span>`;
             iaChat.appendChild(div);
             iaChat.scrollTop = iaChat.scrollHeight;
@@ -2166,12 +2054,12 @@
             on(btn, 'click', async () => {
                 const q = btn.dataset.q;
                 if (q === 'seq10') {
-                    if (AppState.logs.length === 0) { iaAdd('sys', 'Nenhum pacote capturado ainda.'); return; }
+                    if (AppState.logs.length === 0) { iaAdd('erro', 'Nenhum pacote ainda.'); return; }
                     if (SangAI._busy) return;
                     SangAI._busy = true;
                     iaAdd('user', 'Analisa os últimos 10 pacotes.');
                     iaSendBtn.disabled = true;
-                    const load = iaAddLoading('analisando sequência…');
+                    const load = iaAddLoading('analisando…');
                     try {
                         const pack = AppState.logs.slice(-10).map(l => l.packet);
                         const resp = await SangAI.analisarSequencia(pack);
@@ -2185,22 +2073,15 @@
                         iaSendBtn.disabled = false;
                     }
                 } else if (q === 'exploit') {
-                    iaEnviar(
-                        'Olhando os últimos pacotes capturados, quais são candidatos a exploit? ' +
-                        'Procura por: campos que o cliente controla e o servidor não valida, ' +
-                        'IDs que faz sentido reenviar fora de ordem, ações em que a validação pode ' +
-                        'estar no cliente em vez do servidor, sequências onde a resposta demora. ' +
-                        'Lista curta com ângulo de teste concreto de cada um.'
-                    );
+                    iaEnviar('Quais dos últimos pacotes são candidatos a exploit? Lista curta com ângulo de teste.');
                 } else if (q === 'anomalias') {
-                    iaEnviar('Olhando os últimos pacotes, tem algo anormal? Tamanho incomum, IDs raros, sequências estranhas, respostas ausentes.');
+                    iaEnviar('Algo anormal nos últimos pacotes? Tamanho incomum, IDs raros, sequências estranhas.');
                 } else if (q === 'resumo') {
-                    iaEnviar('Resumo do tráfego capturado: o que o cliente e o servidor estão trocando.');
+                    iaEnviar('Resumo do tráfego capturado.');
                 }
             });
         });
 
-        // ─── Botões em pacotes ───
         function createSendButton(packet) {
             const btn = document.createElement('button');
             btn.textContent = '↗'; btn.title = 'Enviar pro Sender';
@@ -2267,7 +2148,7 @@
             hexDiv.style.cssText = 'word-break:break-all;color:#b0b0c0;letter-spacing:0.06em;line-height:1.5;font-size:0.95em;';
             hexDiv.textContent = truncated;
             const expandBtn = document.createElement('button');
-            expandBtn.textContent = `Mostrar tudo (${byteLength} bytes)`;
+            expandBtn.textContent = `Ver tudo (${byteLength}b)`;
             Object.assign(expandBtn.style, {
                 background: 'rgba(255,255,255,0.04)', color: Theme.violet, border: '1px solid ' + Theme.violet,
                 cursor: 'pointer', padding: '2px 8px', fontSize: '10px',
@@ -2298,14 +2179,14 @@
 
             let borderColor, idColor, dirLabel;
             if (isDropped) { borderColor = Theme.err; idColor = Theme.err; dirLabel = '❌ DROP'; }
-            else if (dir === 'SEND') { borderColor = Theme.cyan; idColor = Theme.cyan; dirLabel = '➡ SEND'; }
-            else { borderColor = Theme.violet; idColor = Theme.violet; dirLabel = '⬅ RECV'; }
+            else if (dir === 'SEND') { borderColor = Theme.cyan; idColor = Theme.cyan; dirLabel = '➡ OUT'; }
+            else { borderColor = Theme.violet; idColor = Theme.violet; dirLabel = '⬅ IN'; }
 
             const nomePktRaw = PacketNames.nome(packet.header, dir);
-            const rawText = `${time} | Pacote #${id}\n${dirLabel} ID: ${packet.header}${nomePktRaw ? ' (' + nomePktRaw + ')' : ''} | ${packet.byteLength} bytes\n${packet.fullHex}\n${packet.ascii}`;
+            const rawText = `${time} | #${id}\n${dirLabel} ID: ${packet.header}${nomePktRaw ? ' (' + nomePktRaw + ')' : ''} | ${packet.byteLength} bytes\n${packet.fullHex}\n${packet.ascii}`;
 
             const item = document.createElement('div');
-            item.style.cssText = `border-left:3px solid ${borderColor};background:rgba(255,255,255,0.02);border-radius:0 8px 8px 0;margin-bottom:8px;padding:9px 11px;animation:iaMsgIn 0.22s ease-out;`;
+            item.style.cssText = `border-left:3px solid ${borderColor};background:rgba(255,255,255,0.02);border-radius:0 8px 8px 0;margin-bottom:8px;padding:9px 11px;`;
 
             const top = document.createElement('div');
             top.style.cssText = 'display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:6px;flex-wrap:wrap;';
@@ -2349,7 +2230,7 @@
             idLine.style.cssText = `color:${idColor};font-weight:bold;font-size:0.95em;`;
             idLine.innerHTML = `${dirLabel} · ID ${packet.header}` +
                 (nomePktRaw ? ` <span style="color:${Theme.textMute};font-weight:normal;font-size:0.9em;">(${esc(nomePktRaw)})</span>` : '') +
-                ` · ${packet.byteLength} bytes`;
+                ` · ${packet.byteLength}b`;
             idWrap.appendChild(idLine);
             const analyzeBtn = createAnalyzeButton(packet, item);
             if (analyzeBtn) idWrap.appendChild(analyzeBtn);
@@ -2383,10 +2264,9 @@
             }
             const isBottom = logArea.scrollHeight - logArea.clientHeight <= logArea.scrollTop + 40;
             if (isBottom) logArea.scrollTop = logArea.scrollHeight;
-            logCounter.textContent = AppState.logs.length + ' logs';
+            logCounter.textContent = AppState.logs.length;
         }
 
-        // ═══ Sub-tabs PESQUISA ═══
         const pesqTabs = el.querySelectorAll('.pesq-tab');
         const pesqPanes = {
             notebook: el.querySelector('#pesqNotebook'),
@@ -2416,7 +2296,6 @@
         }
         pesqTabs.forEach(t => on(t, 'click', () => setActivePesqTab(t.dataset.ptab)));
 
-        // ─── Notebook UI ───
         function pesquisarRender() {
             const lista = Notebook.listar();
             const container = el.querySelector('#nbLista');
@@ -2425,7 +2304,7 @@
             if (!lista.length) {
                 const vazio = document.createElement('div');
                 vazio.style.cssText = `color:${Theme.textMute};font-size:11px;text-align:center;padding:24px;font-style:italic;`;
-                vazio.textContent = 'Notebook vazio. Clique no 🧠 de um pacote no log pra começar.';
+                vazio.textContent = 'Notebook vazio. Clique no 🧠 de um pacote pra começar.';
                 container.appendChild(vazio);
                 return;
             }
@@ -2434,7 +2313,6 @@
                 const div = document.createElement('div');
                 div.style.cssText = 'background:rgba(255,255,255,0.025);border:1px solid ' + Theme.line + ';border-radius:10px;padding:10px 12px;margin-bottom:8px;';
                 const hipoteses = (entry.hipoteses || []);
-                const resultados = (entry.resultados || []);
                 const notas = (entry.notas || []);
                 const analise = entry.ultimaAnalise || entry.primeiraAnalise || '';
                 div.innerHTML = `
@@ -2446,8 +2324,7 @@
                         <button class="nb-del" style="background:transparent;color:${Theme.err};border:none;cursor:pointer;font-size:12px;">✕</button>
                     </div>
                     <div style="font-size:10px;color:${Theme.textMute};margin-bottom:6px;">
-                        ${hipoteses.length} hipóteses · ${resultados.length} resultados · ${notas.length} notas
-                        · atualizado ${new Date(entry.atualizado || entry.criado).toLocaleString('pt-BR')}
+                        ${hipoteses.length} hip · ${notas.length} notas · ${new Date(entry.atualizado || entry.criado).toLocaleString('pt-BR')}
                     </div>
                     ${analise ? `
                         <div style="background:rgba(167,139,250,0.06);border-left:2px solid ${Theme.violet};padding:6px 10px;border-radius:0 4px 4px 0;font-size:10.5px;color:#c4b5fd;line-height:1.5;margin-bottom:6px;white-space:pre-wrap;">
@@ -2457,7 +2334,7 @@
                     <div class="nb-hipoteses" style="font-size:10.5px;color:${Theme.textDim};margin-bottom:4px;"></div>
                     <div class="nb-notas" style="font-size:10.5px;color:${Theme.textDim};"></div>
                     <div style="display:flex;gap:4px;margin-top:8px;">
-                        <input class="nb-input-hip" type="text" placeholder="adicionar hipótese…" style="flex:1;background:rgba(0,0,0,0.25);color:${Theme.text};border:1px solid ${Theme.line};padding:5px 8px;border-radius:5px;font-size:10.5px;font-family:monospace;outline:none;min-width:0;box-sizing:border-box;">
+                        <input class="nb-input-hip" type="text" placeholder="adicionar…" style="flex:1;background:rgba(0,0,0,0.25);color:${Theme.text};border:1px solid ${Theme.line};padding:5px 8px;border-radius:5px;font-size:10.5px;font-family:monospace;outline:none;min-width:0;box-sizing:border-box;">
                         <button class="nb-add-hip az-mini" style="color:${Theme.violet};border-color:${Theme.violet};">+ hip</button>
                         <button class="nb-add-nota az-mini" style="color:${Theme.cyan};border-color:${Theme.cyan};">+ nota</button>
                     </div>
@@ -2465,7 +2342,7 @@
                 const hipEl = div.querySelector('.nb-hipoteses');
                 if (hipoteses.length) {
                     hipEl.innerHTML = `<div style="color:${Theme.violet};font-weight:bold;margin-bottom:3px;">Hipóteses:</div>` +
-                        hipoteses.map(h => `<div style="padding-left:8px;">• ${esc(h.texto)}${h.testada ? ` <span style="color:${Theme.ok};">[testada]</span>` : ''}</div>`).join('');
+                        hipoteses.map(h => `<div style="padding-left:8px;">• ${esc(h.texto)}</div>`).join('');
                 }
                 const notaEl = div.querySelector('.nb-notas');
                 if (notas.length) {
@@ -2489,7 +2366,7 @@
                     if (e.key === 'Enter') { e.preventDefault(); div.querySelector('.nb-add-hip').click(); }
                 });
                 div.querySelector('.nb-del').addEventListener('click', () => {
-                    if (confirm('Remover entrada ' + entry.id + ' do notebook?')) {
+                    if (confirm('Remover entrada ' + entry.id + '?')) {
                         Notebook.remover(entry.id);
                         pesquisarRender();
                     }
@@ -2524,27 +2401,26 @@
             inp.click();
         });
         on(el.querySelector('#nbLimpar'), 'click', () => {
-            if (!confirm('Apagar TODO o notebook? Isso não pode ser desfeito.')) return;
+            if (!confirm('Apagar todo o notebook?')) return;
             Storage.set('notebook', {});
             Notebook._cache = null;
             Emitter.emit('notebook:changed');
             pesquisarRender();
         });
 
-        // ─── Correlação UI ───
         function correlacaoRender() {
             const container = el.querySelector('#corrConteudo');
             const suspeitos = Correlator.suspeitos();
             const pares = Correlator._pares || {};
             const totalPares = Object.keys(pares).length;
-            el.querySelector('#corrCounter').textContent = totalPares + ' OUTs mapeados';
+            el.querySelector('#corrCounter').textContent = totalPares + ' OUTs';
 
             let html = '';
             html += `<div style="background:linear-gradient(135deg,rgba(251,113,133,0.08),rgba(167,139,250,0.04));border:1px solid rgba(251,113,133,0.25);border-radius:10px;padding:12px;margin-bottom:14px;">`;
-            html += `<div style="color:${Theme.err};font-weight:bold;font-size:11.5px;margin-bottom:8px;letter-spacing:0.04em;">⚠ OUTS SEM RESPOSTA CONSISTENTE</div>`;
-            html += `<div style="font-size:10px;color:${Theme.textMute};margin-bottom:8px;line-height:1.5;">Enviados com frequência mas raramente geram resposta do servidor. Candidatos fortes a exploit — o cliente age sem validação.</div>`;
+            html += `<div style="color:${Theme.err};font-weight:bold;font-size:11.5px;margin-bottom:8px;">⚠ OUTS SEM RESPOSTA CONSISTENTE</div>`;
+            html += `<div style="font-size:10px;color:${Theme.textMute};margin-bottom:8px;line-height:1.5;">Enviados com frequência, raramente geram resposta. Candidatos a exploit.</div>`;
             if (!suspeitos.length) {
-                html += `<div style="color:${Theme.textMute};font-size:10.5px;font-style:italic;">Nenhum suspeito ainda. Precisa de mais tráfego.</div>`;
+                html += `<div style="color:${Theme.textMute};font-size:10.5px;font-style:italic;">Nenhum suspeito ainda.</div>`;
             } else {
                 html += '<div style="display:flex;flex-direction:column;gap:4px;">';
                 suspeitos.slice(0, 12).forEach(s => {
@@ -2558,10 +2434,10 @@
             html += '</div>';
 
             html += `<div style="background:rgba(255,255,255,0.02);border:1px solid ${Theme.line};border-radius:10px;padding:12px;">`;
-            html += `<div style="color:${Theme.violet};font-weight:bold;font-size:11.5px;margin-bottom:8px;letter-spacing:0.04em;">🔗 RESPOSTAS CONHECIDAS</div>`;
+            html += `<div style="color:${Theme.violet};font-weight:bold;font-size:11.5px;margin-bottom:8px;">🔗 RESPOSTAS CONHECIDAS</div>`;
             const outs = Object.keys(pares).map(Number).sort((a, b) => a - b);
             if (!outs.length) {
-                html += `<div style="color:${Theme.textMute};font-size:10.5px;font-style:italic;">Sem correlações ainda. Envie pacotes pelo Sender e observe.</div>`;
+                html += `<div style="color:${Theme.textMute};font-size:10.5px;font-style:italic;">Sem correlações ainda.</div>`;
             } else {
                 html += '<div style="display:flex;flex-direction:column;gap:5px;">';
                 outs.slice(0, 50).forEach(outId => {
@@ -2581,12 +2457,11 @@
         }
         on(el.querySelector('#corrAtualizar'), 'click', correlacaoRender);
         on(el.querySelector('#corrLimpar'), 'click', () => {
-            if (!confirm('Apagar todos os dados de correlação?')) return;
+            if (!confirm('Apagar dados de correlação?')) return;
             Correlator.limpar();
             correlacaoRender();
         });
 
-        // ─── Fuzz UI ───
         const fuzzLogEl = el.querySelector('#fuzzLog');
         function fuzzLog(msg, tipo) {
             const cor = tipo === 'erro' ? Theme.err : tipo === 'ok' ? Theme.ok : tipo === 'aviso' ? Theme.warn : tipo === 'envio' ? Theme.textMute : Theme.text;
@@ -2613,12 +2488,11 @@
         });
         on(el.querySelector('#fuzzParar'), 'click', () => {
             Fuzzer.parar();
-            fuzzLog('Fuzz interrompido pelo usuário.', 'aviso');
+            fuzzLog('Interrompido.', 'aviso');
             el.querySelector('#fuzzIniciar').style.display = 'inline-block';
             el.querySelector('#fuzzParar').style.display = 'none';
         });
 
-        // ─── Race UI ───
         const raceLogEl = el.querySelector('#raceLog');
         const raceListaEl = el.querySelector('#raceLista');
         const raceFila = [];
@@ -2634,7 +2508,7 @@
             if (!raceFila.length) {
                 const vazio = document.createElement('div');
                 vazio.style.cssText = `color:${Theme.textMute};font-size:10.5px;text-align:center;padding:12px;font-style:italic;`;
-                vazio.textContent = 'Fila vazia. Adicione pacotes acima.';
+                vazio.textContent = 'Fila vazia.';
                 raceListaEl.appendChild(vazio);
                 return;
             }
@@ -2644,7 +2518,7 @@
                 const nome = PacketNames.nome(p.id, 'SEND') || '?';
                 const span = document.createElement('span');
                 span.style.color = Theme.text;
-                span.textContent = `${i+1}. ${nome} (ID ${p.id})${p.hex ? ' — ' + p.hex.slice(0, 40) : ''}`;
+                span.textContent = `${i+1}. ${nome} (ID ${p.id})`;
                 linha.appendChild(span);
                 const rm = document.createElement('button');
                 rm.textContent = '✕';
@@ -2676,13 +2550,13 @@
                 });
                 const respostas = Object.entries(r.respostas);
                 if (!respostas.length) {
-                    raceLog('⚠ Nenhuma resposta do servidor. Suspeito — pode ter processado em lote ou ignorado.', Theme.warn);
+                    raceLog('⚠ Nenhuma resposta do servidor.', Theme.warn);
                 } else {
                     respostas.forEach(([inId, count]) => {
                         const nome = PacketNames.nome(Number(inId), 'RECV') || '?';
                         raceLog(`⬅ ${nome} (ID ${inId}) ×${count}`, Theme.violet);
                     });
-                    raceLog('✓ Teste concluído. Mais respostas que o normal pode indicar processamento duplo.', Theme.ok);
+                    raceLog('✓ Concluído.', Theme.ok);
                 }
             } catch (e) {
                 raceLog('Erro: ' + (e.message || e), Theme.err);
@@ -2694,14 +2568,13 @@
         });
         raceRender();
 
-        // ─── Recorder UI ───
         const recPreview = el.querySelector('#recPreview');
         const recCounter = el.querySelector('#recCounter');
         function recorderRender() {
             const evs = Recorder.eventos;
-            recCounter.textContent = evs.length + ' eventos' + (Recorder.gravando ? ' · 🔴 gravando' : '');
+            recCounter.textContent = evs.length + ' eventos' + (Recorder.gravando ? ' · 🔴' : '');
             if (!evs.length) {
-                recPreview.innerHTML = `<div style="color:${Theme.textMute};font-size:11px;text-align:center;padding:24px;font-style:italic;">Nenhuma gravação. Clique em ⏺ GRAVAR para começar.</div>`;
+                recPreview.innerHTML = `<div style="color:${Theme.textMute};font-size:11px;text-align:center;padding:24px;font-style:italic;">Nenhuma gravação. Clique em ⏺ GRAVAR.</div>`;
                 return;
             }
             const linhas = evs.slice(-300).map(ev => {
@@ -2754,7 +2627,7 @@
             inp.click();
         });
         on(el.querySelector('#recLimpar'), 'click', () => {
-            if (!confirm('Apagar a gravação atual?')) return;
+            if (!confirm('Apagar gravação?')) return;
             Recorder.limpar();
             recorderRender();
             replayRender();
@@ -2763,12 +2636,11 @@
             if (pesqPanes.recorder.style.display !== 'none') recorderRender();
         });
 
-        // ─── Replay UI ───
         const repLogEl = el.querySelector('#repLog');
         const repCounter = el.querySelector('#repCounter');
         function replayRender() {
             const outs = Recorder.eventos.filter(e => e.dir === 'SEND').length;
-            repCounter.textContent = outs + ' OUTs prontos';
+            repCounter.textContent = outs + ' OUTs';
         }
         function replayLog(msg, tipo) {
             const cor = tipo === 'erro' ? Theme.err : tipo === 'ok' ? Theme.ok : tipo === 'aviso' ? Theme.warn : tipo === 'envio' ? Theme.textMute : Theme.text;
@@ -2791,9 +2663,7 @@
             const offset = Number(el.querySelector('#repOffset').value) || 0;
             const byteHex = (el.querySelector('#repByte').value || '00').slice(0, 2).toUpperCase();
             const byteVal = parseInt(byteHex, 16) || 0;
-            const mutar = mutarAtivo ? ({ payloadHex, indice }) => {
-                const arr = payloadHex ? payloadHex.split(' ') : [];
-                // payloadHex está em formato "AA BB CC" ou "AABBCC" — normaliza
+            const mutar = mutarAtivo ? ({ payloadHex }) => {
                 const compact = payloadHex.replace(/\s/g, '');
                 const bytes = [];
                 for (let i = 0; i < compact.length; i += 2) bytes.push(compact.substr(i, 2));
@@ -2810,7 +2680,6 @@
         on(el.querySelector('#repParar'), 'click', () => Replay.parar());
         replayRender();
 
-        // ─── Diff UI ───
         const diffRes = el.querySelector('#diffResultado');
         let diffBaseline = null;
         function diffRender() {
@@ -2818,42 +2687,37 @@
                 el.querySelector('#diffBaselineInfo').textContent = '';
             } else {
                 const nome = PacketNames.nome(diffBaseline.header, diffBaseline._dir || 'SEND') || '?';
-                el.querySelector('#diffBaselineInfo').textContent = `Baseline: ${nome} (${diffBaseline.header}) — ${diffBaseline.byteLength}b`;
+                el.querySelector('#diffBaselineInfo').textContent = `Baseline: ${nome} (${diffBaseline.header})`;
             }
             if (!diffRes.dataset.rendered) {
-                diffRes.innerHTML = `<div style="color:${Theme.textMute};text-align:center;padding:24px;font-style:italic;">Informe um ID e clique em COMPARAR para ver as diferenças entre os dois últimos pacotes desse ID.</div>`;
+                diffRes.innerHTML = `<div style="color:${Theme.textMute};text-align:center;padding:24px;font-style:italic;">Informe um ID e clique em COMPARAR.</div>`;
             }
         }
-        function renderDiff(diff, idA, idB) {
+        function renderDiff(diff, idA) {
             if (!diff) { diffRes.innerHTML = `<div style="color:${Theme.err};">Não foi possível comparar.</div>`; return; }
             const nome = PacketNames.nome(idA, 'SEND') || PacketNames.nome(idA, 'RECV') || '?';
             const linhas = diff.bytes.map(b => {
                 const bg = b.igual ? 'transparent' : 'rgba(251,113,133,0.15)';
                 const cor = b.igual ? Theme.textDim : Theme.err;
-                const va = b.a || '--';
-                const vb = b.b || '--';
                 return `<tr style="background:${bg};">
                     <td style="padding:2px 8px;color:${Theme.textMute};font-size:10px;">${b.offset.toString(16).padStart(4,'0')}</td>
-                    <td style="padding:2px 8px;color:${cor};font-weight:${b.igual ? 'normal' : 'bold'};">${va}</td>
-                    <td style="padding:2px 8px;color:${cor};font-weight:${b.igual ? 'normal' : 'bold'};">${vb}</td>
+                    <td style="padding:2px 8px;color:${cor};font-weight:${b.igual ? 'normal' : 'bold'};">${b.a || '--'}</td>
+                    <td style="padding:2px 8px;color:${cor};font-weight:${b.igual ? 'normal' : 'bold'};">${b.b || '--'}</td>
                     <td style="padding:2px 8px;color:${b.igual ? 'transparent' : Theme.err};font-size:10px;">${b.igual ? '' : '≠'}</td>
                 </tr>`;
             }).join('');
             diffRes.innerHTML = `
                 <div style="margin-bottom:10px;font-size:11.5px;">
                     <strong style="color:${Theme.violet};">ID ${idA}</strong> · ${esc(nome)} — 
-                    <span style="color:${Theme.textMute};">${diff.diferentes} byte(s) diferente(s) de ${diff.total}</span>
+                    <span style="color:${Theme.textMute};">${diff.diferentes} dif de ${diff.total}</span>
                     ${diff.igual ? `<span style="color:${Theme.ok};margin-left:8px;">✓ idênticos</span>` : ''}
                 </div>
                 <table style="width:100%;border-collapse:collapse;font-family:monospace;font-size:11px;">
-                    <thead>
-                        <tr style="border-bottom:1px solid ${Theme.line};color:${Theme.textMute};font-size:10px;text-transform:uppercase;">
-                            <th style="text-align:left;padding:4px 8px;">Offset</th>
-                            <th style="text-align:left;padding:4px 8px;">Pacote A</th>
-                            <th style="text-align:left;padding:4px 8px;">Pacote B</th>
-                            <th></th>
-                        </tr>
-                    </thead>
+                    <thead><tr style="border-bottom:1px solid ${Theme.line};color:${Theme.textMute};font-size:10px;">
+                        <th style="text-align:left;padding:4px 8px;">Off</th>
+                        <th style="text-align:left;padding:4px 8px;">A</th>
+                        <th style="text-align:left;padding:4px 8px;">B</th><th></th>
+                    </tr></thead>
                     <tbody>${linhas}</tbody>
                 </table>
             `;
@@ -2864,13 +2728,13 @@
             if (!Number.isFinite(id)) { diffRes.innerHTML = `<div style="color:${Theme.err};">ID inválido.</div>`; return; }
             const matches = AppState.logs.filter(l => l.packet.header === id).slice(-2).map(l => l.packet);
             if (matches.length < 2 && !diffBaseline) {
-                diffRes.innerHTML = `<div style="color:${Theme.warn};">Preciso de pelo menos 2 pacotes com ID ${id} no log (ou fixe um baseline).</div>`;
+                diffRes.innerHTML = `<div style="color:${Theme.warn};">Preciso de 2 pacotes com ID ${id} (ou fixe baseline).</div>`;
                 return;
             }
             const a = diffBaseline || matches[0];
             const b = matches[matches.length - 1];
             const diff = PacketDiff.comparar(a, b);
-            renderDiff(diff, id, id);
+            renderDiff(diff, id);
         });
         on(el.querySelector('#diffFixarBaseline'), 'click', () => {
             const id = Number(el.querySelector('#diffId').value);
@@ -2880,7 +2744,7 @@
             diffBaseline = m.packet;
             diffBaseline._dir = m.dir;
             diffRender();
-            diffRes.innerHTML = `<div style="color:${Theme.ok};">📌 Baseline fixado: ${PacketNames.nome(id, m.dir) || id} (${m.packet.byteLength}b). Clique em COMPARAR.</div>`;
+            diffRes.innerHTML = `<div style="color:${Theme.ok};">📌 Baseline fixado: ${PacketNames.nome(id, m.dir) || id}.</div>`;
         });
         on(el.querySelector('#diffLimparBaseline'), 'click', () => {
             diffBaseline = null;
@@ -2889,14 +2753,13 @@
         });
         diffRender();
 
-        // ─── Watchers UI ───
         const wLista = el.querySelector('#wLista');
         const wHits = el.querySelector('#wHits');
         function watchersRender() {
             const regras = Watchers.listar();
             wLista.innerHTML = '';
             if (!regras.length) {
-                wLista.innerHTML = `<div style="color:${Theme.textMute};font-size:10.5px;text-align:center;padding:14px;font-style:italic;">Nenhuma regra. Adicione acima.</div>`;
+                wLista.innerHTML = `<div style="color:${Theme.textMute};font-size:10.5px;text-align:center;padding:14px;font-style:italic;">Nenhuma regra.</div>`;
                 return;
             }
             regras.forEach(r => {
@@ -2915,8 +2778,8 @@
                         <button class="w-del" style="background:transparent;color:${Theme.err};border:none;cursor:pointer;font-size:12px;">✕</button>
                     </div>
                     <div style="font-size:10px;color:${Theme.textMute};margin-bottom:4px;">
-                        ${r.dir}${r.headerId ? ' · ID ' + r.headerId : ''}${r.payloadContem ? ' · hex: ' + esc(r.payloadContem.slice(0,20)) : ''}${r.asciiContem ? ' · "' + esc(r.asciiContem.slice(0,20)) + '"' : ''}
-                        · ${r.disparos} disparos
+                        ${r.dir}${r.headerId ? ' · ID ' + r.headerId : ''}${r.payloadContem ? ' · hex:' + esc(r.payloadContem.slice(0,20)) : ''}
+                        · ${r.disparos} hits
                     </div>
                     <div>${acoesBadges}</div>
                 `;
@@ -2943,7 +2806,7 @@
             watchersRender();
         });
         on(el.querySelector('#wLimpar'), 'click', () => {
-            if (!confirm('Apagar TODAS as regras de watcher?')) return;
+            if (!confirm('Apagar todas as regras?')) return;
             Watchers.limpar();
             watchersRender();
         });
@@ -2980,7 +2843,6 @@
             while (wHits.childNodes.length > 200) wHits.removeChild(wHits.lastChild);
         });
 
-        // ─── Pesquisa init ───
         let emissoresRegistrados = false;
         function pesquisaInit() {
             if (!emissoresRegistrados) {
@@ -3009,15 +2871,15 @@
         return { element: el, setVisible, addLog };
     })();
 
-        // ═══════════════════════════════════════════════════════════════
-    // SENDER UI — motor de envio (loop robusto, aurora glass)
+    // ═══════════════════════════════════════════════════════════════
+    // SENDER UI
     // ═══════════════════════════════════════════════════════════════
     const SenderUI = (function() {
         const el = document.createElement('div');
         el.id = 'hl-sender';
         Object.assign(el.style, {
             position: 'fixed', top: '50px', right: '10px',
-            width: '460px',
+            width: '400px',
             background: Theme.bgPanel,
             backdropFilter: Theme.blur, WebkitBackdropFilter: Theme.blur,
             color: Theme.text,
@@ -3046,47 +2908,51 @@
                 </span>
                 <div id="senderHeaderBtns"></div>
             </div>
-            <div id="sndBody" style="display:flex;flex-direction:column;flex:1;overflow-y:auto;min-height:0;">
+            <div style="display:flex;flex-direction:column;flex:1;overflow-y:auto;min-height:0;">
+
                 <div style="padding:10px 12px;display:flex;gap:6px;border-bottom:1px solid ${Theme.line};background:rgba(0,0,0,0.2);">
                     <select id="selProfile" class="az-input-select" style="flex:1;"></select>
-                    <button id="btnNewProf" class="az-mini" style="color:${Theme.violet};border-color:${Theme.violet};">+ NOVO</button>
+                    <button id="btnNewProf" class="az-mini" style="color:${Theme.violet};border-color:${Theme.violet};">+</button>
                 </div>
+
                 <div style="padding:10px 12px;background:rgba(0,0,0,0.2);display:flex;flex-direction:column;gap:8px;border-bottom:1px solid ${Theme.line};">
                     <div style="display:flex;gap:6px;">
-                        <input id="sndId" type="number" placeholder="ID" style="width:70px;background:rgba(0,0,0,0.25);color:${Theme.text};border:1px solid ${Theme.line};padding:7px 10px;border-radius:6px;font-size:11px;font-family:monospace;outline:none;box-sizing:border-box;">
-                        <input id="sndHex" type="text" placeholder="Payload em HEX" style="flex:1;background:rgba(0,0,0,0.25);color:${Theme.text};border:1px solid ${Theme.line};padding:7px 10px;border-radius:6px;font-size:11px;font-family:monospace;outline:none;min-width:0;box-sizing:border-box;">
+                        <input id="sndId" type="number" placeholder="ID" style="width:64px;background:rgba(0,0,0,0.25);color:${Theme.text};border:1px solid ${Theme.line};padding:7px 10px;border-radius:6px;font-size:11px;font-family:monospace;outline:none;box-sizing:border-box;">
+                        <input id="sndHex" type="text" placeholder="Payload HEX (opcional)" style="flex:1;background:rgba(0,0,0,0.25);color:${Theme.text};border:1px solid ${Theme.line};padding:7px 10px;border-radius:6px;font-size:11px;font-family:monospace;outline:none;min-width:0;box-sizing:border-box;">
                         <button id="btnAddSnd" class="az-grad-btn" style="padding:7px 14px;">ADD</button>
                     </div>
-                    <div style="display:flex;gap:6px;">
-                        <input id="sndWaitMs" type="number" placeholder="Pausar (ms)" style="flex:1;background:rgba(0,0,0,0.25);color:${Theme.text};border:1px solid ${Theme.line};padding:7px 10px;border-radius:6px;font-size:11px;font-family:monospace;outline:none;min-width:0;box-sizing:border-box;">
-                        <button id="btnAddWait" class="az-mini">+ WAIT</button>
-                        <button id="btnAddJs" class="az-mini" style="color:${Theme.cyan};border-color:${Theme.cyan};">+ JS</button>
+                    <div style="display:flex;gap:4px;">
+                        <button id="btnAddWait" class="az-mini" style="flex:1;">+ Pausa</button>
+                        <button id="btnAddRaw" class="az-mini" style="flex:1;color:${Theme.warn};border-color:${Theme.warn};">+ Raw</button>
+                        <button id="btnAddJs" class="az-mini" style="flex:1;color:${Theme.cyan};border-color:${Theme.cyan};">+ JS</button>
                     </div>
                     <div style="display:flex;gap:6px;padding-top:6px;border-top:1px dashed rgba(167,139,250,0.2);">
-                        <input id="nlJs" type="text" placeholder="✨ Descreva — ex: dançar 3x com pausa 500ms"
-                            style="flex:1;background:rgba(0,0,0,0.3);color:${Theme.text};border:1px solid rgba(167,139,250,0.3);padding:7px 10px;border-radius:6px;font-size:11px;font-family:monospace;outline:none;min-width:0;box-sizing:border-box;">
-                        <button id="nlJsBtn" class="az-grad-btn">GERAR</button>
+                        <input id="nlJs" type="text" placeholder="✨ Descreva em português…" style="flex:1;background:rgba(0,0,0,0.3);color:${Theme.text};border:1px solid rgba(167,139,250,0.3);padding:7px 10px;border-radius:6px;font-size:11px;font-family:monospace;outline:none;min-width:0;box-sizing:border-box;">
+                        <button id="nlJsBtn" class="az-grad-btn" style="padding:7px 12px;">IA</button>
                     </div>
-                    <div id="nlJsResultado" style="font-size:10px;color:${Theme.textMute};line-height:1.5;display:none;background:rgba(0,0,0,0.25);border:1px solid ${Theme.line};border-radius:6px;padding:6px 9px;font-family:monospace;white-space:pre-wrap;"></div>
                 </div>
+
                 <div style="padding:10px 12px;background:rgba(0,0,0,0.2);border-bottom:1px solid ${Theme.line};">
-                    <div style="font-size:10px;color:${Theme.textMute};margin-bottom:6px;letter-spacing:0.05em;">FILA DE ENVIO</div>
-                    <div id="sndList" style="max-height:220px;overflow-y:auto;border:1px solid ${Theme.line};padding:4px;min-height:70px;background:rgba(0,0,0,0.25);border-radius:8px;"></div>
+                    <div style="font-size:10px;color:${Theme.textMute};margin-bottom:6px;letter-spacing:0.08em;display:flex;justify-content:space-between;">
+                        <span>FILA</span>
+                        <span id="sndQtdFila" style="color:${Theme.violet};">0</span>
+                    </div>
+                    <div id="sndList" style="max-height:200px;overflow-y:auto;border:1px solid ${Theme.line};padding:4px;min-height:60px;background:rgba(0,0,0,0.25);border-radius:8px;"></div>
                 </div>
+
                 <div style="padding:10px 12px;background:rgba(0,0,0,0.2);border-bottom:1px solid ${Theme.line};">
-                    <div style="color:${Theme.violet};font-weight:bold;text-align:center;font-size:11px;margin-bottom:6px;letter-spacing:0.04em;">📥 SIMULAR RECEBIMENTO</div>
                     <div style="display:flex;gap:6px;">
-                        <input id="fakeId" type="number" placeholder="ID" style="width:70px;background:rgba(0,0,0,0.25);color:${Theme.violet};border:1px solid ${Theme.violet};padding:7px 10px;border-radius:6px;font-size:11px;font-family:monospace;outline:none;box-sizing:border-box;">
-                        <input id="fakeHex" type="text" placeholder="Payload em HEX" style="flex:1;background:rgba(0,0,0,0.25);color:${Theme.violet};border:1px solid ${Theme.violet};padding:7px 10px;border-radius:6px;font-size:11px;font-family:monospace;outline:none;min-width:0;box-sizing:border-box;">
-                        <button id="btnFakeRecv" class="az-grad-btn">SIM</button>
+                        <input id="fakeId" type="number" placeholder="Simular IN (ID)" style="flex:1;background:rgba(0,0,0,0.25);color:${Theme.violet};border:1px solid rgba(167,139,250,0.3);padding:6px 10px;border-radius:6px;font-size:11px;font-family:monospace;outline:none;box-sizing:border-box;min-width:0;">
+                        <button id="btnFakeRecv" class="az-mini" style="color:${Theme.violet};border-color:${Theme.violet};">▶ IN</button>
                     </div>
                 </div>
+
                 <div style="padding:10px 12px;background:rgba(0,0,0,0.2);display:flex;flex-direction:column;gap:8px;">
                     <div style="display:flex;gap:8px;align-items:center;">
-                        <label class="az-label" style="flex:1;">Delay loop (ms)
-                            <input id="sndDelay" type="number" class="az-input-xs" style="width:70px;">
+                        <label class="az-label" style="flex:1;">Delay (ms)
+                            <input id="sndDelay" type="number" class="az-input-xs" style="width:64px;">
                         </label>
-                        <label class="az-label" style="flex:1;">Qtd (0 = ∞)
+                        <label class="az-label" style="flex:1;">Repetir (0=∞)
                             <input id="sndQtd" type="number" class="az-input-xs" style="width:50px;">
                         </label>
                     </div>
@@ -3094,19 +2960,18 @@
                         background:linear-gradient(135deg,${Theme.ok},#059669);color:#0b0b10;border:none;cursor:pointer;
                         padding:12px;font-weight:bold;width:100%;border-radius:8px;font-size:13px;
                         font-family:monospace;transition:all 0.15s;letter-spacing:0.05em;
-                    ">🚀 INICIAR SEQUÊNCIA</button>
+                    ">🚀 INICIAR</button>
                     <div id="sndStatus" style="font-size:10px;color:${Theme.textMute};text-align:center;min-height:14px;font-family:monospace;"></div>
                 </div>
             </div>
         `;
 
         makeDraggable(el.querySelector('.drag-header'), el, 'sender');
-        makeResizable(el, { minW: 380, minH: 420, maxW: 800, maxH: 1000, storageKey: 'sender' });
+        makeResizable(el, { minW: 360, minH: 400, maxW: 800, maxH: 1000, storageKey: 'sender' });
 
         const closeBtn = createCloseButton(() => Toolbar.setSenderVisible(false));
         el.querySelector('#senderHeaderBtns').appendChild(closeBtn);
 
-        // ─── Estado do motor ───
         let isSpamming = false;
         let spamRunId = 0;
         const sleep = ms => new Promise(res => setTimeout(res, ms));
@@ -3119,7 +2984,7 @@
         function updateStatus() {
             if (!isSpamming) return;
             const sec = ((Date.now() - spamStartAt) / 1000).toFixed(1);
-            statusEl.textContent = `🟢 ${spamLoops} loops · ${sec}s · fila ${AppState.profiles[AppState.currentProfileId].packets.length}`;
+            statusEl.textContent = `🟢 ${spamLoops} loops · ${sec}s`;
         }
         function startStatusTimer() {
             stopStatusTimer();
@@ -3132,7 +2997,6 @@
             statusEl.textContent = '';
         }
 
-        // ─── Perfil ───
         function saveCurrentProfile() {
             Storage.set('profiles', AppState.profiles);
             Storage.set('current_profile', AppState.currentProfileId);
@@ -3148,15 +3012,15 @@
             }
         }
 
-        // ─── Fila ───
         function renderPackets() {
             const prof = AppState.profiles[AppState.currentProfileId];
             const list = el.querySelector('#sndList');
+            el.querySelector('#sndQtdFila').textContent = prof.packets.length;
             list.innerHTML = '';
             if (!prof.packets.length) {
                 const e = document.createElement('div');
                 e.style.cssText = `color:${Theme.textMute};font-size:11px;text-align:center;padding:16px;font-style:italic;`;
-                e.textContent = 'Fila vazia — adicione pacotes acima.';
+                e.textContent = 'Fila vazia — adicione acima.';
                 list.appendChild(e);
             } else {
                 prof.packets.forEach((pkt, index) => {
@@ -3167,18 +3031,23 @@
                         border: '1px solid ' + Theme.line, borderRadius: '6px', fontSize: '11px'
                     });
                     const icon = document.createElement('span');
-                    icon.style.cssText = 'width:26px;text-align:center;flex-shrink:0;font-weight:bold;';
+                    icon.style.cssText = 'width:22px;text-align:center;flex-shrink:0;font-weight:bold;';
                     const content = document.createElement('span');
                     content.style.cssText = 'flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
                     if (pkt.isDelay) {
                         icon.textContent = '⏱'; icon.style.color = Theme.textMute;
                         content.style.color = Theme.textMute; content.style.fontStyle = 'italic';
-                        content.textContent = `Aguardar ${pkt.ms}ms`;
+                        content.textContent = `Esperar ${pkt.ms}ms`;
                     } else if (pkt.isJs) {
                         icon.textContent = '🧠'; icon.style.color = Theme.cyan;
                         content.style.color = Theme.cyan; content.style.fontStyle = 'italic';
                         const preview = pkt.code.length > 45 ? pkt.code.substring(0, 45) + '…' : pkt.code;
                         content.textContent = `JS: ${preview}`;
+                    } else if (pkt.isRaw) {
+                        icon.textContent = '📦'; icon.style.color = Theme.warn;
+                        content.style.color = Theme.warn; content.style.fontStyle = 'italic';
+                        const preview = pkt.fullHex.length > 40 ? pkt.fullHex.substring(0, 40) + '…' : pkt.fullHex;
+                        content.textContent = `RAW: ${preview}`;
                     } else {
                         const nome = PacketNames.nome(pkt.id, 'SEND');
                         icon.textContent = pkt.id; icon.style.color = Theme.text;
@@ -3193,12 +3062,12 @@
                     const mkBtn = (txt, title, cor) => {
                         const b = document.createElement('button');
                         b.textContent = txt; b.title = title;
-                        b.style.cssText = `background:rgba(255,255,255,0.05);color:${cor};border:1px solid ${Theme.line};cursor:pointer;padding:3px 7px;border-radius:4px;font-size:10px;`;
+                        b.style.cssText = `background:rgba(255,255,255,0.05);color:${cor};border:1px solid ${Theme.line};cursor:pointer;padding:3px 6px;border-radius:4px;font-size:10px;`;
                         return b;
                     };
-                    const up = mkBtn('↑', 'Mover para cima', Theme.text);
+                    const up = mkBtn('↑', 'Mover acima', Theme.text);
                     on(up, 'click', () => { if (index > 0) { [prof.packets[index - 1], prof.packets[index]] = [prof.packets[index], prof.packets[index - 1]]; saveCurrentProfile(); renderPackets(); } });
-                    const down = mkBtn('↓', 'Mover para baixo', Theme.text);
+                    const down = mkBtn('↓', 'Mover abaixo', Theme.text);
                     on(down, 'click', () => { if (index < prof.packets.length - 1) { [prof.packets[index + 1], prof.packets[index]] = [prof.packets[index], prof.packets[index + 1]]; saveCurrentProfile(); renderPackets(); } });
                     const del = mkBtn('✕', 'Remover', Theme.err);
                     del.style.borderColor = Theme.err;
@@ -3212,7 +3081,6 @@
             el.querySelector('#sndQtd').value = prof.spamQtd;
         }
 
-        // ─── Adicionar itens ───
         on(el.querySelector('#btnAddSnd'), 'click', () => {
             const idVal = el.querySelector('#sndId').value;
             const hexVal = el.querySelector('#sndHex').value || '';
@@ -3223,12 +3091,22 @@
             }
         });
         on(el.querySelector('#btnAddWait'), 'click', () => {
-            const ms = parseInt(el.querySelector('#sndWaitMs').value);
+            const ms = parseInt(prompt('Pausar por quantos ms?'));
             if (!isNaN(ms) && ms > 0) {
                 AppState.profiles[AppState.currentProfileId].packets.push({ isDelay: true, ms });
-                el.querySelector('#sndWaitMs').value = '';
                 saveCurrentProfile(); renderPackets();
             }
+        });
+        on(el.querySelector('#btnAddRaw'), 'click', () => {
+            const rawHex = prompt('Full HEX do pacote (ex: 00 00 00 0E 04 00 ...):');
+            if (!rawHex || !rawHex.trim()) return;
+            const clean = rawHex.replace(/[^0-9A-Fa-f]/g, '');
+            if (clean.length < 12 || clean.length % 2 !== 0) {
+                alert('HEX inválido (mínimo 6 bytes = 12 chars, tamanho par).');
+                return;
+            }
+            AppState.profiles[AppState.currentProfileId].packets.push({ isRaw: true, fullHex: rawHex.trim() });
+            saveCurrentProfile(); renderPackets();
         });
         on(el.querySelector('#btnAddJs'), 'click', () => {
             const jsCode = prompt('Código JavaScript a executar na fila:');
@@ -3238,62 +3116,47 @@
             }
         });
 
-        // ─── IA gerar JS ───
         const nlJs = el.querySelector('#nlJs');
         const btnNlJs = el.querySelector('#nlJsBtn');
-        const nlJsResultado = el.querySelector('#nlJsResultado');
         async function gerarJsNL() {
             const desc = nlJs.value.trim();
             if (!desc) return;
-            if (!SangAI.disponivel()) {
-                nlJsResultado.style.display = 'block'; nlJsResultado.style.color = Theme.err;
-                nlJsResultado.textContent = '⚠ Sang AI não configurada.';
-                return;
-            }
+            if (!SangAI.disponivel()) { alert('Sang AI não configurada.'); return; }
             if (SangAI._busy) return;
             SangAI._busy = true;
             btnNlJs.disabled = true; btnNlJs.textContent = '⏳';
-            nlJsResultado.style.display = 'block';
-            nlJsResultado.style.color = Theme.textMute;
-            nlJsResultado.textContent = 'Sang AI gerando código…';
             try {
                 const prof = AppState.profiles[AppState.currentProfileId];
                 const ctx = `Perfil "${prof.name}", ${prof.packets.length} itens na fila.`;
                 const codigo = await SangAI.gerarJs(desc, ctx);
                 if (!codigo) throw new Error('A IA não retornou código.');
-                nlJsResultado.style.color = '#c4b5fd';
-                nlJsResultado.textContent = codigo;
                 const confirma = confirm(`Código gerado:\n\n${codigo}\n\nAdicionar à fila?`);
                 if (confirma) {
                     prof.packets.push({ isJs: true, code: codigo });
                     saveCurrentProfile(); renderPackets();
-                    nlJs.value = ''; nlJsResultado.style.display = 'none';
+                    nlJs.value = '';
                 }
             } catch (e) {
-                nlJsResultado.style.color = Theme.err;
-                nlJsResultado.textContent = '⚠ ' + (e.message || e);
+                alert('Erro: ' + (e.message || e));
             } finally {
-                SangAI._busy = false; btnNlJs.disabled = false; btnNlJs.textContent = 'GERAR';
+                SangAI._busy = false; btnNlJs.disabled = false; btnNlJs.textContent = 'IA';
             }
         }
         on(btnNlJs, 'click', gerarJsNL);
         on(nlJs, 'keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); gerarJsNL(); } });
 
-        // ─── Fake recv ───
         on(el.querySelector('#btnFakeRecv'), 'click', () => {
             if (!window.gameWS) return;
             const idVal = el.querySelector('#fakeId').value;
-            const hexVal = el.querySelector('#fakeHex').value || '';
             if (idVal !== '' && !isNaN(Number(idVal))) {
                 try {
-                    const buffer = Utils.buildPacket(Number(idVal), hexVal);
+                    const buffer = Utils.buildPacket(Number(idVal), '');
                     window.gameWS.dispatchEvent(new MessageEvent('message', { data: buffer }));
                 } catch (e) { console.error('[Sender] fakeRecv:', e); }
-                el.querySelector('#fakeId').value = ''; el.querySelector('#fakeHex').value = '';
+                el.querySelector('#fakeId').value = '';
             }
         });
 
-        // ─── Perfis ───
         on(el.querySelector('#btnNewProf'), 'click', () => {
             const name = prompt('Nome do novo perfil:');
             if (name && name.trim()) {
@@ -3317,28 +3180,23 @@
             saveCurrentProfile();
         });
 
-        // ═══════════════════════════════════════════════════════════
-        // MOTOR DE ENVIO — robusto, cancelável, ressurge de erros
-        // ═══════════════════════════════════════════════════════════
         on(el.querySelector('#btnSpamAction'), 'click', async function() {
             const btn = el.querySelector('#btnSpamAction');
             const prof = AppState.profiles[AppState.currentProfileId];
 
-            // ── Estado 1: já rodando → parar ──
             if (isSpamming) {
                 isSpamming = false;
                 spamRunId++;
-                btn.textContent = '🚀 INICIAR SEQUÊNCIA';
+                btn.textContent = '🚀 INICIAR';
                 btn.style.background = `linear-gradient(135deg,${Theme.ok},#059669)`;
                 btn.style.color = '#0b0b10';
                 stopStatusTimer();
                 return;
             }
 
-            // ── Estado 2: validação ──
             if (!window.gameWS) {
                 statusEl.style.color = Theme.err;
-                statusEl.textContent = '⚠ Sem WebSocket ativo.';
+                statusEl.textContent = '⚠ Sem WebSocket.';
                 setTimeout(() => { statusEl.textContent = ''; statusEl.style.color = Theme.textMute; }, 2500);
                 return;
             }
@@ -3349,10 +3207,9 @@
                 return;
             }
 
-            // ── Estado 3: iniciar ──
             isSpamming = true;
             const myRunId = ++spamRunId;
-            btn.textContent = '⏹ PARAR SEQUÊNCIA';
+            btn.textContent = '⏹ PARAR';
             btn.style.background = `linear-gradient(135deg,${Theme.err},#b91c1c)`;
             btn.style.color = '#fff';
             startStatusTimer();
@@ -3362,64 +3219,39 @@
 
             try {
                 while (isSpamming && myRunId === spamRunId && (inf || loops < prof.spamQtd)) {
-                    // Snapshot da fila a cada loop — assim alterações externas são vistas
                     const filaAtual = prof.packets.slice();
 
                     for (let i = 0; i < filaAtual.length; i++) {
                         if (!isSpamming || myRunId !== spamRunId) break;
-
                         const item = filaAtual[i];
 
-                        // ── Delay ──
-                        if (item.isDelay) {
-                            await sleep(Math.max(0, item.ms | 0));
-                            continue;
-                        }
+                        if (item.isDelay) { await sleep(Math.max(0, item.ms | 0)); continue; }
 
-                        // ── JS inline ──
                         if (item.isJs) {
                             try {
-                                const fn = new Function(
-                                    'window', 'sleep', 'Utils',
-                                    `return (async () => { ${item.code} })();`
-                                );
+                                const fn = new Function('window', 'sleep', 'Utils',
+                                    `return (async () => { ${item.code} })();`);
                                 await fn(window, sleep, Utils);
-                            } catch (e) {
-                                console.error('[Sender][JS] Erro na ação inline:', e);
-                            }
+                            } catch (e) { console.error('[Sender][JS]', e); }
                             continue;
                         }
 
-                        // ── Pacote binário ──
-                        // Revalidação leve do ID (defensivo — a UI já valida, mas
-                        // o item pode ter vindo de import/IA/edição externa).
-                        const idNum = Number(item.id);
-                        if (!Number.isFinite(idNum)) {
-                            console.warn('[Sender] Item com ID inválido ignorado:', item);
-                            continue;
-                        }
-
-                        // Revalida WS a cada envio (reconexão pode ter trocado a instância)
                         const ws = window.gameWS;
                         if (!ws) break;
 
                         let buffer;
                         try {
-                            buffer = Utils.buildPacket(idNum, item.hex || '');
-                        } catch (e) {
-                            console.error('[Sender] buildPacket falhou:', e, item);
-                            continue;
-                        }
+                            if (item.isRaw) {
+                                buffer = Utils.hexToArrayBuffer(item.fullHex);
+                            } else {
+                                const idNum = Number(item.id);
+                                if (!Number.isFinite(idNum)) continue;
+                                buffer = Utils.buildPacket(idNum, item.hex || '');
+                            }
+                        } catch (e) { console.error('[Sender] build:', e); continue; }
 
-                        // O send() já é o WRAPPED (Hub instalou). Todas as regras
-                        // de bloqueio (killSwitch, watchers, PacketFilter) correm lá.
-                        try {
-                            ws.send(buffer);
-                        } catch (e) {
-                            console.error('[Sender] send falhou (WS pode ter caído):', e);
-                            // Não quebra o loop — tenta o próximo. Se o WS morreu,
-                            // a próxima iteração detecta ws vazio e sai do for.
-                        }
+                        try { ws.send(buffer); }
+                        catch (e) { console.error('[Sender] send:', e); }
                     }
 
                     loops++;
@@ -3431,20 +3263,19 @@
                     }
                 }
             } catch (e) {
-                console.error('[Sender] Erro inesperado no motor:', e);
+                console.error('[Sender] motor:', e);
                 statusEl.style.color = Theme.err;
-                statusEl.textContent = '⚠ Erro no motor: ' + (e.message || e);
+                statusEl.textContent = '⚠ ' + (e.message || e);
             } finally {
-                // Só reseta UI se ainda for esta execução (evita sobrescrever nova run)
                 if (myRunId === spamRunId) {
                     isSpamming = false;
-                    btn.textContent = '🚀 INICIAR SEQUÊNCIA';
+                    btn.textContent = '🚀 INICIAR';
                     btn.style.background = `linear-gradient(135deg,${Theme.ok},#059669)`;
                     btn.style.color = '#0b0b10';
                     stopStatusTimer();
                     if (loops > 0) {
                         statusEl.style.color = Theme.ok;
-                        statusEl.textContent = `✓ ${loops} loop(s) concluído(s).`;
+                        statusEl.textContent = `✓ ${loops} loop(s).`;
                         setTimeout(() => { if (!isSpamming) statusEl.textContent = ''; statusEl.style.color = Theme.textMute; }, 3000);
                     }
                 }
@@ -3464,10 +3295,9 @@
             el.querySelector('#sndId').value = headerId;
             el.querySelector('#sndHex').value = hexPayload;
             const addBtn = el.querySelector('#btnAddSnd');
-            const oldBg = addBtn.style.background;
-            addBtn.style.background = '#fff';
-            addBtn.style.color = '#0b0b10';
-            setTimeout(() => { addBtn.style.background = oldBg; addBtn.style.color = '#0b0b10'; }, 200);
+            addBtn.classList.add('flash');
+            clearTimeout(addBtn._flashTimer);
+            addBtn._flashTimer = setTimeout(() => addBtn.classList.remove('flash'), 280);
         }
 
         renderProfiles();
@@ -3477,7 +3307,7 @@
         return { element: el, setVisible };
     })();
 
-    // ─── Estilos globais — Aurora Glass ───
+    // ─── Estilos globais ───
     const styleEl = document.createElement('style');
     styleEl.textContent = `
         @keyframes iaMsgIn {
@@ -3511,7 +3341,7 @@
             white-space: nowrap;
         }
         #hl-analyzer .pesq-tab {
-            padding: 8px 13px;
+            padding: 8px 12px;
             font-size: 10.5px;
         }
         #hl-analyzer .az-tab:hover,
@@ -3536,7 +3366,8 @@
             border-color: ${Theme.line2};
         }
 
-        #hl-analyzer .az-mini {
+        #hl-analyzer .az-mini,
+        #hl-sender .az-mini {
             background: rgba(255,255,255,0.03);
             color: ${Theme.text};
             border: 1px solid ${Theme.line};
@@ -3591,6 +3422,11 @@
             opacity: 0.5;
             cursor: not-allowed;
             transform: none;
+        }
+        /* ✅ CORREÇÃO do bug do botão branco: classe de flash */
+        #hl-sender .az-grad-btn.flash {
+            box-shadow: 0 0 0 3px rgba(34,211,238,0.55), 0 0 18px rgba(34,211,238,0.45) !important;
+            filter: brightness(1.35);
         }
 
         #hl-analyzer .az-card {
@@ -3723,7 +3559,6 @@
     document.head.appendChild(styleEl);
     cleanup.push(() => { try { styleEl.remove(); } catch(e) {} });
 
-    // Anexar
     const fragment = document.createDocumentFragment();
     fragment.appendChild(Toolbar.element);
     fragment.appendChild(AnalyzerUI.element);
@@ -3740,16 +3575,7 @@
     });
 
     // ═══════════════════════════════════════════════════════════════
-    // HOOK WEBSOCKET — pipeline de bloqueio blindado
-    // ═══════════════════════════════════════════════════════════════
-    // Regra geral (vale para OUT e IN):
-    //   1. Kill switch ligado → descarta silenciosamente sem nem processar
-    //   2. Normaliza dados para ArrayBuffer — se não der, passa direto
-    //   3. parseData — se falhar, passa direto (não é pacote nosso)
-    //   4. Watchers — se alguma regra retornar `bloquear`, marca drop
-    //   5. PacketFilter — checa ID e payload
-    //   6. Envia ou descarta
-    // TUDO em try/catch. Nenhum erro de filtro pode impedir um envio legítimo.
+    // HOOK WEBSOCKET
     // ═══════════════════════════════════════════════════════════════
     if (!window._hubSocket) {
         console.error('[Analyzer] window._hubSocket não encontrado. Carregue via Sang Hub.');
@@ -3786,20 +3612,19 @@
     }
 
     function handleTraffic(data, dir, isDropped) {
-    if (!_alive) return;
-    try {
-        if (AppState.isPaused) return;
-        if (dir === 'RECV' && isDuplicate(data)) return;
-        const packet = Utils.parseData(data);
-        if (!packet) return;
+        if (!_alive) return;
+        try {
+            if (AppState.isPaused) return;
+            if (dir === 'RECV' && isDuplicate(data)) return;
+            const packet = Utils.parseData(data);
+            if (!packet) return;
 
-        // ─── Watchers para RECV (SEND já roda em deveBloquear → wrapSend) ───
-        if (dir === 'RECV') {
-            try { Watchers.avaliar(packet, 'RECV'); } catch (e) {}
-        }
+            if (dir === 'RECV') {
+                try { Watchers.avaliar(packet, 'RECV'); } catch (e) {}
+            }
 
-        try { Recorder.capturar(packet, dir); } catch (e) {}
- 
+            try { Recorder.capturar(packet, dir); } catch (e) {}
+
             if (!isDropped) {
                 try {
                     if (dir === 'SEND') Correlator.registrarEnvio(packet);
@@ -3807,7 +3632,6 @@
                 } catch (e) {}
             }
 
-            // Log visual
             try {
                 if (!PacketFilter.isVisualBlocked(packet)) {
                     AnalyzerUI.addLog(packet, dir, !!isDropped);
@@ -3823,13 +3647,10 @@
 
     function deveBloquear(packet, dir) {
         try {
-            // Kill switch global
             if (AppState.killSwitchActive && dir === 'SEND') return true;
-            // Watchers (podem pedir bloqueio)
             try {
                 if (Watchers.avaliar(packet, dir)) return true;
             } catch (e) { console.error('[Analyzer] Watchers error:', e); }
-            // Filtro declarativo
             try {
                 if (dir === 'SEND' && PacketFilter.isNetworkDropped(packet)) return true;
             } catch (e) { console.error('[Analyzer] isNetworkDropped error:', e); }
@@ -3847,26 +3668,20 @@
         ws._analyzerOriginalSend = originalSend;
 
         ws.send = function(data) {
-            // Se o módulo morreu, apenas repassa
             if (!_alive) return originalSend(data);
-
             try {
-
                 const buf = Utils.normalizeToArrayBuffer(data);
                 if (!buf) return originalSend(data);
 
                 const packet = Utils.parseData(buf);
                 if (!packet) return originalSend(data);
 
-                // Decisão de bloqueio (kill switch + watchers + filtro)
                 if (deveBloquear(packet, 'SEND')) {
                     handleTraffic(buf, 'SEND', true);
-                    return;   // ← descarta
+                    return;
                 }
 
-                // Log + correlação antes de enviar
                 handleTraffic(buf, 'SEND', false);
-
                 return originalSend(buf);
             } catch (e) {
                 console.error('[Analyzer] wrapSend error (fail-open):', e);
@@ -3891,7 +3706,6 @@
         }
     }
 
-    // ─── Instala o wrapper no WS ativo + escuta reconexão ───
     window.gameWS = window._hubSocket.getActive();
     if (window.gameWS) wrapSend(window.gameWS);
 
@@ -3907,7 +3721,6 @@
         handleInbound(event);
     });
 
-    // ─── API pública + kill ───
     function kill() {
         _alive = false;
         try { delete window[UID]; } catch (e) {}
@@ -3916,8 +3729,6 @@
         try { Correlator._flush(); } catch (e) {}
         try { Recorder.parar(); } catch (e) {}
         try { Emitter.clear(); } catch (e) {}
-
-        // Restaura send original, se conseguirmos
         try {
             if (window.gameWS && window.gameWS._analyzerSendWrapped) {
                 if (window.gameWS._analyzerOriginalSend) {
@@ -3927,9 +3738,7 @@
                 delete window.gameWS._analyzerOriginalSend;
             }
         } catch (e) {}
-
         try { Storage.set('dicionario', AppState.dicionario); } catch (e) {}
-
         while (cleanup.length) {
             const fn = cleanup.pop();
             try { fn(); } catch (e) {}
