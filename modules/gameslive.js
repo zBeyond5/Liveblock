@@ -1,9 +1,8 @@
 // ==UserScript==
 // @name         Games
 // @namespace    devchris
-// @version      9.3-module-grid
-// @description  Hub de jogos com lista puxada de um manifest no GitHub + jogos temporários locais; grid de capas 16:9 estilo Steam/Epic; painel arrastável e scrollável; overlay arrastável/redimensionável (16:9); FAB arrastável após segurar o clique; detecta bloqueio de embed e cai pra nova aba. (módulo SangHub — instanceKey: _games)
-// @match        *://*/*
+// @version      9.4-module-library
+// @description  Biblioteca de jogos estilo launcher
 // @grant        GM_registerMenuCommand
 // @grant        GM_setValue
 // @grant        GM_getValue
@@ -34,8 +33,10 @@
   const LARGURA_MIN = 280;
   const ALTURA_MIN = 200;
   const RAZAO_16_9 = 16 / 9;
-  const PAINEL_ALTURA_MAX_VH = 78;
+  const PAINEL_ALTURA_MAX_VH = 82;
   const FAB_SEGURAR_MS = 200;
+  const BUSCA_DEBOUNCE_MS = 150;
+  const SHELF_MAX_ITENS = 6;
 
   const PREFIXO_LOG = '[Game Launcher]';
   const GM_SINCRONO = typeof GM_getValue === 'function' && typeof GM_setValue === 'function';
@@ -58,7 +59,7 @@
     document.head.appendChild(link);
   }
 
-  // ================= ESTILO (aurora glass + grid hub) =================
+  // ================= ESTILO (aurora glass + biblioteca) =================
   function injetarEstilos() {
     if (root.getElementById('gl-estilos')) return;
     const style = document.createElement('style');
@@ -89,6 +90,7 @@
   100% { box-shadow: 0 0 0 0 rgba(34,211,238,0), 0 4px 18px rgba(0,0,0,.5); }
 }
 @keyframes gl-spin { to { transform: rotate(360deg); } }
+@keyframes gl-img-in { from { opacity: 0; } to { opacity: 1; } }
 
 .gl-fab {
   position: fixed; z-index: 999999; width: 56px; height: 56px; border-radius: 50%;
@@ -161,7 +163,8 @@
 .gl-panel {
   position: fixed; z-index: 2147483647;
   top: 50%; left: 50%; transform: translate(-50%, -50%);
-  width: 460px; max-height: ${PAINEL_ALTURA_MAX_VH}vh; display: flex; flex-direction: column;
+  width: 720px; max-width: 92vw; max-height: ${PAINEL_ALTURA_MAX_VH}vh;
+  display: flex; flex-direction: column;
   background: linear-gradient(175deg, rgba(20,20,28,.92) 0%, rgba(9,9,14,.97) 100%);
   backdrop-filter: blur(18px) saturate(140%);
   border: 1px solid rgba(255,255,255,.08);
@@ -191,18 +194,71 @@
 }
 .gl-banner svg { width: 14px; height: 14px; flex-shrink: 0; margin-top: 1px; color: var(--hub-warn); }
 
-/* ======= GRID DE JOGOS (Steam/Epic-like) ======= */
+/* ======= TOOLBAR (busca + ordenação) ======= */
+.gl-toolbar {
+  display: flex; gap: 8px; align-items: center;
+  padding: 10px 14px;
+  border-bottom: 1px solid rgba(255,255,255,.06);
+  background: rgba(255,255,255,.015);
+  flex-shrink: 0;
+}
+.gl-search { position: relative; flex: 1; display: flex; align-items: center; }
+.gl-search svg {
+  position: absolute; left: 10px; width: 14px; height: 14px; color: var(--hub-muted); pointer-events: none;
+}
+.gl-search input { padding-left: 30px; }
+.gl-sort { width: 168px; flex-shrink: 0; }
+
+/* ======= CORPO: sidebar + conteúdo ======= */
+.gl-body { flex: 1; min-height: 0; display: flex; }
+.gl-sidebar {
+  width: 136px; flex-shrink: 0; overflow-y: auto;
+  padding: 10px 8px; display: flex; flex-direction: column; gap: 2px;
+  border-right: 1px solid rgba(255,255,255,.06);
+  background: rgba(255,255,255,.01);
+}
+.gl-sidebar::-webkit-scrollbar { width: 4px; }
+.gl-sidebar::-webkit-scrollbar-thumb { background: rgba(255,255,255,.15); border-radius: 2px; }
+.gl-nav-item {
+  display: block;
+  padding: 7px 9px; border-radius: 8px;
+  font-size: 11.5px; font-weight: 600; color: var(--hub-muted);
+  cursor: pointer; border: 1px solid transparent;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+.gl-nav-item:hover { background: rgba(255,255,255,.05); color: var(--hub-text); }
+.gl-nav-item.ativo {
+  background: rgba(34,211,238,.12); color: var(--hub-cyan);
+  border-color: rgba(34,211,238,.25);
+}
+
+.gl-content { flex: 1; min-width: 0; display: flex; flex-direction: column; overflow-y: auto; }
+.gl-content::-webkit-scrollbar { width: 6px; }
+.gl-content::-webkit-scrollbar-thumb { background: rgba(255,255,255,.15); border-radius: 3px; }
+
+.gl-shelf-titulo {
+  font-size: 10.5px; font-weight: 700; letter-spacing: .4px; text-transform: uppercase;
+  color: var(--hub-muted); padding: 12px 12px 8px;
+  display: none; align-items: center; gap: 5px;
+}
+.gl-shelf-titulo svg { width: 12px; height: 12px; }
+.gl-shelf {
+  display: none; gap: 10px; overflow-x: auto; overflow-y: hidden;
+  padding: 0 12px 14px; flex-shrink: 0;
+}
+.gl-shelf::-webkit-scrollbar { height: 5px; }
+.gl-shelf::-webkit-scrollbar-thumb { background: rgba(255,255,255,.15); border-radius: 3px; }
+.gl-shelf .gl-game-card { width: 172px; flex-shrink: 0; }
+
+/* ======= GRID DE CAPAS ======= */
 .gl-grid {
-  overflow-y: auto; overflow-x: hidden; flex: 1; min-height: 0;
-  padding: 12px;
+  padding: 4px 12px 12px;
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
   gap: 12px;
   align-content: start;
 }
-.gl-grid::-webkit-scrollbar { width: 6px; }
-.gl-grid::-webkit-scrollbar-thumb { background: rgba(255,255,255,.15); border-radius: 3px; }
-
 .gl-empty {
   grid-column: 1 / -1;
   color: var(--hub-muted); font-size: 12px; padding: 40px 16px; text-align: center; line-height: 1.55;
@@ -226,12 +282,27 @@
 
 .gl-cover {
   position: relative; width: 100%; aspect-ratio: 16 / 9;
-  background: linear-gradient(135deg, rgba(34,211,238,.10), rgba(167,139,250,.10));
+  background: rgba(255,255,255,.04);
   display: flex; align-items: center; justify-content: center;
   overflow: hidden;
 }
-.gl-cover img { width: 100%; height: 100%; object-fit: cover; display: block; }
-.gl-cover > svg { width: 38px; height: 38px; color: rgba(255,255,255,.22); }
+.gl-cover img { width: 100%; height: 100%; object-fit: cover; display: block; animation: gl-img-in 200ms ease; }
+.gl-cover-fallback-letra { font-size: 32px; font-weight: 700; color: rgba(255,255,255,.62); pointer-events: none; }
+
+.gl-cover-scrim {
+  position: absolute; left: 0; right: 0; bottom: 0; height: 50%;
+  background: linear-gradient(180deg, transparent 0%, rgba(6,8,13,.65) 100%);
+  pointer-events: none;
+}
+.gl-cover-status {
+  position: absolute; top: 7px; left: 7px; z-index: 2;
+  width: 20px; height: 20px; border-radius: 6px;
+  display: flex; align-items: center; justify-content: center;
+  backdrop-filter: blur(6px);
+}
+.gl-cover-status svg { width: 11px; height: 11px; }
+.gl-cover-status.status-ok { background: rgba(52,211,153,.85); color: #06080d; }
+.gl-cover-status.status-bloqueado { background: rgba(251,113,133,.88); color: #06080d; }
 
 .gl-cover-actions {
   position: absolute; inset: 0;
@@ -272,36 +343,14 @@
 .gl-remove-btn:active { transform: scale(0.92); }
 .gl-remove-btn svg { width: 13px; height: 13px; pointer-events: none; }
 
-.gl-game-info {
-  padding: 9px 11px 10px;
-  display: flex; flex-direction: column; gap: 5px;
-}
+.gl-game-info { padding: 9px 11px 10px; display: flex; flex-direction: column; gap: 3px; }
 .gl-game-name {
   font-size: 12.5px; font-weight: 600; line-height: 1.3;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.gl-game-meta { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
-
-.gl-badge {
-  font-size: 9px; font-weight: 700; letter-spacing: .3px; text-transform: uppercase;
-  padding: 2px 6px; border-radius: 5px; display: inline-flex; align-items: center; gap: 3px;
-}
-.gl-badge-ok { background: rgba(52,211,153,.14); color: var(--hub-ok); }
-.gl-badge-bloqueado { background: rgba(251,113,133,.14); color: var(--hub-err); }
-.gl-badge-neutro { background: rgba(255,255,255,.08); color: var(--hub-muted); }
-.gl-tag {
-  font-size: 9.5px; color: var(--hub-muted);
-  padding: 1px 5px; border-radius: 4px;
-  background: rgba(255,255,255,.04);
-  border: 1px solid rgba(255,255,255,.05);
-}
-
-.gl-filtro-bar {
-  display: flex; gap: 8px; align-items: center;
-  padding: 9px 12px;
-  border-bottom: 1px solid rgba(255,255,255,.06);
-  background: rgba(255,255,255,.015);
-  flex-shrink: 0;
+.gl-game-meta-linha {
+  font-size: 10.5px; color: var(--hub-muted);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 
 .gl-hover-info {
@@ -380,6 +429,7 @@
       bloqueio: '<rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/>',
       baixar: '<path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M4 21h16"/>',
       relogio: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/>',
+      buscar: '<circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/>',
     };
     return `<svg viewBox="0 0 24 24" width="${t}" height="${t}" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${mapa[nome] || ''}</svg>`;
   }
@@ -756,7 +806,59 @@
     });
   }
 
-  // ---------- Painel de lista de jogos ----------
+  // ---------- Tratamento de capa: crop consistente + fallback com iniciais ----------
+  // A imagem, quando existe, nunca dita o layout: aspect-ratio fixo + object-fit:
+  // cover garante um grid uniforme mesmo com fontes de imagem heterogêneas (o
+  // manifest normalmente traz screenshots soltos, não box-art padronizada).
+  function corDeterministica(nome) {
+    let hash = 0;
+    const texto = nome || '?';
+    for (let i = 0; i < texto.length; i++) hash = (hash * 31 + texto.charCodeAt(i)) >>> 0;
+    const hue = hash % 360;
+    return `linear-gradient(135deg, hsla(${hue},65%,50%,.38), hsla(${(hue + 55) % 360},65%,50%,.38))`;
+  }
+  function aplicarCoverFallback(cover, nome) {
+    cover.style.background = corDeterministica(nome);
+    const letra = document.createElement('span');
+    letra.className = 'gl-cover-fallback-letra';
+    letra.textContent = (nome || '?').trim().charAt(0).toUpperCase();
+    cover.appendChild(letra);
+  }
+  function criarCover(jogo) {
+    const cover = document.createElement('div');
+    cover.className = 'gl-cover';
+
+    if (jogo.imagem) {
+      const img = document.createElement('img');
+      img.src = jogo.imagem;
+      img.alt = '';
+      img.loading = 'lazy';
+      img.decoding = 'async';
+      img.addEventListener('error', () => {
+        img.remove();
+        aplicarCoverFallback(cover, jogo.nome);
+      });
+      cover.appendChild(img);
+    } else {
+      aplicarCoverFallback(cover, jogo.nome);
+    }
+
+    const scrim = document.createElement('div');
+    scrim.className = 'gl-cover-scrim';
+    cover.appendChild(scrim);
+
+    if (jogo.status === 'ok' || jogo.status === 'bloqueado') {
+      const chip = document.createElement('span');
+      chip.className = 'gl-cover-status status-' + jogo.status;
+      chip.title = jogo.status === 'ok' ? 'Já funcionou antes' : 'Bloqueado por embed';
+      chip.innerHTML = icone(jogo.status === 'ok' ? 'check' : 'bloqueio', 11);
+      cover.appendChild(chip);
+    }
+
+    return cover;
+  }
+
+  // ---------- Painel biblioteca (sidebar + busca + ordenação + prateleira) ----------
   async function abrirPainelJogos() {
     if (root.getElementById('gl-painel')) return;
     injetarEstilos();
@@ -776,12 +878,13 @@
       painel.style.top = top + 'px';
     }
 
+    // ---- cabeçalho ----
     const cabecalho = document.createElement('div');
     cabecalho.className = 'gl-panel-header';
 
     const titulo = document.createElement('span');
     titulo.className = 'gl-panel-title';
-    titulo.innerHTML = `${icone('gamepad', 17)} Jogos`;
+    titulo.innerHTML = `${icone('gamepad', 17)} Biblioteca`;
 
     const botoesCabecalho = document.createElement('div');
     botoesCabecalho.className = 'gl-panel-actions';
@@ -827,21 +930,69 @@
     avisoManifest.className = 'gl-banner';
     avisoManifest.style.display = 'none';
 
-    const barraFiltro = document.createElement('div');
-    barraFiltro.className = 'gl-filtro-bar';
-    const seletorGenero = document.createElement('select');
-    seletorGenero.className = 'gl-select';
-    seletorGenero.setAttribute('aria-label', 'Filtrar por gênero');
-    seletorGenero.addEventListener('mousedown', (e) => e.stopPropagation());
-    seletorGenero.addEventListener('change', () => {
-      generoSelecionado = seletorGenero.value;
+    // ---- toolbar: busca + ordenação ----
+    const buscaWrap = document.createElement('div');
+    buscaWrap.className = 'gl-search';
+    buscaWrap.innerHTML = icone('buscar', 14);
+    const buscaInput = document.createElement('input');
+    buscaInput.className = 'gl-input';
+    buscaInput.placeholder = 'Buscar na biblioteca...';
+    buscaInput.setAttribute('aria-label', 'Buscar jogo pelo nome');
+    let buscaTimer = null;
+    buscaInput.addEventListener('input', () => {
+      clearTimeout(buscaTimer);
+      buscaTimer = setTimeout(() => {
+        buscaTexto = buscaInput.value.trim().toLowerCase();
+        aplicarFiltroErenderizar();
+      }, BUSCA_DEBOUNCE_MS);
+    });
+    buscaWrap.appendChild(buscaInput);
+
+    const sortSelect = document.createElement('select');
+    sortSelect.className = 'gl-select gl-sort';
+    sortSelect.setAttribute('aria-label', 'Ordenar jogos');
+    sortSelect.innerHTML = `
+      <option value="recentes">Adicionados recentemente</option>
+      <option value="nome">Nome (A–Z)</option>
+      <option value="jogados">Mais jogados</option>
+    `;
+    sortSelect.addEventListener('change', () => {
+      ordenacao = sortSelect.value;
       aplicarFiltroErenderizar();
     });
-    barraFiltro.appendChild(seletorGenero);
+
+    const toolbar = document.createElement('div');
+    toolbar.className = 'gl-toolbar';
+    toolbar.appendChild(buscaWrap);
+    toolbar.appendChild(sortSelect);
+
+    // ---- corpo: sidebar de gêneros + conteúdo ----
+    const corpoPainel = document.createElement('div');
+    corpoPainel.className = 'gl-body';
+
+    const sidebar = document.createElement('div');
+    sidebar.className = 'gl-sidebar';
+
+    const conteudo = document.createElement('div');
+    conteudo.className = 'gl-content';
+
+    const shelfTitulo = document.createElement('div');
+    shelfTitulo.className = 'gl-shelf-titulo';
+    shelfTitulo.innerHTML = `${icone('relogio', 12)} Continuar jogando`;
+
+    const shelf = document.createElement('div');
+    shelf.className = 'gl-shelf';
 
     const lista = document.createElement('div');
     lista.className = 'gl-grid';
 
+    conteudo.appendChild(shelfTitulo);
+    conteudo.appendChild(shelf);
+    conteudo.appendChild(lista);
+    corpoPainel.appendChild(sidebar);
+    corpoPainel.appendChild(conteudo);
+
+    // ---- rodapé ----
     const rodape = document.createElement('div');
     rodape.className = 'gl-panel-footer';
     const addTempBtn = document.createElement('button');
@@ -860,12 +1011,13 @@
 
     painel.appendChild(cabecalho);
     painel.appendChild(avisoManifest);
-    painel.appendChild(barraFiltro);
-    painel.appendChild(lista);
+    painel.appendChild(toolbar);
+    painel.appendChild(corpoPainel);
     painel.appendChild(rodape);
     root.appendChild(painel);
     document.addEventListener('keydown', aoTeclarEscPainel, { signal: ac.signal });
 
+    // ---- arrastar o painel pela barra de cabeçalho ----
     let arrastandoPainel = false, offPX = 0, offPY = 0;
     cabecalho.addEventListener('mousedown', (e) => {
       if (e.target !== cabecalho && e.target !== titulo && !titulo.contains(e.target)) return;
@@ -900,6 +1052,7 @@
     }
     function fecharPainel() {
       esconderInfoHover();
+      clearTimeout(buscaTimer);
       painel.remove();
       document.removeEventListener('keydown', aoTeclarEscPainel);
       window.removeEventListener('mousemove', aoMoverPainel);
@@ -907,6 +1060,8 @@
     }
 
     let generoSelecionado = 'todos';
+    let buscaTexto = '';
+    let ordenacao = 'recentes';
     let ultimaListaCombinada = [];
     let estatisticasCache = {};
     let elementoTooltip = null;
@@ -922,10 +1077,10 @@
       const tip = document.createElement('div');
       tip.className = 'gl-scope gl-hover-info';
 
-      const titulo = document.createElement('div');
-      titulo.className = 'gl-hover-info-title';
-      titulo.textContent = jogo.nome;
-      tip.appendChild(titulo);
+      const tipTitulo = document.createElement('div');
+      tipTitulo.className = 'gl-hover-info-title';
+      tipTitulo.textContent = jogo.nome;
+      tip.appendChild(tipTitulo);
 
       function linhaInfo(label, valor) {
         const row = document.createElement('div');
@@ -957,44 +1112,41 @@
       elementoTooltip = tip;
     }
     lista.addEventListener('scroll', esconderInfoHover);
+    shelf.addEventListener('scroll', esconderInfoHover);
 
-    function popularFiltroGenero(jogos) {
+    function popularSidebar(jogos) {
       const generosUnicos = Array.from(
         new Set(jogos.map((j) => (j.genero || '').trim()).filter(Boolean))
       ).sort((a, b) => a.localeCompare(b, 'pt-BR'));
-      const valorAtual = seletorGenero.value || 'todos';
-      seletorGenero.innerHTML = '';
-      const optTodos = document.createElement('option');
-      optTodos.value = 'todos';
-      optTodos.textContent = 'Todos os gêneros';
-      seletorGenero.appendChild(optTodos);
-      generosUnicos.forEach((g) => {
-        const opt = document.createElement('option');
-        opt.value = g;
-        opt.textContent = g;
-        seletorGenero.appendChild(opt);
-      });
-      seletorGenero.value = generosUnicos.includes(valorAtual) || valorAtual === 'todos' ? valorAtual : 'todos';
-      generoSelecionado = seletorGenero.value;
-    }
 
-    function criarCover(jogo) {
-      const cover = document.createElement('div');
-      cover.className = 'gl-cover';
-      if (jogo.imagem) {
-        const img = document.createElement('img');
-        img.src = jogo.imagem;
-        img.alt = '';
-        img.loading = 'lazy';
-        img.addEventListener('error', () => {
-          img.remove();
-          cover.insertAdjacentHTML('afterbegin', icone('gamepad', 38));
-        });
-        cover.appendChild(img);
-      } else {
-        cover.insertAdjacentHTML('afterbegin', icone('gamepad', 38));
+      if (generoSelecionado !== 'todos' && !generosUnicos.includes(generoSelecionado)) {
+        generoSelecionado = 'todos';
       }
-      return cover;
+
+      sidebar.innerHTML = '';
+
+      const itemTodos = document.createElement('div');
+      itemTodos.className = 'gl-nav-item' + (generoSelecionado === 'todos' ? ' ativo' : '');
+      itemTodos.textContent = 'Todos os jogos';
+      itemTodos.dataset.genero = 'todos';
+      itemTodos.addEventListener('click', () => selecionarGenero('todos'));
+      sidebar.appendChild(itemTodos);
+
+      generosUnicos.forEach((g) => {
+        const item = document.createElement('div');
+        item.className = 'gl-nav-item' + (generoSelecionado === g ? ' ativo' : '');
+        item.textContent = g;
+        item.dataset.genero = g;
+        item.addEventListener('click', () => selecionarGenero(g));
+        sidebar.appendChild(item);
+      });
+    }
+    function selecionarGenero(g) {
+      generoSelecionado = g;
+      sidebar.querySelectorAll('.gl-nav-item').forEach((el) => {
+        el.classList.toggle('ativo', el.dataset.genero === g);
+      });
+      aplicarFiltroErenderizar();
     }
 
     function criarCardJogo(jogo, permiteRemover, estat) {
@@ -1003,12 +1155,25 @@
       card.addEventListener('mouseenter', () => mostrarInfoHover(card, jogo, estat || {}));
       card.addEventListener('mouseleave', esconderInfoHover);
 
-      // Capa com overlay de ações
       const cover = criarCover(jogo);
+
+      if (permiteRemover) {
+        const removeBtn = document.createElement('button');
+        removeBtn.className = 'gl-remove-btn';
+        removeBtn.title = 'Remover';
+        removeBtn.setAttribute('aria-label', 'Remover ' + jogo.nome);
+        removeBtn.innerHTML = icone('lixeira', 13);
+        removeBtn.addEventListener('click', async (e) => {
+          e.stopPropagation();
+          const temporarios = (await carregarJogosTemporarios()).filter((j) => j.id !== jogo.id);
+          salvarJogosTemporarios(temporarios);
+          renderizarLista();
+        });
+        cover.appendChild(removeBtn);
+      }
 
       const acoesCover = document.createElement('div');
       acoesCover.className = 'gl-cover-actions';
-
       const playBtn = document.createElement('button');
       playBtn.className = 'gl-play-btn';
       playBtn.title = 'Jogar';
@@ -1031,25 +1196,8 @@
         });
       });
       acoesCover.appendChild(playBtn);
-
-      if (permiteRemover) {
-        const removeBtn = document.createElement('button');
-        removeBtn.className = 'gl-remove-btn';
-        removeBtn.title = 'Remover';
-        removeBtn.setAttribute('aria-label', 'Remover ' + jogo.nome);
-        removeBtn.innerHTML = icone('lixeira', 13);
-        removeBtn.addEventListener('click', async (e) => {
-          e.stopPropagation();
-          const temporarios = (await carregarJogosTemporarios()).filter((j) => j.id !== jogo.id);
-          salvarJogosTemporarios(temporarios);
-          renderizarLista();
-        });
-        cover.appendChild(removeBtn);
-      }
-
       cover.appendChild(acoesCover);
 
-      // Info abaixo da capa
       const info = document.createElement('div');
       info.className = 'gl-game-info';
 
@@ -1057,34 +1205,50 @@
       nome.className = 'gl-game-name';
       nome.textContent = jogo.nome;
       nome.title = jogo.nome;
+
+      const metaLinha = document.createElement('div');
+      metaLinha.className = 'gl-game-meta-linha';
+      const partes = [jogo.genero || 'Sem gênero'];
+      if (jogo.origem === 'temporario') partes.push('Temporário');
+      metaLinha.textContent = partes.join(' · ');
+
       info.appendChild(nome);
-
-      const meta = document.createElement('div');
-      meta.className = 'gl-game-meta';
-
-      const si = statusInfo(jogo.status);
-      const badge = document.createElement('span');
-      badge.className = 'gl-badge ' + si.classe;
-      badge.innerHTML = (si.icone ? icone(si.icone, 10) : '') + si.texto;
-      meta.appendChild(badge);
-
-      if (jogo.genero) {
-        const tagGenero = document.createElement('span');
-        tagGenero.className = 'gl-tag';
-        tagGenero.textContent = jogo.genero;
-        meta.appendChild(tagGenero);
-      }
-      if (jogo.origem === 'temporario') {
-        const tag = document.createElement('span');
-        tag.className = 'gl-tag';
-        tag.textContent = 'temporário';
-        meta.appendChild(tag);
-      }
-      info.appendChild(meta);
+      info.appendChild(metaLinha);
 
       card.appendChild(cover);
       card.appendChild(info);
       return card;
+    }
+
+    function ordenarLista(jogos) {
+      if (ordenacao === 'nome') {
+        return jogos.slice().sort((a, b) => a.nome.localeCompare(b.nome, 'pt-BR'));
+      }
+      if (ordenacao === 'jogados') {
+        return jogos.slice().sort((a, b) =>
+          (estatisticasCache[b.id]?.vezesJogado || 0) - (estatisticasCache[a.id]?.vezesJogado || 0)
+        );
+      }
+      return jogos; // 'recentes' já vem ordenado por adicionadoEm desc
+    }
+
+    function popularShelfContinuar() {
+      const recentes = ultimaListaCombinada
+        .filter((j) => estatisticasCache[j.id]?.ultimaSessaoEm)
+        .sort((a, b) => new Date(estatisticasCache[b.id].ultimaSessaoEm) - new Date(estatisticasCache[a.id].ultimaSessaoEm))
+        .slice(0, SHELF_MAX_ITENS);
+
+      shelf.innerHTML = '';
+      if (!recentes.length) {
+        shelfTitulo.style.display = 'none';
+        shelf.style.display = 'none';
+        return;
+      }
+      shelfTitulo.style.display = 'flex';
+      shelf.style.display = 'flex';
+      recentes.forEach((jogo) => {
+        shelf.appendChild(criarCardJogo(jogo, jogo.origem === 'temporario', estatisticasCache[jogo.id]));
+      });
     }
 
     function aplicarFiltroErenderizar() {
@@ -1094,12 +1258,19 @@
       if (generoSelecionado !== 'todos') {
         jogosFiltrados = jogosFiltrados.filter((j) => (j.genero || '').trim() === generoSelecionado);
       }
+      if (buscaTexto) {
+        jogosFiltrados = jogosFiltrados.filter((j) => j.nome.toLowerCase().includes(buscaTexto));
+      }
+      jogosFiltrados = ordenarLista(jogosFiltrados);
+
       if (!jogosFiltrados.length) {
         lista.innerHTML =
           '<div class="gl-empty">' +
-          (generoSelecionado !== 'todos'
-            ? 'Nenhum jogo nesse gênero.'
-            : 'Nenhum jogo disponível.<br>Configure o manifest ou adicione um jogo temporário.') +
+          (buscaTexto
+            ? 'Nenhum jogo encontrado pra essa busca.'
+            : generoSelecionado !== 'todos'
+              ? 'Nenhum jogo nesse gênero.'
+              : 'Nenhum jogo disponível.<br>Configure o manifest ou adicione um jogo temporário.') +
           '</div>';
         return;
       }
@@ -1110,6 +1281,8 @@
 
     async function renderizarLista() {
       lista.innerHTML = '<div class="gl-empty">Carregando...</div>';
+      shelf.style.display = 'none';
+      shelfTitulo.style.display = 'none';
 
       const [manifest, temporarios, estatisticas] = await Promise.all([
         carregarJogosManifest(false),
@@ -1139,14 +1312,15 @@
         return db - da;
       });
 
-      popularFiltroGenero(ultimaListaCombinada);
+      popularSidebar(ultimaListaCombinada);
+      popularShelfContinuar();
       aplicarFiltroErenderizar();
     }
 
     renderizarLista();
   }
 
-  // ---------- Overlay do jogo (inalterado) ----------
+  // ---------- Overlay do jogo ----------
   async function abrirJogo(jogo, aoMudarStatus) {
     if (root.getElementById('gl-overlay')) return;
     injetarEstilos();
@@ -1443,7 +1617,7 @@
     window.addEventListener('mouseup', aoSoltarOverlay, { signal: ac.signal });
   }
 
-  // ---------- FAB (inalterado) ----------
+  // ---------- FAB ----------
   async function criarBotaoFlutuante() {
     if (root.getElementById('gl-fab')) return;
     injetarEstilos();
