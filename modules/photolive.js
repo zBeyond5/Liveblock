@@ -24,6 +24,10 @@
     // CONFIG
     const OUTPUT_SIZE = 320;
     const ICON_URL = "https://raw.githubusercontent.com/zBeyond5/assets/main/photo.png";
+    // Fallback embutido — usado se o ícone remoto falhar. Cyan, alinhado ao aurora glass.
+    const ICON_FALLBACK = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#22d3ee" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="15" rx="2.5"/><circle cx="12" cy="12.5" r="3.5"/><path d="M8.5 5V3.5h7V5"/></svg>'
+    );
 
     const MIN_USER_SCALE = 0.2;
     const MAX_USER_SCALE = 8;
@@ -34,7 +38,7 @@
     const DRAG_HOLD_MS = 300;
     const DRAG_CANCEL_THRESHOLD = 6;
 
-    const HIDE_TRANSITION_MS = 260; // watchdog: cobre --t-medium (240ms) com folga
+    const HIDE_TRANSITION_MS = 260;
 
     // TEARDOWN
     const ac = new AbortController();
@@ -245,9 +249,6 @@
         }
     }
 
-    // microfeedback visual: reinicia a animação de "bump" do badge de zoom
-    // (só chamado onde o zoom de fato muda — wheel e restore — não a cada
-    // pointermove do pan, pra não gerar reflow desnecessário)
     function bumpZoomBadge() {
         const zoomBadge = document.querySelector("#hcpr-zoom-badge");
         if (!zoomBadge) return;
@@ -351,7 +352,7 @@
 
         await Promise.race([
             pendingRenderPromise,
-            new Promise((resolve) => setTimeout(resolve, 1200)), // watchdog
+            new Promise((resolve) => setTimeout(resolve, 1200)),
         ]);
     }
 
@@ -465,6 +466,9 @@
                         const match = event.data.match(/@([a-f0-9]{64})\b/i);
 
                         if (!match) return;
+
+                        // Mesmo token — não refaz trabalho nem reflete UI novamente
+                        if (state.token === match[1]) return;
 
                         state.token = match[1];
                         debug.add("connection_ready");
@@ -596,7 +600,7 @@
                     finalizeXhrSend(xhr, capturedBody);
                 };
                 pendingRenderPromise.then(doSend);
-                setTimeout(doSend, 1200); // watchdog: nunca prende o envio indefinidamente
+                setTimeout(doSend, 1200);
                 return;
             }
 
@@ -672,7 +676,7 @@
                                 callback(state.blob);
                             };
                             pendingRenderPromise.then(doCallback);
-                            setTimeout(doCallback, 1200); // watchdog
+                            setTimeout(doCallback, 1200);
                         } else {
                             setTimeout(() => callback(state.blob), 0);
                         }
@@ -740,6 +744,11 @@
                 ? "A substituição de imagem está ativada"
                 : "A substituição de imagem está desativada";
         }
+    }
+
+    function setDownloadEnabled(enabled) {
+        const btn = document.querySelector("#hcpr-download");
+        if (btn) btn.disabled = !enabled;
     }
 
     // ------------------------------------------------------------------
@@ -847,8 +856,6 @@
             if (preview) {
                 preview.src = state.previewObjectUrl;
                 preview.hidden = false;
-                // reinicia a animação de "materialização" mesmo se o
-                // elemento já estava visível de uma seleção anterior
                 preview.classList.remove("hcpr-materialize");
                 void preview.offsetWidth;
                 preview.classList.add("hcpr-materialize");
@@ -869,6 +876,7 @@
             if (mySelection !== selectionGeneration) return;
 
             updateStatus("Pronto · 320×320", "success");
+            setDownloadEnabled(true);
             debug.add("image_ready", { type: file.type, size: file.size });
         } catch (error) {
             if (mySelection === selectionGeneration) {
@@ -881,7 +889,7 @@
     }
 
     function clearPreview(root) {
-        selectionGeneration++; // invalida qualquer handleSelectedFile ainda em voo
+        selectionGeneration++;
         revokePreviewUrl();
         state.image = null;
         state.blob = null;
@@ -907,8 +915,51 @@
         if (zoomBadge) zoomBadge.hidden = true;
         if (restoreButton) restoreButton.hidden = true;
 
+        setDownloadEnabled(false);
         updateStatus("Imagem removida", "info");
         debug.add("image_reset");
+    }
+
+    function downloadImage() {
+        if (!state.blob) return;
+        try {
+            const url = URL.createObjectURL(state.blob);
+            const a = document.createElement("a");
+            a.href = url;
+            a.download = `photolive-${Date.now()}.png`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+            debug.add("image_downloaded");
+        } catch (error) {
+            debug.add("image_download_error", { message: String(error) });
+        }
+    }
+
+    function resetPanelPosition() {
+        state.panelPos = null;
+        state.reopenPos = null;
+        saveState();
+
+        const wrapper = document.querySelector("#hcpr-tool");
+        const reopen = document.querySelector("#hcpr-reopen");
+
+        if (wrapper) {
+            wrapper.style.left = "";
+            wrapper.style.top = "";
+            wrapper.style.right = "";
+            wrapper.style.bottom = "";
+        }
+        if (reopen) {
+            reopen.style.left = "";
+            reopen.style.top = "";
+            reopen.style.right = "";
+            reopen.style.bottom = "";
+        }
+
+        updateStatus("Posição do painel restaurada", "info");
+        debug.add("panel_position_reset");
     }
 
     // ------------------------------------------------------------------
@@ -943,7 +994,7 @@
             } else {
                 tool.classList.remove("hcpr-hidden");
                 shell.classList.add("hcpr-shell-hiding");
-                void shell.offsetWidth; // força o reflow antes de animar de volta
+                void shell.offsetWidth;
                 shell.classList.remove("hcpr-shell-hiding");
             }
         }
@@ -1371,6 +1422,8 @@
 
         const wrapper = document.createElement("div");
         wrapper.id = "hcpr-tool";
+        wrapper.setAttribute("data-sang-ui", "");
+        wrapper.setAttribute("data-hub", "1");
 
         wrapper.innerHTML = `
             <div class="hcpr-shell" id="hcpr-shell" data-state="idle">
@@ -1499,6 +1552,13 @@
                             </div>
 
                             <div class="hcpr-group">
+                                <span class="hcpr-group-title">Painel</span>
+                                <div class="hcpr-text-actions">
+                                    <button type="button" id="hcpr-reset-pos" class="hcpr-btn hcpr-btn-ghost">Resetar posição</button>
+                                </div>
+                            </div>
+
+                            <div class="hcpr-group">
                                 <span class="hcpr-group-title">Diagnóstico</span>
                                 <div class="hcpr-text-actions">
                                     <button type="button" id="hcpr-logs" class="hcpr-btn hcpr-btn-ghost">Diagnóstico</button>
@@ -1512,10 +1572,13 @@
                 </div>
 
                 <div class="hcpr-footer-row">
+                    <button type="button" id="hcpr-download" class="hcpr-btn hcpr-btn-ghost hcpr-btn-footer" data-tooltip="Baixar PNG 320×320" disabled>
+                        <svg viewBox="0 0 24 24" fill="none"><path d="M12 4v12m0 0-4.5-4.5M12 16l4.5-4.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/><path d="M4.5 17v.5A2.5 2.5 0 0 0 7 20h10a2.5 2.5 0 0 0 2.5-2.5V17" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                        <span>Baixar PNG</span>
+                    </button>
                     <button type="button" id="hcpr-reset" class="hcpr-btn hcpr-btn-danger hcpr-btn-footer" data-tooltip="Ctrl+Z">
                         <svg viewBox="0 0 24 24" fill="none"><path d="M4 12a8 8 0 1 1 2.7 6M4 12v5m0-5h5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
                         <span>Resetar imagem</span>
-                        <span class="hcpr-shortcut-hint hcpr-mono">Ctrl+Z</span>
                     </button>
                 </div>
 
@@ -1526,6 +1589,8 @@
         const reopen = document.createElement("button");
         reopen.type = "button";
         reopen.id = "hcpr-reopen";
+        reopen.setAttribute("data-sang-ui", "");
+        reopen.setAttribute("data-hub", "1");
         reopen.setAttribute("aria-label", "Abrir painel LivePhoto");
         reopen.dataset.tooltip = "Abrir LivePhoto";
         reopen.hidden = !state.panelHidden;
@@ -1538,12 +1603,21 @@
         document.body.appendChild(wrapper);
         document.body.appendChild(reopen);
 
+        // Fallback do ícone: se o remoto falhar, troca por SVG inline
+        const markImg = wrapper.querySelector(".hcpr-mark-img");
+        const reopenImg = reopen.querySelector(".hcpr-reopen-img");
+        if (markImg) markImg.addEventListener("error", () => { markImg.src = ICON_FALLBACK; }, { once: true });
+        if (reopenImg) reopenImg.addEventListener("error", () => { reopenImg.src = ICON_FALLBACK; }, { once: true });
+
+        // Proteção contra Lite Mode do LiveBooster (idempotente — data-sang-ui já cobre)
+        window._hubUI?.markProtected?.(wrapper);
+        window._hubUI?.markProtected?.(reopen);
+
         applyPanelPosition(wrapper);
         applyPanelScale(wrapper);
         applyReopenPosition(reopen);
 
         if (state.panelHidden) {
-            // estado inicial não deve animar
             wrapper.style.transition = "none";
             wrapper.classList.add("hcpr-hidden");
             requestAnimationFrame(() => {
@@ -1567,6 +1641,8 @@
         const clearLogsButton = root.querySelector("#hcpr-clear-logs");
         const resetButton = root.querySelector("#hcpr-reset");
         const restoreButton = root.querySelector("#hcpr-restore");
+        const downloadButton = root.querySelector("#hcpr-download");
+        const resetPosButton = root.querySelector("#hcpr-reset-pos");
 
         fileInput.addEventListener("change", () => {
             const file = fileInput.files?.[0];
@@ -1611,7 +1687,6 @@
             }
         }, { signal: ac.signal });
 
-        // Atalho Ctrl+Z (ou Cmd+Z no macOS) para resetar a imagem atual
         window.addEventListener("keydown", (event) => {
             if (state.panelHidden) return;
             if (!state.image) return;
@@ -1684,6 +1759,8 @@
 
         resetButton.addEventListener("click", () => clearPreview(root));
         restoreButton.addEventListener("click", () => restoreDefaultFraming());
+        downloadButton.addEventListener("click", downloadImage);
+        resetPosButton.addEventListener("click", resetPanelPosition);
 
         makePanelDraggable(header, root);
         makePanelResizable(resizeHandle, root);
@@ -1691,7 +1768,9 @@
         bindImageEditor(root);
         bindAccordion(root);
 
-        // reflete o estado inicial (active/disabled) assim que a UI monta
+        // Sincroniza estado inicial do botão de download
+        setDownloadEnabled(!!state.blob);
+
         updateStatus(
             state.active ? "Aguardando imagem" : "Substituição desativada",
             state.active ? "info" : "disabled"
@@ -1699,7 +1778,15 @@
     }
 
     GM_addStyle(`
-        :root {
+        :where(#hcpr-tool, #hcpr-reopen) {
+            /* ─── Aurora Glass — mesma família do hub2.js ─── */
+            --hub-cyan: #22d3ee;
+            --hub-violet: #a78bfa;
+            --hub-ok: #34d399;
+            --hub-err: #fb7185;
+            --hub-muted: #8b8fa3;
+            --hub-grad: linear-gradient(120deg, var(--hub-cyan), var(--hub-violet));
+
             /* superfícies */
             --hcpr-bg: #08090D;
             --hcpr-bg-soft: #0C0E14;
@@ -1717,20 +1804,20 @@
             --hcpr-text-muted: #8B90A5;
             --hcpr-text-dim: #5A6079;
 
-            /* accent */
-            --hcpr-accent: #8B5CF6;
-            --hcpr-accent-bright: #A78BFA;
-            --hcpr-accent-deep: #6366F1;
-            --hcpr-accent-cyan: #22D3EE;
-            --hcpr-accent-soft: rgba(139,92,246,.16);
+            /* accent — cyan primário, violet secundário */
+            --hcpr-accent: var(--hub-cyan);
+            --hcpr-accent-bright: #67e8f9;
+            --hcpr-accent-deep: #06b6d4;
+            --hcpr-accent-violet: var(--hub-violet);
+            --hcpr-accent-soft: rgba(34,211,238,.16);
 
-            --hcpr-success: #34D399;
-            --hcpr-danger: #FB7185;
+            --hcpr-success: var(--hub-ok);
+            --hcpr-danger: var(--hub-err);
             --hcpr-danger-soft: rgba(251,113,133,.14);
 
-            --hcpr-radius: 18px;
-            --hcpr-radius-sm: 10px;
-            --hcpr-radius-xs: 7px;
+            --hcpr-radius: 20px;
+            --hcpr-radius-sm: 12px;
+            --hcpr-radius-xs: 8px;
 
             --hcpr-mono: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
             --hcpr-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, sans-serif;
@@ -1743,9 +1830,9 @@
             --hcpr-t-medium: 240ms;
             --hcpr-t-slow: 320ms;
 
-            --hcpr-shadow-ambient: 0 30px 80px rgba(0,0,0,.55);
-            --hcpr-shadow-contact: 0 8px 22px rgba(0,0,0,.35);
-            --hcpr-shadow-inner: inset 0 1px 0 rgba(255,255,255,.04);
+            --hcpr-shadow-ambient: 0 20px 50px rgba(0,0,0,.55);
+            --hcpr-shadow-contact: 0 2px 8px rgba(0,0,0,.4);
+            --hcpr-shadow-inner: inset 0 1px 0 rgba(255,255,255,.06);
         }
 
         @media (prefers-reduced-motion: reduce) {
@@ -1763,9 +1850,23 @@
             right: 22px;
             bottom: 22px;
             width: 306px;
+            max-height: calc(100vh - 44px);
+            overflow-y: auto;
+            overflow-x: hidden;
             color: var(--hcpr-text);
             font-family: var(--hcpr-sans);
             transform-origin: top left;
+            scrollbar-width: thin;
+            scrollbar-color: var(--hcpr-border) transparent;
+        }
+
+        #hcpr-tool::-webkit-scrollbar { width: 4px; }
+        #hcpr-tool::-webkit-scrollbar-thumb {
+            background: var(--hcpr-border);
+            border-radius: 2px;
+        }
+        #hcpr-tool::-webkit-scrollbar-thumb:hover {
+            background: var(--hcpr-border-strong);
         }
 
         #hcpr-tool *, #hcpr-tool *::before, #hcpr-tool *::after {
@@ -1777,12 +1878,16 @@
         .hcpr-shell {
             position: relative;
             overflow: visible;
-            border: 1px solid var(--hcpr-border);
+            border: 1px solid rgba(255,255,255,.08);
             border-radius: var(--hcpr-radius);
-            background:
-                radial-gradient(120% 90% at 15% -10%, rgba(139,92,246,.10), transparent 55%),
-                linear-gradient(180deg, var(--hcpr-bg-soft), var(--hcpr-bg) 60%);
-            box-shadow: var(--hcpr-shadow-ambient), var(--hcpr-shadow-contact), var(--hcpr-shadow-inner);
+            background: linear-gradient(175deg, rgba(20,20,28,.92) 0%, rgba(9,9,14,.97) 100%);
+            backdrop-filter: blur(18px) saturate(140%);
+            -webkit-backdrop-filter: blur(18px) saturate(140%);
+            box-shadow:
+                var(--hcpr-shadow-ambient),
+                var(--hcpr-shadow-contact),
+                0 0 24px rgba(34,211,238,.06),
+                var(--hcpr-shadow-inner);
             opacity: 1;
             transform: translateY(0) scale(1);
             filter: blur(0);
@@ -1794,6 +1899,30 @@
                 border-color var(--hcpr-t-base) var(--hcpr-ease-out);
         }
 
+        /* top line — traço aurora centrado, com fade nas pontas */
+        .hcpr-shell::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 12%;
+            right: 12%;
+            height: 2px;
+            border-radius: 2px;
+            background: var(--hub-grad);
+            background-size: 200% 100%;
+            animation: hcpr-hdr-shimmer 4s linear infinite;
+            box-shadow: 0 0 12px rgba(34,211,238,.4);
+            pointer-events: none;
+            z-index: 3;
+            -webkit-mask-image: linear-gradient(90deg, transparent, #000 18%, #000 82%, transparent);
+            mask-image: linear-gradient(90deg, transparent, #000 18%, #000 82%, transparent);
+        }
+
+        @keyframes hcpr-hdr-shimmer {
+            0% { background-position: 0% 50%; }
+            100% { background-position: 200% 50%; }
+        }
+
         .hcpr-shell.hcpr-shell-hiding {
             opacity: 0;
             transform: translateY(6px) scale(.96);
@@ -1803,7 +1932,7 @@
         #hcpr-tool.hcpr-panel-dragging .hcpr-shell,
         #hcpr-tool.hcpr-panel-resizing .hcpr-shell {
             border-color: color-mix(in srgb, var(--hcpr-accent) 45%, var(--hcpr-border));
-            box-shadow: 0 36px 100px rgba(0,0,0,.6), 0 0 0 1px var(--hcpr-accent-soft), var(--hcpr-shadow-inner);
+            box-shadow: 0 28px 80px rgba(0,0,0,.6), 0 0 0 1px var(--hcpr-accent-soft), 0 0 30px rgba(34,211,238,.12), var(--hcpr-shadow-inner);
         }
 
         #hcpr-tool.hcpr-panel-dragging .hcpr-shell { transform: scale(1.006); }
@@ -1815,7 +1944,7 @@
             border-radius: inherit;
             pointer-events: none;
             opacity: .5;
-            background: radial-gradient(60% 40% at 50% 0%, rgba(139,92,246,.14), transparent 70%);
+            background: radial-gradient(60% 40% at 50% 0%, rgba(34,211,238,.14), transparent 70%);
             transition: opacity var(--hcpr-t-medium) var(--hcpr-ease-out);
         }
 
@@ -1913,12 +2042,18 @@
 
         .hcpr-brand-name {
             font-size: 14.5px;
-            font-weight: 650;
-            letter-spacing: -.015em;
-            background: linear-gradient(120deg, var(--hcpr-text) 40%, var(--hcpr-accent-bright) 120%);
+            font-weight: 700;
+            letter-spacing: .02em;
+            background: linear-gradient(100deg, var(--hub-cyan) 0%, var(--hub-violet) 35%, #fff 50%, var(--hub-violet) 65%, var(--hub-cyan) 100%);
+            background-size: 220% auto;
             -webkit-background-clip: text;
             background-clip: text;
             color: transparent;
+            animation: hcpr-title-shine 3.2s linear infinite;
+        }
+
+        @keyframes hcpr-title-shine {
+            to { background-position: -200% center; }
         }
 
         .hcpr-icon-btn {
@@ -1937,7 +2072,12 @@
         }
 
         .hcpr-icon-btn svg { width: 14px; height: 14px; }
-        .hcpr-icon-btn:hover { color: var(--hcpr-text); background: var(--hcpr-surface-raised); border-color: var(--hcpr-border); }
+        .hcpr-icon-btn:hover {
+            color: #0b0b10;
+            background: var(--hub-grad);
+            border-color: transparent;
+            box-shadow: 0 0 14px rgba(34,211,238,.35);
+        }
         .hcpr-icon-btn:active { transform: scale(.92); }
         .hcpr-icon-btn:focus-visible { outline: 2px solid var(--hcpr-accent); outline-offset: 2px; }
 
@@ -2003,10 +2143,14 @@
             background-position: 0 0, 0 8px, 8px -8px, -8px 0;
             background-size: 16px 16px;
             box-shadow: inset 0 1px 0 rgba(255,255,255,.05), inset 0 0 0 1px rgba(0,0,0,.3);
-            transition: filter var(--hcpr-t-fast) var(--hcpr-ease-out), border-color var(--hcpr-t-base) var(--hcpr-ease-out);
+            transition: filter var(--hcpr-t-fast) var(--hcpr-ease-out), border-color var(--hcpr-t-base) var(--hcpr-ease-out), box-shadow var(--hcpr-t-base) var(--hcpr-ease-out);
         }
 
         .hcpr-frame:hover .hcpr-frame-inner { border-color: var(--hcpr-border-strong); }
+        .hcpr-shell[data-state="ready"] .hcpr-frame-inner {
+            border-color: color-mix(in srgb, var(--hcpr-accent) 30%, var(--hcpr-border));
+            box-shadow: inset 0 1px 0 rgba(255,255,255,.05), inset 0 0 0 1px rgba(0,0,0,.3), 0 0 20px rgba(34,211,238,.08);
+        }
 
         .hcpr-frame-inner img {
             position: absolute;
@@ -2029,7 +2173,7 @@
         .hcpr-frame { cursor: default; }
         .hcpr-frame:has(#hcpr-preview:not([hidden])) { cursor: grab; touch-action: none; }
         .hcpr-frame-panning { cursor: grabbing !important; }
-        .hcpr-frame-panning .hcpr-frame-inner { filter: brightness(1.04); }
+        .hcpr-frame-panning .hcpr-frame-inner { filter: brightness(1.06); }
 
         .hcpr-empty {
             position: absolute;
@@ -2056,6 +2200,12 @@
             background: linear-gradient(160deg, var(--hcpr-surface-elevated), var(--hcpr-surface));
             color: var(--hcpr-text-muted);
             box-shadow: inset 0 1px 0 rgba(255,255,255,.06);
+            transition: color var(--hcpr-t-base) var(--hcpr-ease-out), border-color var(--hcpr-t-base) var(--hcpr-ease-out);
+        }
+
+        .hcpr-frame:hover .hcpr-empty-icon {
+            color: var(--hcpr-accent-bright);
+            border-color: color-mix(in srgb, var(--hcpr-accent) 40%, var(--hcpr-border));
         }
 
         .hcpr-empty-icon svg { width: 17px; height: 17px; }
@@ -2089,7 +2239,7 @@
             justify-content: center;
             gap: 8px;
             border-radius: var(--hcpr-radius-sm);
-            background: linear-gradient(180deg, rgba(139,92,246,.16), rgba(99,102,241,.10));
+            background: linear-gradient(180deg, rgba(34,211,238,.16), rgba(167,139,250,.10));
             border: 1.5px dashed color-mix(in srgb, var(--hcpr-accent) 60%, transparent);
             color: var(--hcpr-accent-bright);
             font-size: 12px;
@@ -2126,7 +2276,10 @@
         }
 
         .hcpr-float-btn svg { width: 13px; height: 13px; }
-        .hcpr-float-btn:hover { color: var(--hcpr-accent-bright); border-color: color-mix(in srgb, var(--hcpr-accent) 45%, var(--hcpr-border)); }
+        .hcpr-float-btn:hover {
+            color: var(--hcpr-accent-bright);
+            border-color: color-mix(in srgb, var(--hcpr-accent) 45%, var(--hcpr-border));
+        }
         .hcpr-float-btn:active { transform: scale(.9); }
 
         .hcpr-zoom-badge {
@@ -2280,7 +2433,7 @@
             background: var(--hcpr-bg-soft);
             box-shadow: inset 0 1px 2px rgba(0,0,0,.4);
             cursor: pointer;
-            transition: background var(--hcpr-t-base) var(--hcpr-ease-out), border-color var(--hcpr-t-base) var(--hcpr-ease-out);
+            transition: background var(--hcpr-t-base) var(--hcpr-ease-out), border-color var(--hcpr-t-base) var(--hcpr-ease-out), box-shadow var(--hcpr-t-base) var(--hcpr-ease-out);
         }
 
         .hcpr-slider::before {
@@ -2299,9 +2452,9 @@
         .hcpr-switch-sm .hcpr-slider::before { width: 12px; height: 12px; }
 
         .hcpr-switch input:checked + .hcpr-slider {
-            border-color: color-mix(in srgb, var(--hcpr-accent) 55%, var(--hcpr-border));
-            background: linear-gradient(120deg, var(--hcpr-accent-deep), var(--hcpr-accent));
-            box-shadow: inset 0 1px 2px rgba(0,0,0,.2), 0 0 12px var(--hcpr-accent-soft);
+            border-color: color-mix(in srgb, var(--hub-cyan) 55%, var(--hcpr-border));
+            background: var(--hub-grad);
+            box-shadow: inset 0 1px 2px rgba(0,0,0,.2), 0 0 14px rgba(34,211,238,.25);
         }
 
         .hcpr-switch input:checked + .hcpr-slider::before {
@@ -2417,6 +2570,11 @@
             border: 1px solid var(--hcpr-border);
             border-radius: var(--hcpr-radius-xs);
             background: var(--hcpr-surface);
+            transition: border-color var(--hcpr-t-fast) var(--hcpr-ease-out);
+        }
+
+        .hcpr-number-field:focus-within {
+            border-color: color-mix(in srgb, var(--hcpr-accent) 50%, var(--hcpr-border));
         }
 
         .hcpr-number-field input {
@@ -2434,8 +2592,6 @@
 
         .hcpr-text-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 
-        .hcpr-danger-zone { border-color: var(--hcpr-danger-soft); }
-
         .hcpr-footnote {
             color: var(--hcpr-text-dim);
             font-size: 8.5px;
@@ -2443,9 +2599,11 @@
             text-align: center;
         }
 
-        /* ---------------- rodapé fixo (reset) ---------------- */
+        /* ---------------- rodapé fixo (download + reset) ---------------- */
 
         .hcpr-footer-row {
+            display: flex;
+            gap: 8px;
             margin: 12px 15px 15px;
             padding-top: 12px;
             border-top: 1px solid var(--hcpr-border-subtle);
@@ -2453,7 +2611,7 @@
 
         .hcpr-btn-footer {
             display: flex;
-            width: 100%;
+            flex: 1;
             align-items: center;
             justify-content: center;
             gap: 7px;
@@ -2462,20 +2620,9 @@
 
         .hcpr-btn-footer svg { width: 14px; height: 14px; flex: 0 0 auto; }
 
-        .hcpr-btn-footer span:not(.hcpr-shortcut-hint) {
+        .hcpr-btn-footer span {
             font-size: 11.5px;
             font-weight: 700;
-        }
-
-        .hcpr-shortcut-hint {
-            margin-left: auto;
-            padding: 2px 6px;
-            border: 1px solid var(--hcpr-border);
-            border-radius: 5px;
-            background: var(--hcpr-bg-soft);
-            color: var(--hcpr-text-muted);
-            font-size: 9px;
-            font-weight: 600;
         }
 
         /* ---------------- button system ---------------- */
@@ -2490,7 +2637,7 @@
             font-size: 10.5px;
             font-weight: 650;
             cursor: pointer;
-            transition: color var(--hcpr-t-fast) var(--hcpr-ease-out), background var(--hcpr-t-fast) var(--hcpr-ease-out), border-color var(--hcpr-t-fast) var(--hcpr-ease-out), transform var(--hcpr-t-fast) var(--hcpr-ease-out);
+            transition: color var(--hcpr-t-fast) var(--hcpr-ease-out), background var(--hcpr-t-fast) var(--hcpr-ease-out), border-color var(--hcpr-t-fast) var(--hcpr-ease-out), transform var(--hcpr-t-fast) var(--hcpr-ease-out), box-shadow var(--hcpr-t-fast) var(--hcpr-ease-out);
         }
 
         .hcpr-btn:active { transform: scale(.96); }
@@ -2498,10 +2645,23 @@
         .hcpr-btn:disabled { opacity: .45; cursor: not-allowed; }
 
         .hcpr-btn-ghost { background: transparent; border-color: transparent; }
-        .hcpr-btn-ghost:hover { color: var(--hcpr-text); background: var(--hcpr-surface-raised); border-color: var(--hcpr-border); }
+        .hcpr-btn-ghost:hover:not(:disabled) {
+            color: var(--hcpr-accent-bright);
+            background: rgba(34,211,238,.06);
+            border-color: color-mix(in srgb, var(--hcpr-accent) 30%, var(--hcpr-border));
+        }
+        .hcpr-btn-ghost:disabled:hover { background: transparent; border-color: transparent; color: var(--hcpr-text-secondary); }
 
-        .hcpr-btn-danger { color: var(--hcpr-text-secondary); background: var(--hcpr-danger-soft); border-color: color-mix(in srgb, var(--hcpr-danger) 30%, var(--hcpr-border)); }
-        .hcpr-btn-danger:hover { color: var(--hcpr-danger); background: var(--hcpr-danger-soft); border-color: color-mix(in srgb, var(--hcpr-danger) 55%, var(--hcpr-border)); }
+        .hcpr-btn-danger {
+            color: var(--hcpr-text-secondary);
+            background: var(--hcpr-danger-soft);
+            border-color: color-mix(in srgb, var(--hcpr-danger) 30%, var(--hcpr-border));
+        }
+        .hcpr-btn-danger:hover {
+            color: var(--hcpr-danger);
+            background: var(--hcpr-danger-soft);
+            border-color: color-mix(in srgb, var(--hcpr-danger) 55%, var(--hcpr-border));
+        }
 
         /* ---------------- tooltips (puramente CSS) ---------------- */
 
@@ -2516,7 +2676,7 @@
             padding: 5px 8px;
             border: 1px solid var(--hcpr-border);
             border-radius: 7px;
-            background: rgba(17,19,27,.92);
+            background: rgba(15,15,22,.94);
             backdrop-filter: blur(6px);
             -webkit-backdrop-filter: blur(6px);
             box-shadow: 0 8px 20px rgba(0,0,0,.4);
@@ -2548,7 +2708,7 @@
             height: 16px;
             border-bottom: 2px solid var(--hcpr-border);
             border-right: 2px solid var(--hcpr-border);
-            border-radius: 0 0 8px 0;
+            border-radius: 0 0 10px 0;
             cursor: nwse-resize;
             touch-action: none;
             transition: border-color var(--hcpr-t-fast) var(--hcpr-ease-out);
@@ -2571,10 +2731,15 @@
             width: 46px;
             height: 46px;
             place-items: center;
-            border: 1px solid var(--hcpr-border-strong);
+            border: 1px solid rgba(255,255,255,.10);
             border-radius: 15px;
-            background: linear-gradient(160deg, var(--hcpr-surface-elevated), var(--hcpr-surface));
-            box-shadow: 0 16px 40px rgba(0,0,0,.5), inset 0 1px 0 rgba(255,255,255,.06);
+            background: linear-gradient(175deg, rgba(20,20,28,.92), rgba(9,9,14,.97));
+            backdrop-filter: blur(18px) saturate(140%);
+            -webkit-backdrop-filter: blur(18px) saturate(140%);
+            box-shadow:
+                0 16px 40px rgba(0,0,0,.5),
+                0 0 20px rgba(34,211,238,.08),
+                inset 0 1px 0 rgba(255,255,255,.06);
             cursor: pointer;
             font-family: var(--hcpr-sans);
             touch-action: none;
@@ -2585,7 +2750,7 @@
         #hcpr-reopen:hover {
             transform: scale(1.05);
             border-color: color-mix(in srgb, var(--hcpr-accent) 45%, var(--hcpr-border-strong));
-            box-shadow: 0 18px 46px rgba(0,0,0,.55), 0 0 0 5px var(--hcpr-accent-soft);
+            box-shadow: 0 18px 46px rgba(0,0,0,.55), 0 0 0 5px var(--hcpr-accent-soft), 0 0 30px rgba(34,211,238,.18);
         }
 
         #hcpr-reopen:active { transform: scale(.94); }
@@ -2718,5 +2883,9 @@
         );
     }
 
-    window._livePhoto = { kill };
+    window._livePhoto = {
+        kill,
+        show: () => setPanelHidden(false),
+        hide: () => setPanelHidden(true)
+    };
 })();
