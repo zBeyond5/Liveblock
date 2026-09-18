@@ -272,80 +272,112 @@ Responda APENAS a saída. Nada mais antes ou depois.`;
         }
     }
 
+    function ensureFont() {
+        if (document.querySelector('link[data-sang-font]')) return;
+        const link = document.createElement('link');
+        link.rel = 'stylesheet';
+        link.href = 'https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500;600&display=swap';
+        link.setAttribute('data-sang-font', '');
+        document.head.appendChild(link);
+    }
+
     function init() {
         if (window[UID]) return;
+
+        ensureFont();
 
         const host = document.createElement('div');
         host.id = UID + '_host';
         host.style.cssText = 'all:initial;position:fixed;top:0;left:0;z-index:2147483000;';
         document.body.appendChild(host);
+        window._hubUI?.markProtected?.(host);
         const root = host.attachShadow({ mode: 'open' });
 
         const style = document.createElement('style');
         style.textContent = `
-        :host { all: initial; }
+        :host {
+            all: initial;
+            --hub-cyan: #22d3ee;
+            --hub-violet: #a78bfa;
+            --hub-grad: linear-gradient(120deg, var(--hub-cyan), var(--hub-violet));
+            --hub-ok: #34d399;
+            --hub-err: #fb7185;
+            --hub-muted: #8b8fa3;
+        }
         * { box-sizing: border-box; }
         .panel {
             position: fixed; display: flex; flex-direction: column;
-            font-family: Roboto, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-            background: #0f0f0f; border: 1px solid rgba(255,255,255,.08); border-radius: 12px;
-            overflow: hidden; box-shadow: 0 20px 60px rgba(0,0,0,.6);
+            font-family: 'Geist', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background: linear-gradient(175deg, rgba(20,20,28,.92) 0%, rgba(9,9,14,.97) 100%);
+            backdrop-filter: blur(18px) saturate(140%);
+            border: 1px solid rgba(255,255,255,.08);
+            border-radius: 20px;
+            overflow: hidden;
+            box-shadow: 0 20px 50px rgba(0,0,0,.55), 0 2px 8px rgba(0,0,0,.4), inset 0 1px 0 rgba(255,255,255,.06);
             contain: layout style paint;
         }
         .hdr {
-            height: 40px; flex-shrink: 0; display: flex; align-items: center; justify-content: space-between;
-            padding: 0 10px; cursor: grab; user-select: none; touch-action: none;
-            border-bottom: 1px solid rgba(255,255,255,.06); background: #181818;
+            height: 44px; flex-shrink: 0; display: flex; align-items: center; justify-content: space-between;
+            padding: 0 12px; cursor: grab; user-select: none; touch-action: none;
+            border-bottom: 1px solid rgba(255,255,255,.06); background: rgba(255,255,255,.02);
         }
         .hdr.dragging { cursor: grabbing; }
         .brand { display: flex; align-items: center; gap: 8px; min-width: 0; }
         .logo { width: 20px; height: 14px; border-radius: 4px; background: #ff0000; position: relative; flex-shrink: 0; }
         .logo::after { content: ''; position: absolute; left: 7px; top: 3px; border: 4px solid transparent; border-left-color: #fff; }
-        .title { font-weight: 700; font-size: 13px; color: #fff; white-space: nowrap; }
-        .actions { display: flex; gap: 6px; flex-shrink: 0; }
+        .title {
+            font-weight: 600; font-size: 13px; letter-spacing: .2px; white-space: nowrap;
+            background: var(--hub-grad); -webkit-background-clip: text; background-clip: text; color: transparent;
+        }
+        .actions { display: flex; gap: 4px; flex-shrink: 0; }
         .btn {
-            width: 26px; height: 26px; border-radius: 50%; background: transparent; border: none;
-            color: #aaa; display: flex; align-items: center; justify-content: center;
-            cursor: pointer; font-size: 13px; transition: background .15s, color .15s;
+            width: 28px; height: 28px; border-radius: 50%; background: transparent; border: none;
+            color: var(--hub-muted); display: flex; align-items: center; justify-content: center;
+            cursor: pointer; font-size: 13px; transition: background .15s ease, color .15s ease;
         }
-        .btn:hover, .btn:focus-visible { background: rgba(255,255,255,.12); color: #fff; outline: none; }
-        .btn.active { background: rgba(62,166,255,.18); color: #3ea6ff; }
-        .searchbar { display: flex; gap: 8px; padding: 8px 10px; flex-shrink: 0; background: #0f0f0f; }
+        .btn:hover { background: rgba(255,255,255,.08); color: #f4f5f8; }
+        .btn:focus-visible { outline: none; box-shadow: 0 0 0 2px rgba(34,211,238,.5); }
+        .btn.active { background: rgba(34,211,238,.16); color: var(--hub-cyan); }
+        .searchbar { display: flex; gap: 8px; padding: 10px 12px; flex-shrink: 0; }
         .searchbar input {
-            flex: 1; background: #121212; border: 1px solid rgba(255,255,255,.15); border-radius: 20px;
-            padding: 7px 14px; color: #fff; font-size: 13px; outline: none;
+            flex: 1; background: rgba(255,255,255,.04); border: 1px solid rgba(255,255,255,.1); border-radius: 12px;
+            padding: 8px 14px; color: #f1f2f5; font-size: 13px; outline: none;
+            transition: border-color .15s ease, box-shadow .15s ease;
         }
-        .searchbar input:focus { border-color: #3ea6ff; }
-        .searchbar input::placeholder { color: #888; }
+        .searchbar input:focus { border-color: var(--hub-cyan); box-shadow: 0 0 0 3px rgba(34,211,238,.15); }
+        .searchbar input::placeholder { color: var(--hub-muted); }
         .searchbar button {
-            background: #222; border: 1px solid rgba(255,255,255,.1); border-radius: 20px;
-            padding: 0 16px; color: #fff; font-size: 12px; font-weight: 600; cursor: pointer; white-space: nowrap;
+            background: var(--hub-grad); border: none; border-radius: 12px;
+            padding: 0 18px; color: #06080d; font-size: 12px; font-weight: 700; cursor: pointer; white-space: nowrap;
+            transition: filter .15s ease, transform .1s ease;
         }
-        .searchbar button:hover { background: #303030; }
+        .searchbar button:hover { filter: brightness(1.08); }
+        .searchbar button:active { transform: scale(.97); }
+        .searchbar button:focus-visible { outline: none; box-shadow: 0 0 0 2px rgba(34,211,238,.5); }
         .body { flex: 1; min-height: 0; display: flex; background: #000; }
         .player { flex: 1; min-width: 0; position: relative; background: #000; }
         .player iframe { width: 100%; height: 100%; border: 0; }
         .results {
-            width: ${RESULTS_W}px; flex-shrink: 0; overflow-y: auto; background: #0f0f0f;
+            width: ${RESULTS_W}px; flex-shrink: 0; overflow-y: auto; background: rgba(255,255,255,.015);
             border-left: 1px solid rgba(255,255,255,.06);
         }
         .results.hidden { display: none; }
         .results::-webkit-scrollbar { width: 4px; }
         .results::-webkit-scrollbar-thumb { background: rgba(255,255,255,.15); border-radius: 2px; }
-        .item { display: flex; gap: 8px; padding: 8px; cursor: pointer; transition: background .12s; }
-        .item:hover { background: rgba(255,255,255,.06); }
-        .item.active { background: rgba(62,166,255,.12); box-shadow: inset 3px 0 0 #3ea6ff; }
-        .item img { width: 88px; height: 50px; object-fit: cover; border-radius: 6px; flex-shrink: 0; background: #222; }
+        .item { display: flex; gap: 8px; padding: 8px; cursor: pointer; transition: background .12s ease; }
+        .item:hover { background: rgba(255,255,255,.05); }
+        .item.active { background: rgba(34,211,238,.10); box-shadow: inset 3px 0 0 var(--hub-cyan); }
+        .item img { width: 88px; height: 50px; object-fit: cover; border-radius: 8px; flex-shrink: 0; background: rgba(255,255,255,.05); }
         .item-info { flex: 1; min-width: 0; }
-        .item-title { font-size: 12px; color: #f1f1f1; line-height: 1.3; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
-        .item-channel { font-size: 10.5px; color: #aaa; margin-top: 3px; }
-        .empty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 8px; color: #888; font-size: 12px; text-align: center; padding: 20px; }
+        .item-title { font-size: 12px; color: #eef0f5; line-height: 1.3; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+        .item-channel { font-size: 10.5px; color: var(--hub-muted); margin-top: 3px; }
+        .empty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 8px; color: var(--hub-muted); font-size: 12px; text-align: center; padding: 20px; }
         .empty.flow { position: static; height: 100%; }
-        .spin { width: 18px; height: 18px; border: 2px solid rgba(255,255,255,.2); border-top-color: #fff; border-radius: 50%; animation: spin .7s linear infinite; }
+        .spin { width: 18px; height: 18px; border: 2px solid rgba(255,255,255,.15); border-top-color: var(--hub-cyan); border-radius: 50%; animation: spin .7s linear infinite; }
         @keyframes spin { to { transform: rotate(360deg); } }
         .resize-handle {
             position: absolute; right: 0; bottom: 0; width: 16px; height: 16px; cursor: nwse-resize; touch-action: none;
-            background: linear-gradient(135deg, transparent 50%, rgba(255,255,255,.2) 50%);
+            background: linear-gradient(135deg, transparent 50%, rgba(255,255,255,.18) 50%);
         }
         /* Modo lite: só o vídeo. Cabeçalho, barra, lista e handle escondidos. */
         .panel.lite .hdr,
@@ -370,6 +402,8 @@ Responda APENAS a saída. Nada mais antes ou depois.`;
 
         const panel = document.createElement('div');
         panel.className = 'panel';
+        panel.dataset.hub = '1';
+        panel.setAttribute('data-sang-ui', '');
         panel.innerHTML = `
             <div class="hdr" id="hdr">
                 <div class="brand"><div class="logo"></div><span class="title">YouTube</span></div>
