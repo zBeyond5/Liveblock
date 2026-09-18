@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LiveBooster [by SANG]
 // @namespace    livebooster-sang
-// @version      5.0.1
+// @version      5.1.0
 // @description  Otimizador de performance
 // @match        *://*.habblive.in/*
 // @match        *://habblive.in/*
@@ -12,12 +12,24 @@
 (function () {
   'use strict';
 
+  const VERSION = '5.1.0';
   const INSTANCE_KEY = '_liveBooster';
   const STORAGE_KEY = 'livebooster-settings';
-  let alive = true;
+  const LITE_OPT_OUT_ATTR = 'data-sang-ui'; // [FIX 4] convenção entre módulos
 
+  // [R16] Estado encapsulado — mutação centralizada e verificável.
+  const state = {
+    alive: true,
+    dying: false
+  };
+
+  // [R14][R5] Helpers de log com prefixo padronizado.
+  const log = (...a) => console.log(`[LiveBooster ${VERSION}]`, ...a);
+  const warn = (...a) => console.warn(`[LiveBooster ${VERSION}]`, ...a);
+
+  // Encerra instância anterior (mesmo se órfã).
   if (window[INSTANCE_KEY]?.kill) {
-    try { window[INSTANCE_KEY].kill(); } catch (e) {}
+    try { window[INSTANCE_KEY].kill(); } catch (e) { warn('kill da instância anterior falhou:', e); }
   }
 
   const DEFAULTS = {
@@ -49,16 +61,10 @@
   function loadSettings() {
     const merged = { ...DEFAULTS };
     let stored = {};
-    try {
-      stored = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}');
-    } catch (e) {
-      console.warn('[LiveBooster] settings corrompidas no localStorage, usando padrões.');
-      stored = {};
-    }
+    try { stored = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}'); }
+    catch (e) { stored = {}; }
     for (const key of Object.keys(DEFAULTS)) {
-      if (key in stored && TYPE_VALIDATORS[key](stored[key])) {
-        merged[key] = stored[key];
-      }
+      if (key in stored && TYPE_VALIDATORS[key](stored[key])) merged[key] = stored[key];
     }
     return merged;
   }
@@ -66,52 +72,183 @@
   const settings = loadSettings();
 
   function saveSettings() {
+    if (state.dying) return;
     try { localStorage.setItem(STORAGE_KEY, JSON.stringify(settings)); }
-    catch (e) { console.warn('[LiveBooster] falha ao salvar settings:', e); }
+    catch (e) { /* quota cheia — silencioso */ }
   }
 
-  const GpuBoost = {
-    originalGetContext: null,
+  // ============================================================
+  // [R6] Helper compartilhado — evitar acoplamento GpuBoost↔Upscale
+  // ============================================================
+  function isGameCanvas(canvas) {
+    if (!canvas || canvas.width < 100 || canvas.height < 100) return false;
+    const selectors = [
+      '#client-box', '#game', '#room',
+      '[class*="client"]', '[class*="game"]', '[id*="client"]'
+    ];
+    for (const sel of selectors) {
+      try { if (canvas.closest(sel)) return true; } catch (e) {}
+    }
+    return false;
+  }
+
+  // ============================================================
+  // [FIX 5] SharedObserver — um único MutationObserver compartilhado
+  // com debounce de 100ms. Substitui 3 observers independentes.
+  // ============================================================
+  const SharedObserver = {
     observer: null,
+    pending: false,
+    callbacks: new Map(), // [R4] Map<name, fn> — dedupe por nome
+
+    register(name, fn) {
+      // [R4] Registro idempotente — se já existe, substitui sem duplicar
+      this.callbacks.set(name, fn);
+      this.ensure();
+    },
+
+    unregister(name) {
+      this.callbacks.delete(name);
+    },
+
+    ensure() {
+      if (this.observer || !document.body) return;
+      this.observer = new MutationObserver(() => {
+        if (this.pending || state.dying) return;
+        this.pending = true;
+        setTimeout(() => {
+          this.pending = false;
+          if (state.dying) return;
+          // Snapshot antes de iterar — [R16] callbacks não mutam o Map durante execução
+          for (const [name, fn] of Array.from(this.callbacks)) {
+            try { fn(); } catch (e) { warn(`observer callback "${name}" falhou:`, e); }
+          }
+        }, 100);
+      });
+      this.observer.observe(document.body, { childList: true, subtree: true });
+    },
+
+    destroy() {
+      if (this.observer) { this.observer.disconnect(); this.observer = null; }
+      this.callbacks.clear();
+      this.pending = false;
+    }
+  };
+
+  // ============================================================
+  // [FIX 6] LongTaskMonitor — detecta a CAUSA do lag, não só o sintoma
+  // ============================================================
+  const LongTaskMonitor = {
+    observer: null,
+    recent: [],
+
+    start(onSevere) {
+      if (!('PerformanceObserver' in window)) return;
+      // [R12] callback passado por parâmetro — sem propriedade global mutável
+      try {
+        this.observer = new PerformanceObserver((list) => {
+          for (const entry of list.getEntries()) {
+            const info = {
+              start: entry.startTime,
+              duration: entry.duration,
+              source: entry.attribution?.[0]?.name || 'desconhecido'
+            };
+            this.recent.push(info);
+            if (this.recent.length > 20) this.recent.shift();
+
+            if (entry.duration > 150) {
+              warn('long task:', Math.round(entry.duration) + 'ms', '@', info.source);
+            }
+            if (onSevere && entry.duration > 400) {
+              try { onSevere(info); } catch (e) {}
+            }
+          }
+        });
+        this.observer.observe({ entryTypes: ['longtask'] });
+      } catch (e) { /* navegador sem suporte — degrada silencioso */ }
+    },
+
+    stop() {
+      if (this.observer) { this.observer.disconnect(); this.observer = null; }
+      this.recent = [];
+    },
+
+    getRecent() { return [...this.recent]; }
+  };
+
+  // ============================================================
+  // [FIX 2][R3] GpuBoost — âncora persistente + marcador anti-encadeamento
+  // ============================================================
+  const GpuBoost = {
+    patchedGetContext: null,
     boostedCanvases: new WeakSet(),
 
     apply() {
-      if (!this.originalGetContext) {
-        this.originalGetContext = HTMLCanvasElement.prototype.getContext;
-      }
-      const original = this.originalGetContext;
+      const proto = HTMLCanvasElement.prototype;
 
-      HTMLCanvasElement.prototype.getContext = function (type, opts) {
+      // [FIX 2] Âncora persistente — sobrevive à perda de closure
+      if (!proto.__lbOriginalGetContext) {
+        Object.defineProperty(proto, '__lbOriginalGetContext', {
+          value: proto.getContext,
+          writable: true,
+          configurable: true,
+          enumerable: false
+        });
+      }
+
+      // [R3] Se já existe um patch nosso órfão no prototype, restaura antes
+      // de patchar de novo — evita empilhar wrappers.
+      if (proto.getContext?.__lbPatched) {
+        proto.getContext = proto.__lbOriginalGetContext;
+      }
+
+      const original = proto.__lbOriginalGetContext;
+
+      const patched = function (type, opts) {
         let newOpts = opts;
         if (type === 'webgl' || type === 'webgl2' || type === 'experimental-webgl') {
-          newOpts = Object.assign({}, opts || {}, { powerPreference: 'high-performance' });
+          // [G9] Só força high-performance se caller não especificou
+          if (!opts || !opts.powerPreference) {
+            newOpts = Object.assign({}, opts || {}, { powerPreference: 'high-performance' });
+          }
         }
         return original.call(this, type, newOpts);
       };
+      patched.__lbPatched = true; // [R3] marcador
 
+      proto.getContext = patched;
+      this.patchedGetContext = patched;
+
+      SharedObserver.register('gpuBoost', () => this.boostMainCanvas());
       this.boostMainCanvas();
-
-      this.observer = new MutationObserver(() => this.boostMainCanvas());
-      if (document.body) {
-        this.observer.observe(document.body, { childList: true, subtree: true });
-      }
     },
 
     boostMainCanvas() {
-      const canvases = Array.from(document.querySelectorAll('canvas'));
+      if (state.dying) return;
+      // [R6] usa helper compartilhado
+      const canvases = Array.from(document.querySelectorAll('canvas')).filter(isGameCanvas);
       if (!canvases.length) return;
+
       const main = canvases.reduce((a, b) => (a.width * a.height >= b.width * b.height ? a : b));
       if (this.boostedCanvases.has(main)) return;
 
-      canvases.forEach(c => {
-        if (c !== main && this.boostedCanvases.has(c)) {
-          this.unboostCanvas(c);
-        }
-      });
+      for (const c of canvases) {
+        if (c !== main && this.boostedCanvases.has(c)) this.unboostCanvas(c);
+      }
 
       main.style.transform = 'translateZ(0)';
       main.style.willChange = 'transform';
       main.style.backfaceVisibility = 'hidden';
+
+      // [G8] Handler para webglcontextlost — evita tela branca
+      if (!main.__lbContextLossHandler) {
+        main.__lbContextLossHandler = (e) => {
+          e.preventDefault();
+          warn('WebGL context lost, aguardando restore...');
+        };
+        main.addEventListener('webglcontextlost', main.__lbContextLossHandler);
+      }
+
       this.boostedCanvases.add(main);
     },
 
@@ -119,21 +256,37 @@
       canvas.style.removeProperty('transform');
       canvas.style.removeProperty('will-change');
       canvas.style.removeProperty('backface-visibility');
+      if (canvas.__lbContextLossHandler) {
+        try { canvas.removeEventListener('webglcontextlost', canvas.__lbContextLossHandler); }
+        catch (e) {}
+        delete canvas.__lbContextLossHandler;
+      }
       this.boostedCanvases.delete(canvas);
     },
 
     remove() {
-      if (this.originalGetContext) {
-        HTMLCanvasElement.prototype.getContext = this.originalGetContext;
-        this.originalGetContext = null;
+      const proto = HTMLCanvasElement.prototype;
+      // [FIX 2][R3] Só restaura se o patch atual é o NOSSO (marcador)
+      if (proto.__lbOriginalGetContext &&
+          proto.getContext?.__lbPatched) {
+        proto.getContext = proto.__lbOriginalGetContext;
       }
-      document.querySelectorAll('canvas').forEach(c => {
-        if (this.boostedCanvases.has(c)) this.unboostCanvas(c);
-      });
-      if (this.observer) { this.observer.disconnect(); this.observer = null; }
+      this.patchedGetContext = null;
+
+      // [R13] Loga em vez de engolir
+      try {
+        document.querySelectorAll('canvas').forEach(c => {
+          if (this.boostedCanvases.has(c)) this.unboostCanvas(c);
+        });
+      } catch (e) { warn('erro ao desfazer boost de canvas:', e); }
+
+      SharedObserver.unregister('gpuBoost');
     }
   };
 
+  // ============================================================
+  // FPSManager — alvo único: cap do jogo. Nunca toca em módulos.
+  // ============================================================
   const FPSManager = {
     timeoutId: null,
     forced: false,
@@ -152,8 +305,9 @@
     },
 
     scheduleNext() {
+      if (state.dying) return;
       if (this.attempt >= this.delays.length) {
-        console.warn('[LiveBooster] Não foi possível localizar um controle de FPS.');
+        warn('Não foi possível localizar um controle de FPS.');
         return;
       }
       const delay = this.delays[this.attempt++];
@@ -161,7 +315,7 @@
     },
 
     tryForce() {
-      if (this.forced) return;
+      if (this.forced || state.dying) return;
       if (this.tryElements() || this.tryLocalStorage() || this.tryGlobalObjects()) {
         this.markForced();
         return;
@@ -169,12 +323,24 @@
       this.scheduleNext();
     },
 
+    // [G17] Escopo limitado — containers de settings antes do body inteiro
     tryElements() {
-      const candidates = document.querySelectorAll(
-        'select, input[type="range"], input[type="number"], button, [role="button"]'
-      );
-      for (const el of candidates) {
-        if (this.trySetElement(el)) return true;
+      const scopes = [
+        document.querySelector('#client-box'),
+        document.querySelector('[class*="settings"]'),
+        document.querySelector('[class*="config"]'),
+        document.querySelector('[class*="options"]'),
+        document.body
+      ].filter(Boolean);
+
+      const seen = new Set();
+      for (const scope of scopes) {
+        const candidates = scope.querySelectorAll('select, input[type="range"], input[type="number"]');
+        for (const el of candidates) {
+          if (seen.has(el)) continue;
+          seen.add(el);
+          if (this.trySetElement(el)) return true;
+        }
       }
       return false;
     },
@@ -208,50 +374,40 @@
             el.dispatchEvent(new Event('input', { bubbles: true }));
             return true;
           }
-          return false;
-        }
-
-        if ((tag === 'button' || el.getAttribute('role') === 'button') && /\b120\b/.test(text)) {
-          el.click();
-          return true;
         }
       } catch (e) {}
       return false;
     },
 
+    // [G11][R10] Só chaves conhecidas + preserva tipo original
     tryLocalStorage() {
-      const KEY_RE = /\bfps\b|frame.?rate/i;
-      const PROP_RE = /\bfps\b|frame.?rate|frame.?cap|frame.?limit/i;
+      const KNOWN_KEYS = [
+        'settings', 'config', 'gameSettings',
+        'habblive_settings', 'client_config', 'options'
+      ];
+      const PROP_RE = /^(fps|frameRate|frameCap|frameLimit|maxFps|targetFps)$/i;
 
-      try {
-        for (let i = 0; i < localStorage.length; i++) {
-          const key = localStorage.key(i);
-          if (!key || !KEY_RE.test(key)) continue;
-          const raw = localStorage.getItem(key);
-
-          try {
-            const obj = JSON.parse(raw);
-            if (obj && typeof obj === 'object') {
-              let changed = false;
-              for (const prop of Object.keys(obj)) {
-                if (PROP_RE.test(prop) && this.isPlausibleFpsValue(obj[prop])) {
-                  obj[prop] = 120;
-                  changed = true;
-                }
-              }
-              if (changed) {
-                localStorage.setItem(key, JSON.stringify(obj));
-                return true;
-              }
-            }
-          } catch {
-            if (this.isPlausibleFpsValue(raw) && raw !== '120') {
-              localStorage.setItem(key, '120');
-              return true;
+      for (const key of KNOWN_KEYS) {
+        let raw;
+        try { raw = localStorage.getItem(key); } catch (e) { continue; }
+        if (!raw) continue;
+        try {
+          const obj = JSON.parse(raw);
+          if (!obj || typeof obj !== 'object') continue;
+          let changed = false;
+          for (const prop of Object.keys(obj)) {
+            if (PROP_RE.test(prop) && this.isPlausibleFpsValue(obj[prop])) {
+              // [R10] Preserva o tipo original (string vs number)
+              obj[prop] = typeof obj[prop] === 'string' ? '120' : 120;
+              changed = true;
             }
           }
-        }
-      } catch (e) { console.warn('[LiveBooster] erro ao acessar localStorage:', e); }
+          if (changed) {
+            localStorage.setItem(key, JSON.stringify(obj));
+            return true;
+          }
+        } catch (e) {}
+      }
       return false;
     },
 
@@ -260,16 +416,20 @@
       return Number.isFinite(n) && n > 0 && n <= 300;
     },
 
+    // [G12] Só window.game e window.gameConfig — nomes inequívocos
     tryGlobalObjects() {
-      const roots = [window.game, window.app, window.config, window.settings, window.gameConfig];
+      const roots = [window.game, window.gameConfig].filter(Boolean);
       const props = ['fps', 'frameRate', 'maxFps', 'targetFps', 'fpsCap', 'frameLimit'];
       for (const obj of roots) {
         if (!obj || typeof obj !== 'object') continue;
         for (const prop of props) {
           try {
             if (prop in obj && this.isPlausibleFpsValue(obj[prop])) {
-              obj[prop] = 120;
-              return true;
+              const current = Number(obj[prop]);
+              if (current >= 30 && current <= 90) {
+                obj[prop] = 120;
+                return true;
+              }
             }
           } catch (e) {}
         }
@@ -280,12 +440,14 @@
     markForced() {
       this.forced = true;
       if (this.timeoutId) { clearTimeout(this.timeoutId); this.timeoutId = null; }
-      console.log('[LiveBooster] Configuração de FPS aplicada.');
+      log('Configuração de FPS aplicada.');
     }
   };
 
+  // ============================================================
+  // Upscale — restrito ao canvas do jogo, com wrap idempotente
+  // ============================================================
   const Upscale = {
-    observer: null,
     originalData: new WeakMap(),
     remapRegistry: new WeakMap(),
 
@@ -294,15 +456,9 @@
       const COORD_PROPS_Y = ['clientY', 'pageY', 'screenY', 'offsetY'];
       return new Proxy(e, {
         get(target, prop) {
-          if (COORD_PROPS_X.includes(prop) && typeof target[prop] === 'number') {
-            return target[prop] * scaleX;
-          }
-          if (COORD_PROPS_Y.includes(prop) && typeof target[prop] === 'number') {
-            return target[prop] * scaleY;
-          }
-          if (prop === 'deltaY' && typeof target.deltaY === 'number') {
-            return target.deltaY * scaleY;
-          }
+          if (COORD_PROPS_X.includes(prop) && typeof target[prop] === 'number') return target[prop] * scaleX;
+          if (COORD_PROPS_Y.includes(prop) && typeof target[prop] === 'number') return target[prop] * scaleY;
+          if (prop === 'deltaY' && typeof target.deltaY === 'number') return target.deltaY * scaleY;
           const value = target[prop];
           return typeof value === 'function' ? value.bind(target) : value;
         }
@@ -310,8 +466,15 @@
     },
 
     applyToCanvas(canvas) {
+      // [G10][R6] Só canvas do jogo, via helper compartilhado
       if (!canvas || this.originalData.has(canvas)) return;
-      if (canvas.width <= 100 || canvas.height <= 100) return;
+      if (!isGameCanvas(canvas)) return;
+
+      // [R17] Desativa imageSmoothing para pixel art nítida
+      try {
+        const ctx = canvas.getContext('2d');
+        if (ctx) ctx.imageSmoothingEnabled = false;
+      } catch (e) {}
 
       const origWidth = canvas.width, origHeight = canvas.height;
       const nw = Math.max(1, Math.floor(origWidth * settings.upscaleFactor));
@@ -319,7 +482,8 @@
 
       this.originalData.set(canvas, {
         w: origWidth, h: origHeight,
-        sw: canvas.style.width || '', sh: canvas.style.height || ''
+        sw: canvas.style.width || '',
+        sh: canvas.style.height || ''
       });
 
       const scaleX = origWidth / nw;
@@ -333,24 +497,33 @@
       ]);
 
       canvas.addEventListener = function (type, listener, options) {
+        // [G13] Idempotência — não envolve o mesmo listener duas vezes
+        if (listener && listener.__lbWrapped) {
+          return origAEL(type, listener, options);
+        }
         if (REMAP_TYPES.has(type) && typeof listener === 'function') {
           const wrapped = (e) => listener.call(canvas, Upscale.createRemappedEvent(e, scaleX, scaleY));
+          wrapped.__lbWrapped = true;
+          wrapped.__lbOriginal = listener;
           remapped.set(listener, wrapped);
           origAEL(type, wrapped, options);
         } else {
           origAEL(type, listener, options);
         }
       };
+
       canvas.removeEventListener = function (type, listener, options) {
-        if (remapped.has(listener)) {
-          origREL(type, remapped.get(listener), options);
+        const target = remapped.get(listener) ||
+                       (listener && listener.__lbWrapped ? listener : null);
+        if (target) {
+          origREL(type, target, options);
           remapped.delete(listener);
         } else {
           origREL(type, listener, options);
         }
       };
 
-      this.remapRegistry.set(canvas, { addEventListener: origAEL, removeEventListener: origREL, map: remapped });
+      this.remapRegistry.set(canvas, { addEventListener: origAEL, removeEventListener: origREL });
 
       canvas.width = nw;
       canvas.height = nh;
@@ -372,44 +545,34 @@
 
       canvas.width = data.w;
       canvas.height = data.h;
-      data.sw ? (canvas.style.width = data.sw) : canvas.style.removeProperty('width');
-      data.sh ? (canvas.style.height = data.sh) : canvas.style.removeProperty('height');
+      if (data.sw) canvas.style.width = data.sw; else canvas.style.removeProperty('width');
+      if (data.sh) canvas.style.height = data.sh; else canvas.style.removeProperty('height');
       canvas.style.removeProperty('image-rendering');
       this.originalData.delete(canvas);
     },
 
     scanAll() {
-      document.querySelectorAll('canvas').forEach(c => this.applyToCanvas(c));
-    },
-
-    startObserver() {
-      if (this.observer) return;
-      this.observer = new MutationObserver(mutations => {
-        for (const m of mutations) {
-          m.addedNodes.forEach(node => {
-            if (node.nodeType !== 1) return;
-            if (node.tagName === 'CANVAS') this.applyToCanvas(node);
-            if (node.querySelectorAll) node.querySelectorAll('canvas').forEach(c => this.applyToCanvas(c));
-          });
-        }
-      });
-      if (document.body) this.observer.observe(document.body, { childList: true, subtree: true });
-    },
-
-    stopObserver() {
-      if (this.observer) { this.observer.disconnect(); this.observer = null; }
+      try { document.querySelectorAll('canvas').forEach(c => this.applyToCanvas(c)); }
+      catch (e) { warn('scanAll falhou:', e); }
     },
 
     removeAll() {
-      document.querySelectorAll('canvas').forEach(c => {
-        if (this.originalData.has(c)) this.removeFromCanvas(c);
-      });
+      try {
+        document.querySelectorAll('canvas').forEach(c => {
+          if (this.originalData.has(c)) this.removeFromCanvas(c);
+        });
+      } catch (e) { warn('removeAll falhou:', e); }
     },
 
     setEnabled(on) {
       settings.upscaleEnabled = on;
-      if (on) { this.scanAll(); this.startObserver(); }
-      else { this.removeAll(); this.stopObserver(); }
+      if (on) {
+        this.scanAll();
+        SharedObserver.register('upscale', () => this.scanAll());
+      } else {
+        this.removeAll();
+        SharedObserver.unregister('upscale');
+      }
       saveSettings();
     },
 
@@ -421,24 +584,28 @@
   };
 
   // ============================================================
-  // LiteMode — exclui o Hub e seus filhos das regras pesadas
-  // IDs do hub: #_hub, #_hubpill (panel e pill do hub2.js)
+  // [FIX 4] LiteMode — opt-out via [data-sang-ui]
   // ============================================================
-  const HUB_EXCLUDE = [
-    '#_hub', '#_hub *',
-    '#_hubpill', '#_hubpill *',
-    '#lb-panel', '#lb-panel *'
-  ].map(s => ':not(' + s + ')').join('');
-
   const LiteMode = {
     styleEl: null,
+
+    buildExcludeSelector() {
+      const selectors = [
+        '#_hub', '#_hub *',
+        '#_hubpill', '#_hubpill *',
+        '#lb-panel', '#lb-panel *',
+        `[${LITE_OPT_OUT_ATTR}]`, `[${LITE_OPT_OUT_ATTR}] *`
+      ];
+      return selectors.map(s => ':not(' + s + ')').join('');
+    },
 
     ensureStyle() {
       if (this.styleEl) return this.styleEl;
       const el = document.createElement('style');
       el.id = 'lb-lite-style';
+      const excl = this.buildExcludeSelector();
       el.textContent = `
-        *${HUB_EXCLUDE} {
+        *${excl} {
           animation: none !important;
           transition: none !important;
           box-shadow: none !important;
@@ -448,7 +615,7 @@
           background-attachment: initial !important;
         }
         img, canvas, video { image-rendering: optimizeSpeed !important; }
-        *${HUB_EXCLUDE} { will-change: auto !important; }
+        *${excl} { will-change: auto !important; }
       `;
       this.styleEl = el;
       return el;
@@ -457,74 +624,97 @@
     set(on) {
       settings.liteMode = on;
       if (on) {
-        if (!document.getElementById('lb-lite-style')) document.head.appendChild(this.ensureStyle());
+        if (!document.getElementById('lb-lite-style')) {
+          try { document.head.appendChild(this.ensureStyle()); } catch (e) {}
+        }
       } else {
         const el = document.getElementById('lb-lite-style');
         if (el) el.remove();
       }
       saveSettings();
-      UI.syncFromSettings();
+      try { UI.syncFromSettings(); } catch (e) {}
     }
   };
 
-  function optimizeCanvas(c) {
-    try {
-      const ctx = c.getContext('2d');
-      if (ctx) ctx.imageSmoothingEnabled = false;
-    } catch (e) {}
-  }
+  // ============================================================
+  // [FIX 7] Auto-Lite com histerese assimétrica
+  // ============================================================
+  /**
+   * Ativa liteMode após N leituras consecutivas abaixo de LOW_THRESHOLD
+   * (~1.5s a 2Hz), desativa após M leituras acima de HIGH_THRESHOLD
+   * (~3s). Assimetria evita oscilação: threshold de saída mais alto
+   * e tempo de saída maior que os de entrada.
+   * Nunca desativa se o usuário ligou manualmente (autoActivated=false).
+   */
+  const AutoLite = {
+    lowStreak: 0,
+    highStreak: 0,
+    autoActivated: false,
+    LOW_THRESHOLD: 25,
+    HIGH_THRESHOLD: 45,
+    LOW_SAMPLES: 3,
+    HIGH_SAMPLES: 6,
 
-  let canvasObserver = null;
-  function startCanvasObserver() {
-    if (canvasObserver) return;
-    document.querySelectorAll('canvas').forEach(c => {
-      optimizeCanvas(c);
-      if (settings.upscaleEnabled) Upscale.applyToCanvas(c);
-    });
-    canvasObserver = new MutationObserver(mutations => {
-      for (const m of mutations) {
-        m.addedNodes.forEach(node => {
-          if (node.nodeType !== 1) return;
-          if (node.tagName === 'CANVAS') {
-            optimizeCanvas(node);
-            if (settings.upscaleEnabled) Upscale.applyToCanvas(node);
+    onFpsSample(fps) {
+      if (!settings.autoLite) { this.resetStreaks(); return; }
+
+      if (settings.liteMode) {
+        // [R7] Só conta para desativar se foi AutoLite que ativou
+        if (!this.autoActivated) return;
+        if (fps > this.HIGH_THRESHOLD) {
+          this.highStreak++;
+          if (this.highStreak >= this.HIGH_SAMPLES) {
+            LiteMode.set(false);
+            this.autoActivated = false;
+            this.highStreak = 0;
           }
-          if (node.querySelectorAll) {
-            node.querySelectorAll('canvas').forEach(c => {
-              optimizeCanvas(c);
-              if (settings.upscaleEnabled) Upscale.applyToCanvas(c);
-            });
+        } else {
+          this.highStreak = 0;
+        }
+      } else {
+        if (fps < this.LOW_THRESHOLD) {
+          this.lowStreak++;
+          if (this.lowStreak >= this.LOW_SAMPLES) {
+            LiteMode.set(true);
+            this.autoActivated = true;
+            this.lowStreak = 0;
           }
-        });
+        } else {
+          this.lowStreak = 0;
+        }
       }
-    });
-    if (document.body) canvasObserver.observe(document.body, { childList: true, subtree: true });
-  }
-  function stopCanvasObserver() {
-    if (canvasObserver) { canvasObserver.disconnect(); canvasObserver = null; }
-  }
+    },
 
-  const throttledEvents = new Map();
-  function throttleEvent(type) {
-    if (throttledEvents.has(type)) return;
-    let ticking = false;
-    const handler = () => {
-      if (!ticking) { ticking = true; requestAnimationFrame(() => { ticking = false; }); }
-    };
-    throttledEvents.set(type, handler);
-    window.addEventListener(type, handler, { capture: true, passive: true });
-  }
-  function stopThrottling() {
-    throttledEvents.forEach((h, t) => window.removeEventListener(t, h, { capture: true }));
-    throttledEvents.clear();
-  }
+    onLongTask(info) {
+      if (!settings.autoLite || settings.liteMode) return;
+      if (info.duration > 400) {
+        LiteMode.set(true);
+        this.autoActivated = true;
+        // [R8] Reseta streaks após ativar por long task
+        this.resetStreaks();
+      }
+    },
 
+    resetStreaks() {
+      this.lowStreak = 0;
+      this.highStreak = 0;
+    },
+
+    onManualToggle() {
+      this.resetStreaks();
+      this.autoActivated = false;
+    }
+  };
+
+  // ============================================================
+  // Loop de FPS
+  // ============================================================
   let rafId = null;
   let lastTime = performance.now(), frames = 0, lastFpsUpdate = lastTime;
   let currentFps = 60, lastFrameTime = 16.67;
 
   function fpsLoop(now) {
-    if (!alive) return;
+    if (!state.alive || state.dying) return;
     frames++;
     lastFrameTime = now - lastTime;
     lastTime = now;
@@ -533,22 +723,23 @@
       currentFps = Math.round((frames * 1000) / (now - lastFpsUpdate));
       frames = 0;
       lastFpsUpdate = now;
-      UI.updateFps(currentFps, lastFrameTime);
-
-      if (settings.autoLite && !settings.liteMode && currentFps < 25) {
-        LiteMode.set(true);
-      }
+      try { UI.updateFps(currentFps, lastFrameTime); } catch (e) {}
+      try { AutoLite.onFpsSample(currentFps); } catch (e) {}
     }
     rafId = requestAnimationFrame(fpsLoop);
   }
 
+  // ============================================================
+  // UI — template e CSS completos, refs e eventos implementados
+  // [R1][R2] Corrigido nesta passada
+  // ============================================================
   const UI = {
     host: null,
     shadow: null,
     refs: {},
 
     build() {
-      if (this.host) return;
+      if (this.host || state.dying) return;
 
       this.host = document.createElement('div');
       this.host.id = 'lb-panel';
@@ -837,6 +1028,7 @@
     },
 
     bindEvents() {
+      // Tabs
       this.refs.tabs.forEach(tab => {
         tab.addEventListener('click', () => {
           this.refs.tabs.forEach(t => t.classList.remove('active'));
@@ -846,6 +1038,7 @@
         });
       });
 
+      // Toggles de configuração
       this.refs.toggles.forEach(input => {
         input.addEventListener('change', (e) => {
           const key = e.target.dataset.setting;
@@ -853,22 +1046,26 @@
         });
       });
 
-      this.refs.upscaleFactor.value = String(settings.upscaleFactor);
+      // Fator de upscale
       this.refs.upscaleFactor.addEventListener('change', (e) => {
         Upscale.changeFactor(parseFloat(e.target.value));
       });
 
+      // Cor de destaque
       this.refs.swatches.forEach(btn => {
         btn.addEventListener('click', () => this.setAccent(btn.dataset.color));
       });
       this.refs.colorInput.addEventListener('input', (e) => this.setAccent(e.target.value));
 
+      // Colapso / expansão
       this.refs.collapseBtn.addEventListener('click', () => this.setMiniMode(true));
       this.refs.mini.addEventListener('dblclick', () => this.setMiniMode(false));
 
+      // Drag
       this.attachDragHandle(this.refs.header);
       this.attachDragHandle(this.refs.mini);
 
+      // Atalho de teclado
       this._onKeyDown = (e) => {
         if (e.altKey && e.shiftKey && e.key.toLowerCase() === 'o') {
           e.preventDefault();
@@ -877,6 +1074,7 @@
       };
       document.addEventListener('keydown', this._onKeyDown);
 
+      // Reage a ocultação da aba
       this._onVisibilityChange = () => {
         if (document.hidden && !settings.liteMode) LiteMode.set(true);
       };
@@ -896,10 +1094,17 @@
           saveSettings();
           break;
         case 'liteMode':
+          AutoLite.onManualToggle();
           LiteMode.set(checked);
           break;
         case 'autoLite':
           settings.autoLite = checked;
+          // [R9] Se desligou a automação e foi ela que ativou o LiteMode,
+          // desliga o LiteMode junto — coerência de estado.
+          if (!checked) {
+            if (AutoLite.autoActivated) LiteMode.set(false);
+            AutoLite.onManualToggle();
+          }
           saveSettings();
           break;
         case 'upscaleEnabled':
@@ -909,6 +1114,7 @@
     },
 
     setAccent(color) {
+      if (!/^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(color)) return;
       settings.accentColor = color;
       this.applyAccent(color);
       saveSettings();
@@ -922,7 +1128,6 @@
 
     updateFps(fps, frameTime) {
       if (!this.refs.fpsValue) return;
-
       let color = '#34d399';
       if (fps < 25) color = '#fb7185';
       else if (fps < 50) color = '#fbbf24';
@@ -940,11 +1145,15 @@
       }
     },
 
+    // [G16] Sincroniza checkboxes E o select de upscale
     syncFromSettings() {
       this.refs.toggles?.forEach(input => {
         const key = input.dataset.setting;
         if (key in settings) input.checked = settings[key];
       });
+      if (this.refs.upscaleFactor) {
+        this.refs.upscaleFactor.value = String(settings.upscaleFactor);
+      }
     },
 
     setVisible(visible) {
@@ -967,14 +1176,15 @@
       saveSettings();
     },
 
+    // [G14] AbortController — sem acúmulo de listeners entre rebuilds
     attachDragHandle(handle) {
       const host = this.host;
       let dragging = false, moved = false, startX = 0, startY = 0;
+      const ac = new AbortController();
 
       const onDown = (e) => {
         if (e.target.closest('button')) return;
-        dragging = true;
-        moved = false;
+        dragging = true; moved = false;
         const rect = host.getBoundingClientRect();
         startX = e.clientX - rect.left;
         startY = e.clientY - rect.top;
@@ -983,10 +1193,8 @@
       const onMove = (e) => {
         if (!dragging) return;
         moved = true;
-        const left = e.clientX - startX;
-        const top = e.clientY - startY;
-        host.style.left = left + 'px';
-        host.style.top = top + 'px';
+        host.style.left = (e.clientX - startX) + 'px';
+        host.style.top = (e.clientY - startY) + 'px';
         host.style.right = 'auto';
       };
       const onUp = () => {
@@ -999,74 +1207,131 @@
         }
       };
 
-      handle.addEventListener('mousedown', onDown);
-      document.addEventListener('mousemove', onMove);
-      document.addEventListener('mouseup', onUp);
+      handle.addEventListener('mousedown', onDown, { signal: ac.signal });
+      document.addEventListener('mousemove', onMove, { signal: ac.signal });
+      document.addEventListener('mouseup', onUp, { signal: ac.signal });
 
       if (!this._dragCleanups) this._dragCleanups = [];
-      this._dragCleanups.push(() => {
-        document.removeEventListener('mousemove', onMove);
-        document.removeEventListener('mouseup', onUp);
-      });
+      this._dragCleanups.push(() => ac.abort());
     },
 
     destroy() {
-      if (this._onKeyDown) document.removeEventListener('keydown', this._onKeyDown);
-      if (this._onVisibilityChange) document.removeEventListener('visibilitychange', this._onVisibilityChange);
-      if (this._dragCleanups) { this._dragCleanups.forEach(fn => fn()); this._dragCleanups = []; }
-      if (this.host) { this.host.remove(); this.host = null; }
+      try { if (this._onKeyDown) document.removeEventListener('keydown', this._onKeyDown); } catch (e) {}
+      try { if (this._onVisibilityChange) document.removeEventListener('visibilitychange', this._onVisibilityChange); } catch (e) {}
+      if (this._dragCleanups) {
+        for (const fn of this._dragCleanups) { try { fn(); } catch (e) {} }
+        this._dragCleanups = [];
+      }
+      try { if (this.host) this.host.remove(); } catch (e) {}
+      this.host = null;
       this.shadow = null;
       this.refs = {};
     }
   };
 
+  // ============================================================
+  // [FIX 3][R11] init() — sweep de lixo + restauração de patch órfão
+  // ============================================================
   function init() {
-    if (settings.gpuBoost) GpuBoost.apply();
-    if (settings.force120Fps) FPSManager.start();
+    if (state.dying) return;
+
+    // [FIX 3] Sweep de lixo de instâncias anteriores
+    try {
+      document.querySelectorAll('#lb-panel, #lb-lite-style').forEach(el => el.remove());
+    } catch (e) {}
+
+    // [FIX 3][R3] Se ficou um patch nosso órfão no prototype, restaura antes
+    // de GpuBoost.apply() re-patchar. Marcador __lbPatched evita clobber de
+    // patch de outro script.
+    try {
+      const proto = HTMLCanvasElement.prototype;
+      if (proto.__lbOriginalGetContext && proto.getContext?.__lbPatched) {
+        proto.getContext = proto.__lbOriginalGetContext;
+      }
+    } catch (e) {}
+
+    if (settings.gpuBoost) {
+      try { GpuBoost.apply(); } catch (e) { warn('GpuBoost.apply falhou:', e); }
+    }
+    if (settings.force120Fps) {
+      try { FPSManager.start(); } catch (e) {}
+    }
+
+    try { LongTaskMonitor.start((info) => AutoLite.onLongTask(info)); } catch (e) {}
 
     rafId = requestAnimationFrame(fpsLoop);
-    startCanvasObserver();
-    ['mousemove', 'scroll', 'wheel', 'touchmove', 'pointermove', 'resize'].forEach(throttleEvent);
 
-    if (settings.liteMode) LiteMode.set(true);
-    if (settings.upscaleEnabled) { Upscale.scanAll(); Upscale.startObserver(); }
+    if (settings.liteMode) {
+      try { LiteMode.set(true); } catch (e) {}
+    }
+    if (settings.upscaleEnabled) {
+      try {
+        Upscale.scanAll();
+        SharedObserver.register('upscale', () => Upscale.scanAll());
+      } catch (e) {}
+    }
 
-    UI.build();
+    try { UI.build(); } catch (e) { warn('UI.build falhou:', e); }
+
+    // [R15] Log de startup com versão — facilita detectar múltiplas instâncias
+    log(`inicializado · upscale=${settings.upscaleEnabled} · gpu=${settings.gpuBoost} · fps120=${settings.force120Fps}`);
   }
 
   if (document.body) {
     init();
   } else {
     const bootObserver = new MutationObserver(() => {
-      if (document.body) { init(); bootObserver.disconnect(); }
+      if (document.body) {
+        bootObserver.disconnect();
+        // [R11] Pequeno delay garante que o hub2.js já criou seu container
+        // antes de nossos observers começarem a escanear.
+        setTimeout(init, 0);
+      }
     });
     bootObserver.observe(document.documentElement, { childList: true });
   }
 
+  // ============================================================
+  // [FIX 1] kill() atômico — cada etapa isolada
+  // ============================================================
   function kill() {
-    alive = false;
-    if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
+    if (state.dying) return;
+    state.dying = true;
+    state.alive = false;
 
-    stopThrottling();
-    stopCanvasObserver();
-    Upscale.stopObserver();
-    Upscale.removeAll();
-    GpuBoost.remove();
-    FPSManager.stop();
+    const steps = [
+      ['cancel rafId', () => { if (rafId) { cancelAnimationFrame(rafId); rafId = null; } }],
+      ['LongTaskMonitor.stop', () => LongTaskMonitor.stop()],
+      ['SharedObserver.destroy', () => SharedObserver.destroy()],
+      ['Upscale.removeAll', () => Upscale.removeAll()],
+      ['GpuBoost.remove', () => GpuBoost.remove()],
+      ['FPSManager.stop', () => FPSManager.stop()],
+      ['remove lb-lite-style', () => {
+        const el = document.getElementById('lb-lite-style');
+        if (el) el.remove();
+      }],
+      ['UI.destroy', () => UI.destroy()]
+    ];
 
-    const liteEl = document.getElementById('lb-lite-style');
-    if (liteEl) liteEl.remove();
+    for (const [name, step] of steps) {
+      try { step(); }
+      catch (e) { warn(`kill step "${name}" falhou:`, e); }
+    }
 
-    UI.destroy();
+    // [R15] Log de shutdown — confirma que a instância morreu limpa
+    log('finalizado.');
   }
 
-  function isAlive() { return alive; }
+  function isAlive() { return state.alive && !state.dying; }
 
+  // API sempre exposta — mesmo se init() falhar, hub2.js consegue chamar kill().
   window[INSTANCE_KEY] = {
+    version: VERSION,
     kill,
     isAlive,
-    getState: () => ({ fps: currentFps, settings: { ...settings } }),
-    setLiteMode: (on) => LiteMode.set(on),
+    getState: () => ({ fps: currentFps, settings: { ...settings }, autoActivated: AutoLite.autoActivated }),
+    getLongTasks: () => LongTaskMonitor.getRecent(),
+    setLiteMode: (on) => { AutoLite.onManualToggle(); LiteMode.set(on); },
     setUpscale: (on) => Upscale.setEnabled(on),
     togglePanel: () => UI.setVisible(!settings.panelVisible)
   };
