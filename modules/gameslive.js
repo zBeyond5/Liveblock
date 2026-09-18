@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Games
 // @namespace    devchris
-// @version      9.2-module
-// @description  Hub de jogos com lista puxada de um manifest no GitHub + jogos temporários locais; painel arrastável e scrollável; overlay arrastável/redimensionável (16:9); FAB arrastável após segurar o clique; detecta bloqueio de embed e cai pra nova aba. (módulo SangHub — instanceKey: _games)
+// @version      9.3-module-grid
+// @description  Hub de jogos com lista puxada de um manifest no GitHub + jogos temporários locais; grid de capas 16:9 estilo Steam/Epic; painel arrastável e scrollável; overlay arrastável/redimensionável (16:9); FAB arrastável após segurar o clique; detecta bloqueio de embed e cai pra nova aba. (módulo SangHub — instanceKey: _games)
 // @match        *://*/*
 // @grant        GM_registerMenuCommand
 // @grant        GM_setValue
@@ -15,22 +15,13 @@
 // @connect      api.github.com
 // @noframes
 // ==/UserScript==
-// NOTA sobre @match: amplo de propósito porque este módulo normalmente não roda
-// sozinho — é injetado dinamicamente pelo Sang Hub, que já restringe onde carrega
-// seus módulos. Se for rodar este arquivo isolado via Tampermonkey, restrinja ao
-// domínio real do hotel.
 (function () {
   'use strict';
 
-  // Guarda de idempotência: window._games é criado sincronamente já na primeira
-  // linha e só recebe o kill() real ao fim do boot(). Isso evita janela de corrida
-  // se o script for injetado duas vezes antes do DOM estar pronto.
   if (window._games) return;
   const api = { kill: () => {} };
   window._games = api;
 
-  // Um AbortController cobre todo listener de window/document do módulo inteiro.
-  // kill() só precisa de ac.abort() pra soltar tudo de uma vez — sem lista manual.
   const ac = new AbortController();
   let host = null;
   let root = null;
@@ -58,7 +49,6 @@
   }
 
   // ================= FONTE =================
-  // Geist é carregada uma vez por página só; se outro módulo do hub já inseriu, não duplica.
   function ensureFont() {
     if (document.querySelector('link[data-sang-font]')) return;
     const link = document.createElement('link');
@@ -68,7 +58,7 @@
     document.head.appendChild(link);
   }
 
-  // ================= ESTILO (aurora glass) =================
+  // ================= ESTILO (aurora glass + grid hub) =================
   function injetarEstilos() {
     if (root.getElementById('gl-estilos')) return;
     const style = document.createElement('style');
@@ -171,7 +161,7 @@
 .gl-panel {
   position: fixed; z-index: 2147483647;
   top: 50%; left: 50%; transform: translate(-50%, -50%);
-  width: 380px; max-height: ${PAINEL_ALTURA_MAX_VH}vh; display: flex; flex-direction: column;
+  width: 460px; max-height: ${PAINEL_ALTURA_MAX_VH}vh; display: flex; flex-direction: column;
   background: linear-gradient(175deg, rgba(20,20,28,.92) 0%, rgba(9,9,14,.97) 100%);
   backdrop-filter: blur(18px) saturate(140%);
   border: 1px solid rgba(255,255,255,.08);
@@ -201,27 +191,119 @@
 }
 .gl-banner svg { width: 14px; height: 14px; flex-shrink: 0; margin-top: 1px; color: var(--hub-warn); }
 
-.gl-list { overflow-y: auto; overflow-x: hidden; flex: 1; min-height: 0; padding: 10px; display: flex; flex-direction: column; gap: 7px; }
-.gl-list::-webkit-scrollbar { width: 4px; }
-.gl-list::-webkit-scrollbar-thumb { background: rgba(255,255,255,.15); border-radius: 2px; }
+/* ======= GRID DE JOGOS (Steam/Epic-like) ======= */
+.gl-grid {
+  overflow-y: auto; overflow-x: hidden; flex: 1; min-height: 0;
+  padding: 12px;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 12px;
+  align-content: start;
+}
+.gl-grid::-webkit-scrollbar { width: 6px; }
+.gl-grid::-webkit-scrollbar-thumb { background: rgba(255,255,255,.15); border-radius: 3px; }
 
-.gl-empty { color: var(--hub-muted); font-size: 12px; padding: 30px 10px; text-align: center; line-height: 1.5; }
+.gl-empty {
+  grid-column: 1 / -1;
+  color: var(--hub-muted); font-size: 12px; padding: 40px 16px; text-align: center; line-height: 1.55;
+}
 
 .gl-game-card {
-  display: flex; align-items: center; gap: 10px; padding: 9px; border-radius: var(--hub-radius-sm);
-  background: rgba(255,255,255,.03); border: 1px solid transparent;
-  transition: background 150ms ease, border-color 150ms ease, transform 100ms ease;
+  display: flex; flex-direction: column;
+  border-radius: var(--hub-radius-sm);
+  background: rgba(255,255,255,.03);
+  border: 1px solid rgba(255,255,255,.06);
+  overflow: hidden;
+  position: relative;
+  transition: transform 160ms ease, border-color 160ms ease, box-shadow 160ms ease, background 160ms ease;
 }
-.gl-game-card:hover { background: rgba(255,255,255,.06); border-color: rgba(255,255,255,.08); transform: translateY(-1px); }
-.gl-thumb {
-  width: 50px; height: 50px; flex-shrink: 0; border-radius: 10px;
-  background: rgba(255,255,255,.04); display: flex; align-items: center; justify-content: center;
-  overflow: hidden; color: var(--hub-cyan); border: 1px solid rgba(255,255,255,.06);
-  padding: 5px;
+.gl-game-card:hover {
+  transform: translateY(-3px);
+  border-color: rgba(34,211,238,.35);
+  background: rgba(255,255,255,.05);
+  box-shadow: 0 12px 28px rgba(0,0,0,.4), 0 0 0 1px rgba(34,211,238,.15);
 }
-.gl-thumb img { max-width: 100%; max-height: 100%; width: auto; height: auto; object-fit: contain; display: block; }
-.gl-thumb svg { width: 20px; height: 20px; }
-.gl-filtro-bar { display: flex; gap: 8px; align-items: center; padding: 9px 12px; border-bottom: 1px solid rgba(255,255,255,.06); background: rgba(255,255,255,.015); flex-shrink: 0; }
+
+.gl-cover {
+  position: relative; width: 100%; aspect-ratio: 16 / 9;
+  background: linear-gradient(135deg, rgba(34,211,238,.10), rgba(167,139,250,.10));
+  display: flex; align-items: center; justify-content: center;
+  overflow: hidden;
+}
+.gl-cover img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.gl-cover > svg { width: 38px; height: 38px; color: rgba(255,255,255,.22); }
+
+.gl-cover-actions {
+  position: absolute; inset: 0;
+  display: flex; align-items: center; justify-content: center;
+  background: linear-gradient(180deg, rgba(6,8,13,.15) 0%, rgba(6,8,13,.7) 100%);
+  opacity: 0;
+  transition: opacity 160ms ease;
+}
+.gl-game-card:hover .gl-cover-actions { opacity: 1; }
+
+.gl-play-btn {
+  width: 46px; height: 46px; border-radius: 50%;
+  background: var(--hub-grad);
+  color: #06080d; border: none;
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer;
+  box-shadow: 0 8px 24px rgba(34,211,238,.45);
+  transform: scale(0.85);
+  transition: transform 160ms ease, filter 160ms ease;
+}
+.gl-game-card:hover .gl-play-btn { transform: scale(1); }
+.gl-play-btn:hover { filter: brightness(1.1); transform: scale(1.08) !important; }
+.gl-play-btn:focus-visible { outline: none; box-shadow: 0 0 0 3px rgba(34,211,238,.55), 0 8px 24px rgba(34,211,238,.45); }
+.gl-play-btn svg { width: 18px; height: 18px; margin-left: 2px; pointer-events: none; }
+
+.gl-remove-btn {
+  position: absolute; top: 7px; right: 7px; z-index: 2;
+  width: 26px; height: 26px; border-radius: 7px;
+  background: rgba(251,113,133,.92);
+  border: none; color: #fff; cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  opacity: 0;
+  transition: opacity 160ms ease, transform 120ms ease, filter 120ms ease;
+  box-shadow: 0 4px 12px rgba(0,0,0,.35);
+}
+.gl-game-card:hover .gl-remove-btn { opacity: 1; }
+.gl-remove-btn:hover { filter: brightness(1.1); }
+.gl-remove-btn:active { transform: scale(0.92); }
+.gl-remove-btn svg { width: 13px; height: 13px; pointer-events: none; }
+
+.gl-game-info {
+  padding: 9px 11px 10px;
+  display: flex; flex-direction: column; gap: 5px;
+}
+.gl-game-name {
+  font-size: 12.5px; font-weight: 600; line-height: 1.3;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.gl-game-meta { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
+
+.gl-badge {
+  font-size: 9px; font-weight: 700; letter-spacing: .3px; text-transform: uppercase;
+  padding: 2px 6px; border-radius: 5px; display: inline-flex; align-items: center; gap: 3px;
+}
+.gl-badge-ok { background: rgba(52,211,153,.14); color: var(--hub-ok); }
+.gl-badge-bloqueado { background: rgba(251,113,133,.14); color: var(--hub-err); }
+.gl-badge-neutro { background: rgba(255,255,255,.08); color: var(--hub-muted); }
+.gl-tag {
+  font-size: 9.5px; color: var(--hub-muted);
+  padding: 1px 5px; border-radius: 4px;
+  background: rgba(255,255,255,.04);
+  border: 1px solid rgba(255,255,255,.05);
+}
+
+.gl-filtro-bar {
+  display: flex; gap: 8px; align-items: center;
+  padding: 9px 12px;
+  border-bottom: 1px solid rgba(255,255,255,.06);
+  background: rgba(255,255,255,.015);
+  flex-shrink: 0;
+}
+
 .gl-hover-info {
   position: fixed; z-index: 2147483647; max-width: 220px;
   background: linear-gradient(175deg, rgba(20,20,28,.95) 0%, rgba(9,9,14,.98) 100%);
@@ -233,18 +315,6 @@
 .gl-hover-info-title { font-weight: 700; font-size: 12.5px; margin-bottom: 5px; }
 .gl-hover-info-row { display: flex; justify-content: space-between; gap: 12px; color: var(--hub-muted); }
 .gl-hover-info-row span:last-child { color: var(--hub-text); text-align: right; }
-.gl-game-info { flex: 1; min-width: 0; }
-.gl-game-name { font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.gl-game-meta { display: flex; align-items: center; gap: 6px; margin-top: 3px; flex-wrap: wrap; }
-.gl-badge {
-  font-size: 9.5px; font-weight: 700; letter-spacing: .3px; text-transform: uppercase;
-  padding: 2px 6px; border-radius: 5px; display: inline-flex; align-items: center; gap: 3px;
-}
-.gl-badge-ok { background: rgba(52,211,153,.14); color: var(--hub-ok); }
-.gl-badge-bloqueado { background: rgba(251,113,133,.14); color: var(--hub-err); }
-.gl-badge-neutro { background: rgba(255,255,255,.08); color: var(--hub-muted); }
-.gl-tag { font-size: 9.5px; color: var(--hub-muted); }
-.gl-game-actions { display: flex; gap: 6px; flex-shrink: 0; }
 
 .gl-panel-footer { border-top: 1px solid rgba(255,255,255,.06); padding: 11px 12px; background: rgba(255,255,255,.015); flex-shrink: 0; }
 
@@ -314,7 +384,7 @@
     return `<svg viewBox="0 0 24 24" width="${t}" height="${t}" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${mapa[nome] || ''}</svg>`;
   }
 
-  // ---------- Storage (GM_* síncrona ou GM.* assíncrona, com backup em localStorage) ----------
+  // ---------- Storage ----------
   async function lerStorage(chave, padrao) {
     let bruto = null;
     try {
@@ -356,38 +426,27 @@
     const padrao = { x: null, y: null, w: 480, h: 360, maximizado: false };
     return { ...padrao, ...(await lerStorage('launcher-layout', padrao)) };
   }
-  function salvarConfigJanela(cfg) {
-    salvarStorage('launcher-layout', cfg);
-  }
+  function salvarConfigJanela(cfg) { salvarStorage('launcher-layout', cfg); }
 
-  async function carregarPosicaoFab() {
-    return await lerStorage('launcher-fab-pos', null);
-  }
-  function salvarPosicaoFab(pos) {
-    salvarStorage('launcher-fab-pos', pos);
-  }
+  async function carregarPosicaoFab() { return await lerStorage('launcher-fab-pos', null); }
+  function salvarPosicaoFab(pos) { salvarStorage('launcher-fab-pos', pos); }
 
-  async function carregarPosicaoPainel() {
-    return await lerStorage('launcher-painel-pos', null); // { left, top } — null = centralizado
-  }
-  function salvarPosicaoPainel(pos) {
-    salvarStorage('launcher-painel-pos', pos);
-  }
+  async function carregarPosicaoPainel() { return await lerStorage('launcher-painel-pos', null); }
+  function salvarPosicaoPainel(pos) { salvarStorage('launcher-painel-pos', pos); }
 
   function gerarId(prefixo) {
     return (prefixo || 'g') + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
   }
 
-  // ---------- Estatísticas de uso (tempo jogado, vezes jogado, última sessão) ----------
+  // ---------- Estatísticas ----------
   async function carregarEstatisticas() {
     const dados = await lerStorage('launcher-estatisticas', {});
     return dados && typeof dados === 'object' ? dados : {};
   }
-  function salvarEstatisticas(dados) {
-    salvarStorage('launcher-estatisticas', dados);
-  }
+  function salvarEstatisticas(dados) { salvarStorage('launcher-estatisticas', dados); }
+
   async function registrarSessao(jogoId, duracaoMs) {
-    if (!jogoId || !duracaoMs || duracaoMs < 3000) return; // ignora sessões muito curtas (clique acidental)
+    if (!jogoId || !duracaoMs || duracaoMs < 3000) return;
     const estatisticas = await carregarEstatisticas();
     const atual = estatisticas[jogoId] || { tempoJogadoMs: 0, vezesJogado: 0, ultimaSessaoEm: null };
     atual.tempoJogadoMs = (atual.tempoJogadoMs || 0) + duracaoMs;
@@ -416,7 +475,7 @@
     return new Date(iso).toLocaleDateString('pt-BR');
   }
 
-  // ---------- Exportar manifest.json (jogos do manifest + temporários) ----------
+  // ---------- Exportar manifest.json ----------
   function paraSlug(texto) {
     return (
       (texto || '')
@@ -449,7 +508,6 @@
     const json = JSON.stringify(exportado, null, 2);
     const blob = new Blob([json], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
-    // Fica fora do shadow de propósito: precisa estar no light DOM pra disparar o download nativo do navegador.
     const a = document.createElement('a');
     a.href = url;
     a.download = 'manifest.json';
@@ -459,7 +517,7 @@
     setTimeout(() => URL.revokeObjectURL(url), 4000);
   }
 
-  // ---------- Manifest remoto (fonte principal da lista de jogos) ----------
+  // ---------- Manifest remoto ----------
   function buscarTexto(url, timeoutMs) {
     return new Promise((resolve, reject) => {
       if (typeof GM_xmlhttpRequest === 'function') {
@@ -519,11 +577,6 @@
     };
   }
 
-  // Busca o manifest no GitHub; em caso de falha usa o último cache salvo localmente.
-  // Observação: entradas de "unity_games" no manifest não são suportadas por este
-  // launcher (jogos WebGL exportados de engine costumam ter CORS restrito nos
-  // assets e/ou exigir isolamento de origem que uma página de terceiros não tem),
-  // então são ignoradas silenciosamente aqui.
   async function carregarJogosManifest(forcarAtualizacao) {
     const cacheBruto = await lerStorage('launcher-manifest-cache', { jogos: [], atualizadoEm: null, erro: null });
     const cache = { ...cacheBruto, jogos: Array.isArray(cacheBruto.jogos) ? cacheBruto.jogos : [] };
@@ -562,14 +615,12 @@
     carregarJogosManifest(true).finally(() => { atualizandoEmSegundoPlano = false; });
   }
 
-  // ---------- Jogos temporários (adicionados localmente, não vêm do manifest) ----------
+  // ---------- Jogos temporários ----------
   async function carregarJogosTemporarios() {
     const lista = await lerStorage('launcher-jogos-temporarios', []);
     return Array.isArray(lista) ? lista : [];
   }
-  function salvarJogosTemporarios(lista) {
-    salvarStorage('launcher-jogos-temporarios', lista);
-  }
+  function salvarJogosTemporarios(lista) { salvarStorage('launcher-jogos-temporarios', lista); }
 
   function statusInfo(status) {
     if (status === 'ok') return { icone: 'check', classe: 'gl-badge-ok', texto: 'Funcionou' };
@@ -577,7 +628,7 @@
     return { icone: null, classe: 'gl-badge-neutro', texto: 'Não testado' };
   }
 
-  // ---------- Modal simples pra adicionar um jogo temporário ----------
+  // ---------- Modal de jogo temporário ----------
   function abrirModalJogoTemporario(aoConfirmar) {
     if (root.getElementById('gl-temp-modal')) return;
     injetarEstilos();
@@ -705,7 +756,7 @@
     });
   }
 
-  // ---------- Painel de lista de jogos (arrastável, scrollável) ----------
+  // ---------- Painel de lista de jogos ----------
   async function abrirPainelJogos() {
     if (root.getElementById('gl-painel')) return;
     injetarEstilos();
@@ -789,7 +840,7 @@
     barraFiltro.appendChild(seletorGenero);
 
     const lista = document.createElement('div');
-    lista.className = 'gl-list';
+    lista.className = 'gl-grid';
 
     const rodape = document.createElement('div');
     rodape.className = 'gl-panel-footer';
@@ -815,7 +866,6 @@
     root.appendChild(painel);
     document.addEventListener('keydown', aoTeclarEscPainel, { signal: ac.signal });
 
-    // ---- arrastar o painel pela barra de cabeçalho ----
     let arrastandoPainel = false, offPX = 0, offPY = 0;
     cabecalho.addEventListener('mousedown', (e) => {
       if (e.target !== cabecalho && e.target !== titulo && !titulo.contains(e.target)) return;
@@ -928,67 +978,44 @@
       generoSelecionado = seletorGenero.value;
     }
 
-    function miniaturaJogo(jogo) {
-      const wrap = document.createElement('div');
-      wrap.className = 'gl-thumb';
+    function criarCover(jogo) {
+      const cover = document.createElement('div');
+      cover.className = 'gl-cover';
       if (jogo.imagem) {
         const img = document.createElement('img');
         img.src = jogo.imagem;
-        img.alt = jogo.nome;
+        img.alt = '';
+        img.loading = 'lazy';
         img.addEventListener('error', () => {
           img.remove();
-          wrap.innerHTML = icone('gamepad', 20);
+          cover.insertAdjacentHTML('afterbegin', icone('gamepad', 38));
         });
-        wrap.appendChild(img);
+        cover.appendChild(img);
       } else {
-        wrap.innerHTML = icone('gamepad', 20);
+        cover.insertAdjacentHTML('afterbegin', icone('gamepad', 38));
       }
-      return wrap;
+      return cover;
     }
 
-    function linhaJogo(jogo, permiteRemover, estat) {
-      const linha = document.createElement('div');
-      linha.className = 'gl-game-card';
-      linha.addEventListener('mouseenter', () => mostrarInfoHover(linha, jogo, estat || {}));
-      linha.addEventListener('mouseleave', esconderInfoHover);
-      linha.appendChild(miniaturaJogo(jogo));
+    function criarCardJogo(jogo, permiteRemover, estat) {
+      const card = document.createElement('div');
+      card.className = 'gl-game-card';
+      card.addEventListener('mouseenter', () => mostrarInfoHover(card, jogo, estat || {}));
+      card.addEventListener('mouseleave', esconderInfoHover);
 
-      const info = document.createElement('div');
-      info.className = 'gl-game-info';
-      const nome = document.createElement('div');
-      nome.className = 'gl-game-name';
-      nome.textContent = jogo.nome;
-      const meta = document.createElement('div');
-      meta.className = 'gl-game-meta';
-      const si = statusInfo(jogo.status);
-      const badge = document.createElement('span');
-      badge.className = 'gl-badge ' + si.classe;
-      badge.innerHTML = (si.icone ? icone(si.icone, 10) : '') + si.texto;
-      meta.appendChild(badge);
-      if (jogo.genero) {
-        const tagGenero = document.createElement('span');
-        tagGenero.className = 'gl-tag';
-        tagGenero.textContent = jogo.genero;
-        meta.appendChild(tagGenero);
-      }
-      if (jogo.origem === 'temporario') {
-        const tag = document.createElement('span');
-        tag.className = 'gl-tag';
-        tag.textContent = 'temporário';
-        meta.appendChild(tag);
-      }
-      info.appendChild(nome);
-      info.appendChild(meta);
+      // Capa com overlay de ações
+      const cover = criarCover(jogo);
 
-      const acoes = document.createElement('div');
-      acoes.className = 'gl-game-actions';
+      const acoesCover = document.createElement('div');
+      acoesCover.className = 'gl-cover-actions';
 
-      const jogarBtn = document.createElement('button');
-      jogarBtn.className = 'gl-btn gl-btn-icon gl-btn-play';
-      jogarBtn.title = 'Jogar';
-      jogarBtn.setAttribute('aria-label', 'Jogar ' + jogo.nome);
-      jogarBtn.innerHTML = icone('play', 14);
-      jogarBtn.addEventListener('click', () => {
+      const playBtn = document.createElement('button');
+      playBtn.className = 'gl-play-btn';
+      playBtn.title = 'Jogar';
+      playBtn.setAttribute('aria-label', 'Jogar ' + jogo.nome);
+      playBtn.innerHTML = icone('play', 18);
+      playBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
         fecharPainel();
         abrirJogo(jogo, async (novoStatus) => {
           jogo.status = novoStatus;
@@ -1001,29 +1028,63 @@
               salvarJogosTemporarios(temporarios);
             }
           }
-          // status de jogos do manifest não é persistido de volta no manifest remoto,
-          // só reflete na sessão atual.
         });
       });
-      acoes.appendChild(jogarBtn);
+      acoesCover.appendChild(playBtn);
 
       if (permiteRemover) {
-        const removerBtn = document.createElement('button');
-        removerBtn.className = 'gl-btn gl-btn-icon gl-btn-danger';
-        removerBtn.title = 'Remover';
-        removerBtn.setAttribute('aria-label', 'Remover ' + jogo.nome);
-        removerBtn.innerHTML = icone('lixeira', 14);
-        removerBtn.addEventListener('click', async () => {
+        const removeBtn = document.createElement('button');
+        removeBtn.className = 'gl-remove-btn';
+        removeBtn.title = 'Remover';
+        removeBtn.setAttribute('aria-label', 'Remover ' + jogo.nome);
+        removeBtn.innerHTML = icone('lixeira', 13);
+        removeBtn.addEventListener('click', async (e) => {
+          e.stopPropagation();
           const temporarios = (await carregarJogosTemporarios()).filter((j) => j.id !== jogo.id);
           salvarJogosTemporarios(temporarios);
           renderizarLista();
         });
-        acoes.appendChild(removerBtn);
+        cover.appendChild(removeBtn);
       }
 
-      linha.appendChild(info);
-      linha.appendChild(acoes);
-      return linha;
+      cover.appendChild(acoesCover);
+
+      // Info abaixo da capa
+      const info = document.createElement('div');
+      info.className = 'gl-game-info';
+
+      const nome = document.createElement('div');
+      nome.className = 'gl-game-name';
+      nome.textContent = jogo.nome;
+      nome.title = jogo.nome;
+      info.appendChild(nome);
+
+      const meta = document.createElement('div');
+      meta.className = 'gl-game-meta';
+
+      const si = statusInfo(jogo.status);
+      const badge = document.createElement('span');
+      badge.className = 'gl-badge ' + si.classe;
+      badge.innerHTML = (si.icone ? icone(si.icone, 10) : '') + si.texto;
+      meta.appendChild(badge);
+
+      if (jogo.genero) {
+        const tagGenero = document.createElement('span');
+        tagGenero.className = 'gl-tag';
+        tagGenero.textContent = jogo.genero;
+        meta.appendChild(tagGenero);
+      }
+      if (jogo.origem === 'temporario') {
+        const tag = document.createElement('span');
+        tag.className = 'gl-tag';
+        tag.textContent = 'temporário';
+        meta.appendChild(tag);
+      }
+      info.appendChild(meta);
+
+      card.appendChild(cover);
+      card.appendChild(info);
+      return card;
     }
 
     function aplicarFiltroErenderizar() {
@@ -1043,7 +1104,7 @@
         return;
       }
       jogosFiltrados.forEach((jogo) => {
-        lista.appendChild(linhaJogo(jogo, jogo.origem === 'temporario', estatisticasCache[jogo.id]));
+        lista.appendChild(criarCardJogo(jogo, jogo.origem === 'temporario', estatisticasCache[jogo.id]));
       });
     }
 
@@ -1072,7 +1133,6 @@
       const jogosManifest = Array.isArray(manifest.jogos) ? manifest.jogos : [];
       const jogosTemp = Array.isArray(temporarios) ? temporarios : [];
 
-      // mais recentes primeiro; jogos sem "adicionadoEm" (ex: manifest antigo) vão pro fim
       ultimaListaCombinada = [...jogosManifest, ...jogosTemp].sort((a, b) => {
         const da = a.adicionadoEm ? new Date(a.adicionadoEm).getTime() : 0;
         const db = b.adicionadoEm ? new Date(b.adicionadoEm).getTime() : 0;
@@ -1086,7 +1146,7 @@
     renderizarLista();
   }
 
-  // ---------- Janela flutuante do jogo ----------
+  // ---------- Overlay do jogo (inalterado) ----------
   async function abrirJogo(jogo, aoMudarStatus) {
     if (root.getElementById('gl-overlay')) return;
     injetarEstilos();
@@ -1112,6 +1172,7 @@
 
     let maximizado = !!cfg.maximizado;
     let estadoAntesMaximizar = null;
+    const tempoInicio = Date.now();
 
     const barra = document.createElement('div');
     barra.className = 'gl-overlay-bar';
@@ -1119,7 +1180,6 @@
     const status = document.createElement('span');
     status.className = 'gl-overlay-title';
     status.innerHTML = icone('gamepad', 13);
-    // jogo.nome pode vir do manifest remoto ou de entrada do usuário — nunca via innerHTML.
     const statusTexto = document.createElement('span');
     statusTexto.textContent = `${jogo.nome} — Carregando...`;
     status.appendChild(statusTexto);
@@ -1155,7 +1215,6 @@
 
     const iframe = document.createElement('iframe');
     iframe.setAttribute('allow', 'autoplay; fullscreen');
-
     corpo.appendChild(iframe);
 
     const alca = document.createElement('div');
@@ -1199,6 +1258,7 @@
 
     function fecharJogo() {
       salvarConfigJanela(estadoAtual());
+      registrarSessao(jogo.id, Date.now() - tempoInicio);
       overlay.remove();
       document.removeEventListener('keydown', aoTeclarEsc);
       window.removeEventListener('mousemove', aoMoverOverlay);
@@ -1383,8 +1443,7 @@
     window.addEventListener('mouseup', aoSoltarOverlay, { signal: ac.signal });
   }
 
-  // ---------- Botão flutuante (FAB) — clique normal abre o painel;
-  // segurar o clique por FAB_SEGURAR_MS libera o modo arrastável ----------
+  // ---------- FAB (inalterado) ----------
   async function criarBotaoFlutuante() {
     if (root.getElementById('gl-fab')) return;
     injetarEstilos();
@@ -1409,7 +1468,6 @@
 
     root.appendChild(btn);
 
-    // Pulso chama atenção só nas primeiras vezes — não fica animando pra sempre.
     btn.classList.add('gl-fab-pulsando');
     btn.addEventListener('animationend', () => btn.classList.remove('gl-fab-pulsando'), { signal: ac.signal, once: true });
 
@@ -1422,7 +1480,7 @@
     function liberarDrag() {
       dragLiberado = true;
       btn.classList.add('gl-fab-liberado');
-      if (navigator.vibrate) navigator.vibrate(15); // feedback tátil em telas touch, ignorado silenciosamente no resto
+      if (navigator.vibrate) navigator.vibrate(15);
     }
 
     function resetarEstado() {
@@ -1435,7 +1493,7 @@
     }
 
     btn.addEventListener('mousedown', (e) => {
-      if (e.button !== 0) return; // só botão esquerdo
+      if (e.button !== 0) return;
       moveuDurante = false;
       dragLiberado = false;
       const rect = btn.getBoundingClientRect();
@@ -1451,7 +1509,6 @@
       if (!arrastando) {
         arrastando = true;
         btn.classList.add('gl-fab-arrastando');
-        // trava a posição atual em left/top antes de começar a mover
         const rect = btn.getBoundingClientRect();
         btn.style.left = rect.left + 'px';
         btn.style.top = rect.top + 'px';
@@ -1479,7 +1536,7 @@
     window.addEventListener('mouseup', aoSoltarFab, { signal: ac.signal });
 
     btn.addEventListener('click', () => {
-      if (dragLiberado && moveuDurante) return; // foi um drag, não um clique
+      if (dragLiberado && moveuDurante) return;
       clearTimeout(timerSegurar);
       abrirPainelJogos();
     });
@@ -1490,7 +1547,7 @@
     GM_registerMenuCommand('Atualizar manifest agora', () => carregarJogosManifest(true));
   }
 
-  // ---- Kill (chamado pelo Hub via instanceKey) ----
+  // ---- Kill ----
   function kill() {
     const steps = [
       ['abort', () => ac.abort()],
@@ -1512,9 +1569,6 @@
     window._hubUI?.markProtected?.(host);
     root = host.attachShadow({ mode: 'open' });
 
-    // Impede que digitação nos campos do módulo (modal de jogo temporário) vaze
-    // como hotkey pro cliente do jogo por trás. Escape continua passando: é o que
-    // fecha painel/overlay/modal via os listeners em document.
     host.addEventListener('keydown', (e) => {
       const tag = (e.target && e.target.tagName) || '';
       if ((tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') && e.key !== 'Escape') {
@@ -1527,7 +1581,6 @@
 
     injetarEstilos();
     criarBotaoFlutuante();
-    // Busca o manifest assim que a página carrega
     carregarJogosManifest(false);
 
     api.kill = kill;
