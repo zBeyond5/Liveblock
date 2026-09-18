@@ -30,7 +30,7 @@
     const MIN_VIDEO_W = 360;
     const MAX_VIDEO_W = 2400;
     const FIXED_W = 1000;
-    const FIXED_H = 640;
+    const FIXED_H = 520;
     const MIN_APP_W = 480;
     const MIN_APP_H = 320;
     const MAX_APP_W = 2400;
@@ -171,7 +171,7 @@
         const s = '<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64">' +
             '<rect width="64" height="64" rx="14" fill="#1a1c25"/>' +
             '<text x="50%" y="54%" font-family="Quicksand,sans-serif" font-size="26" font-weight="600" ' +
-            'fill="#67e8f9" text-anchor="middle" dominant-baseline="middle">' +
+            'fill="#22d3ee" text-anchor="middle" dominant-baseline="middle">' +
             escapeHtml(letra) + '</text></svg>';
         const uri = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(s);
         _avatarCache.set(letra, uri);
@@ -301,21 +301,21 @@
         }
 
         #${UID} {
-            --ok: #7dd3a0;
-            --err: #f28b96;
-            --cyan: #67e8f9;
-            --violet: #c4b5fd;
-            --grad: linear-gradient(115deg, #67e8f9 0%, #c4b5fd 100%);
+            --ok: #34d399;
+            --err: #fb7185;
+            --cyan: #22d3ee;
+            --violet: #a78bfa;
+            --grad: linear-gradient(120deg, #22d3ee 0%, #a78bfa 100%);
 
-            --bg: #0a0b0f;
-            --bg-1: #101219;
-            --bg-2: #16181f;
-            --bg-3: #1c1f28;
-            --line: rgba(255,255,255,.055);
-            --line-2: rgba(255,255,255,.09);
-            --text: #eef0f5;
-            --text-dim: #a2a8ba;
-            --text-faint: #6f7584;
+            --bg: linear-gradient(175deg, rgba(20,20,28,.92), rgba(9,9,14,.97));
+            --bg-1: rgba(28,28,38,.9);
+            --bg-2: rgba(36,36,46,.9);
+            --bg-3: rgba(44,44,54,.9);
+            --line: rgba(255,255,255,.08);
+            --line-2: rgba(255,255,255,.12);
+            --text: #f1f2f8;
+            --text-dim: #a0a4b3;
+            --text-faint: #8b8fa3;
 
             position: fixed;
             top: 60px; left: 60px;
@@ -324,6 +324,8 @@
             font-family: 'Quicksand', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
             font-weight: 500;
             background: var(--bg);
+            backdrop-filter: blur(18px) saturate(140%);
+            -webkit-backdrop-filter: blur(18px) saturate(140%);
             color: var(--text);
             border: 1px solid var(--line);
             border-radius: 20px;
@@ -332,9 +334,9 @@
             display: flex;
             flex-direction: column;
             box-shadow:
-                0 1px 2px rgba(0,0,0,.35),
-                0 20px 60px -20px rgba(0,0,0,.65),
-                0 0 0 1px rgba(255,255,255,.02);
+                0 20px 50px rgba(0,0,0,.55),
+                0 2px 8px rgba(0,0,0,.4),
+                inset 0 1px 0 rgba(255,255,255,.06);
             animation: iptvFadeIn .32s cubic-bezier(.22,1,.36,1);
             transition: width .24s cubic-bezier(.22,1,.36,1), height .24s cubic-bezier(.22,1,.36,1);
         }
@@ -379,7 +381,7 @@
         #${UID} .brand-dot {
             width: 26px; height: 26px;
             border-radius: 8px;
-            background: linear-gradient(135deg, rgba(103,232,249,.22), rgba(196,181,253,.22));
+            background: linear-gradient(135deg, rgba(34,211,238,.22), rgba(167,139,250,.22));
             display: grid; place-items: center;
             color: var(--cyan);
         }
@@ -396,8 +398,8 @@
             font-weight: 700;
             letter-spacing: .14em;
             color: var(--cyan);
-            background: rgba(103,232,249,.09);
-            border: 1px solid rgba(103,232,249,.18);
+            background: rgba(34,211,238,.09);
+            border: 1px solid rgba(34,211,238,.18);
             border-radius: 5px;
             padding: 2px 7px;
         }
@@ -480,7 +482,7 @@
         }
         #${UID} .sb-btn:hover { background: rgba(255,255,255,.045); color: var(--text); }
         #${UID} .sb-btn.active {
-            background: rgba(103,232,249,.1);
+            background: rgba(34,211,238,.1);
             color: var(--cyan);
         }
         #${UID} .sb-btn.active::before {
@@ -548,7 +550,7 @@
 
         #${UID} .hero {
             position: relative;
-            height: 240px;
+            height: 200px;
             flex-shrink: 0;
             border-radius: 20px;
             overflow: hidden;
@@ -557,8 +559,8 @@
             border: 1px solid var(--line);
             box-shadow: 0 12px 40px -18px rgba(0,0,0,.7);
             background:
-                radial-gradient(80% 100% at 12% 10%, rgba(103,232,249,.12), transparent 55%),
-                radial-gradient(80% 100% at 88% 90%, rgba(196,181,253,.14), transparent 55%),
+                radial-gradient(80% 100% at 12% 10%, rgba(34,211,238,.12), transparent 55%),
+                radial-gradient(80% 100% at 88% 90%, rgba(167,139,250,.14), transparent 55%),
                 linear-gradient(135deg, #0d0f1a 0%, #15162a 60%, #1a1530 100%);
             animation: iptvFadeIn .45s cubic-bezier(.22,1,.36,1);
         }
@@ -581,7 +583,7 @@
         #${UID} .hero-eyebrow {
             font-size: 11px; font-weight: 600;
             letter-spacing: .18em; text-transform: uppercase;
-            color: rgba(196,181,253,.9);
+            color: rgba(167,139,250,.9);
         }
         #${UID} .hero-title {
             margin: 0;
@@ -644,23 +646,13 @@
             scroll-behavior: smooth;
             scrollbar-width: none; /* Firefox */
             -ms-overflow-style: none; /* IE/Edge */
+            -webkit-overflow-scrolling: touch;
         }
-        #${UID} .apps-row::-webkit-scrollbar { display: none; } /* Chrome/Safari */
-        #${UID} .apps-row:hover {
-            overflow-x: auto;
-            scrollbar-width: thin;
-            scrollbar-color: rgba(103,232,249,.35) transparent;
+        #${UID} .apps-row::-webkit-scrollbar {
+            display: none;
+            width: 0;
+            height: 0;
         }
-        #${UID} .apps-row:hover::-webkit-scrollbar {
-            display: block;
-            height: 6px;
-        }
-        #${UID} .apps-row:hover::-webkit-scrollbar-track { background: transparent; }
-        #${UID} .apps-row:hover::-webkit-scrollbar-thumb {
-            background: rgba(103,232,249,.35);
-            border-radius: 3px;
-        }
-        #${UID} .apps-row:hover::-webkit-scrollbar-thumb:hover { background: rgba(103,232,249,.6); }
 
         /* App cards */
         #${UID} .app-card {
@@ -706,7 +698,7 @@
             border-color: rgba(255,255,255,.55);
             box-shadow:
                 0 0 0 2px rgba(255,255,255,.55),
-                0 0 40px -6px rgba(103,232,249,.35),
+                0 0 40px -6px rgba(34,211,238,.35),
                 0 18px 40px -14px rgba(0,0,0,.7);
         }
         #${UID} .app-icon {
@@ -763,9 +755,9 @@
         #${UID} .app-bar-dot {
             width: 8px; height: 8px; border-radius: 50%;
             background: var(--ok);
-            box-shadow: 0 0 8px rgba(125,211,160,.7);
+            box-shadow: 0 0 8px rgba(52,211,153,.7);
         }
-        #${UID} .app-bar-dot.warn { background: var(--err); box-shadow: 0 0 8px rgba(242,139,150,.7); }
+        #${UID} .app-bar-dot.warn { background: var(--err); box-shadow: 0 0 8px rgba(251,113,133,.7); }
         #${UID} .app-bar-sub {
             font-size: 11px; color: var(--text-faint);
             white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
@@ -789,14 +781,14 @@
             gap: 14px;
             padding: 40px;
             text-align: center;
-            background: radial-gradient(60% 80% at 50% 30%, rgba(103,232,249,.08), transparent 60%), #08090d;
+            background: radial-gradient(60% 80% at 50% 30%, rgba(34,211,238,.08), transparent 60%), #08090d;
         }
         #${UID} .app-blocked.show { display: flex; }
         #${UID} .app-blocked-icon {
             width: 56px; height: 56px;
             border-radius: 16px;
-            background: rgba(242,139,150,.12);
-            border: 1px solid rgba(242,139,150,.3);
+            background: rgba(251,113,133,.12);
+            border: 1px solid rgba(251,113,133,.3);
             display: grid; place-items: center;
             color: var(--err);
         }
@@ -819,7 +811,7 @@
             font-family: 'Quicksand', sans-serif;
             font-size: 13px; font-weight: 700;
             cursor: pointer;
-            box-shadow: 0 10px 26px -10px rgba(103,232,249,.45);
+            box-shadow: 0 10px 26px -10px rgba(34,211,238,.45);
             transition: transform .18s;
         }
         #${UID} .app-blocked-btn:hover { transform: translateY(-2px); }
@@ -830,7 +822,7 @@
             flex: 1; min-height: 0;
             overflow-y: auto;
             padding: 20px 22px 24px;
-            background: radial-gradient(60% 70% at 50% 0%, rgba(196,181,253,.08), transparent 60%), #08090d;
+            background: radial-gradient(60% 70% at 50% 0%, rgba(167,139,250,.08), transparent 60%), #08090d;
         }
         #${UID} .anime-wrap::-webkit-scrollbar { width: 5px; }
         #${UID} .anime-wrap::-webkit-scrollbar-thumb { background: rgba(255,255,255,.08); border-radius: 3px; }
@@ -872,14 +864,14 @@
         }
         #${UID} .anime-card:hover {
             transform: translateY(-3px);
-            border-color: rgba(196,181,253,.4);
+            border-color: rgba(167,139,250,.4);
             background: rgba(255,255,255,.045);
         }
         #${UID} .anime-card:focus-visible,
         #${UID} .anime-card.focused {
             outline: none;
             border-color: var(--violet);
-            box-shadow: 0 0 0 2px rgba(196,181,253,.5), 0 12px 28px -12px rgba(0,0,0,.6);
+            box-shadow: 0 0 0 2px rgba(167,139,250,.5), 0 12px 28px -12px rgba(0,0,0,.6);
         }
         #${UID} .anime-poster {
             aspect-ratio: 2 / 3;
@@ -928,8 +920,8 @@
             transition: background .16s, border-color .16s;
         }
         #${UID} .anime-episode:hover {
-            background: rgba(103,232,249,.08);
-            border-color: rgba(103,232,249,.3);
+            background: rgba(34,211,238,.08);
+            border-color: rgba(34,211,238,.3);
         }
         #${UID} .anime-episode .ep-num {
             font-family: 'Fredoka', 'Quicksand', sans-serif;
@@ -962,9 +954,9 @@
         }
         #${UID} .tv-search input::placeholder { color: var(--text-faint); }
         #${UID} .tv-search input:focus {
-            border-color: rgba(103,232,249,.45);
+            border-color: rgba(34,211,238,.45);
             background: rgba(255,255,255,.045);
-            box-shadow: 0 0 0 3px rgba(103,232,249,.1);
+            box-shadow: 0 0 0 3px rgba(34,211,238,.1);
         }
         #${UID} .tv-chips {
             display: flex; gap: 7px;
@@ -985,7 +977,7 @@
             transition: all .16s;
         }
         #${UID} .tv-chip:hover {
-            border-color: rgba(103,232,249,.35);
+            border-color: rgba(34,211,238,.35);
             color: var(--text);
             background: rgba(255,255,255,.05);
         }
@@ -993,7 +985,7 @@
             background: var(--grad);
             color: #0b0b10;
             border-color: transparent;
-            box-shadow: 0 4px 14px -6px rgba(103,232,249,.5);
+            box-shadow: 0 4px 14px -6px rgba(34,211,238,.5);
         }
         #${UID} .tv-chip:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
         #${UID} .tv-chip.fav-chip {
@@ -1038,8 +1030,8 @@
             outline: none;
             transform: translateY(-3px) scale(1.03);
             background: rgba(255,255,255,.05);
-            border-color: rgba(103,232,249,.5);
-            box-shadow: 0 0 0 2px rgba(103,232,249,.4), 0 12px 30px -14px rgba(0,0,0,.6);
+            border-color: rgba(34,211,238,.5);
+            box-shadow: 0 0 0 2px rgba(34,211,238,.4), 0 12px 30px -14px rgba(0,0,0,.6);
         }
         #${UID} .tv-tile.tv-tile-off { opacity: .35; }
         #${UID} .tv-tile-logo {
@@ -1072,8 +1064,8 @@
             font-size: 8px; font-weight: 800;
             letter-spacing: .08em;
             color: var(--err);
-            background: rgba(242,139,150,.12);
-            border: 1px solid rgba(242,139,150,.3);
+            background: rgba(251,113,133,.12);
+            border: 1px solid rgba(251,113,133,.3);
             border-radius: 5px;
             padding: 2px 6px;
         }
@@ -1102,7 +1094,7 @@
         }
         #${UID} .tv-spin {
             width: 20px; height: 20px;
-            border: 2px solid rgba(103,232,249,.2);
+            border: 2px solid rgba(34,211,238,.2);
             border-top-color: var(--cyan);
             border-radius: 50%;
             margin: 0 auto 12px;
@@ -1149,8 +1141,8 @@
             transition: background .16s, border-color .16s, color .16s, transform .16s;
         }
         #${UID} .tv-back:hover {
-            background: rgba(103,232,249,.1);
-            border-color: rgba(103,232,249,.35);
+            background: rgba(34,211,238,.1);
+            border-color: rgba(34,211,238,.35);
             color: var(--cyan);
             transform: translateY(-1px);
         }
@@ -1224,7 +1216,7 @@
                     <span class="clock-sep" aria-hidden="true"></span>
                     <div class="brand">
                         <span class="brand-dot">${svg('sparkle', 14)}</span>
-                        <span class="brand-title">Mídia</span>
+                        <span class="brand-title">Sang TV</span>
                         <span class="brand-tag">BR</span>
                     </div>
                 </div>
@@ -1316,6 +1308,14 @@
         const appShell = win.querySelector('#' + UID + 'appShell');
         const clockEl = win.querySelector('#' + UID + 'clock');
         const sbEl = win.querySelector('#' + UID + 'sb');
+
+        // Scroll horizontal com a roda do mouse (sem scrollbar visível)
+        appsRowEl.addEventListener('wheel', (e) => {
+            if (e.deltaY === 0) return;
+            if (appsRowEl.scrollWidth <= appsRowEl.clientWidth) return;
+            e.preventDefault();
+            appsRowEl.scrollLeft += e.deltaY;
+        }, { passive: false });
 
         // Clock
         let clockTimer = null; let clockUltimo = '';
