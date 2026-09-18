@@ -1,3 +1,4 @@
+// modules/iptv.js (Smart TV shell)
 (function() {
     'use strict';
     const UID = '_iptv';
@@ -40,9 +41,9 @@
 
     // ---------- Estado em memória ----------
     const estado = {
-        favoritos: null,   // Set
-        falhas: null,      // { [id]: { em: number(ts) | string(iso), motivo } }
-        links: null,       // { [id]: url }
+        favoritos: null,
+        falhas: null,
+        links: null,
         _dirty: false,
         _timeout: null,
         _carregado: false,
@@ -75,35 +76,18 @@
         estado._timeout = setTimeout(persistirAgora, 500);
     }
 
-    // ---------- Favoritos (API pública sobre o Set em memória) ----------
-    function obterFavoritos() {
-        _garantirEstadoCarregado();
-        return estado.favoritos;
-    }
+    // ---------- Favoritos ----------
+    function obterFavoritos() { _garantirEstadoCarregado(); return estado.favoritos; }
     function toggleFavorito(id) {
         _garantirEstadoCarregado();
-        if (estado.favoritos.has(id)) {
-            estado.favoritos.delete(id);
-            persistirDebounced();
-            return false;
-        }
-        estado.favoritos.add(id);
-        persistirDebounced();
-        return true;
+        if (estado.favoritos.has(id)) { estado.favoritos.delete(id); persistirDebounced(); return false; }
+        estado.favoritos.add(id); persistirDebounced(); return true;
     }
-    function ehFavorito(id) {
-        _garantirEstadoCarregado();
-        return estado.favoritos.has(id);
-    }
+    function ehFavorito(id) { _garantirEstadoCarregado(); return estado.favoritos.has(id); }
 
     // ---------- Falhas ----------
-    function obterFalhas() {
-        _garantirEstadoCarregado();
-        return estado.falhas;
-    }
-    function _tsDe(em) {
-        return typeof em === 'number' ? em : Date.parse(em);
-    }
+    function obterFalhas() { _garantirEstadoCarregado(); return estado.falhas; }
+    function _tsDe(em) { return typeof em === 'number' ? em : Date.parse(em); }
     function obterStatusFalha(id) {
         _garantirEstadoCarregado();
         const registro = estado.falhas[id];
@@ -118,22 +102,17 @@
     }
     function limparFalha(id) {
         _garantirEstadoCarregado();
-        if (estado.falhas[id]) {
-            delete estado.falhas[id];
-            persistirDebounced();
-        }
+        if (estado.falhas[id]) { delete estado.falhas[id]; persistirDebounced(); }
     }
     function formatarRelativoCurto(em) {
         const diffMin = Math.floor((Date.now() - _tsDe(em)) / 60000);
+        if (diffMin < 1) return 'agora';
         if (diffMin < 60) return 'há ' + diffMin + ' min';
         return 'há ' + Math.floor(diffMin / 60) + 'h';
     }
 
     // ---------- Link funcional ----------
-    function obterLinksFuncionais() {
-        _garantirEstadoCarregado();
-        return estado.links;
-    }
+    function obterLinksFuncionais() { _garantirEstadoCarregado(); return estado.links; }
     function salvarLinkFuncional(id, url) {
         _garantirEstadoCarregado();
         if (estado.links[id] === url) return;
@@ -141,7 +120,7 @@
         persistirDebounced();
     }
 
-    // ---------- AbortController global do módulo ----------
+    // ---------- AbortController ----------
     let abortController = null;
 
     function loadHlsJs() {
@@ -177,7 +156,7 @@
             '<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64">' +
             '<rect width="64" height="64" rx="10" fill="#1b1f26"/>' +
             '<text x="50%" y="53%" font-family="system-ui,sans-serif" font-size="26" ' +
-            'font-weight="700" fill="#3b82f6" text-anchor="middle" dominant-baseline="middle">' +
+            'font-weight="700" fill="#22d3ee" text-anchor="middle" dominant-baseline="middle">' +
             escapeHtml(letra) +
             '</text></svg>';
         const uri = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
@@ -209,8 +188,6 @@
         return canais;
     }
 
-    // Cache HTTP passa a valer (sem cache:'no-store'). iptv-org serve com
-    // Cache-Control razoável, então a segunda abertura fica muito mais rápida.
     async function buscarJson(url) {
         const res = await fetch(url, { signal: abortController ? abortController.signal : undefined });
         if (!res.ok) throw new Error('HTTP ' + res.status + ' (' + url + ')');
@@ -222,7 +199,7 @@
         return res.text();
     }
 
-    // ---------- Carga de canais + categorias ----------
+    // ---------- Carga de canais ----------
     async function carregarDados() {
         const [resCh, resSt, resM3u, resFreeTv, resCat] = await Promise.allSettled([
             buscarJson(CHANNELS_API_URL),
@@ -268,7 +245,6 @@
             if (!lista.includes(s.url)) lista.push(s.url);
         }
 
-        // Link funcional agora sai do estado em memória, sem parse adicional.
         const linksFuncionais = estado.links;
 
         const lista = [];
@@ -314,9 +290,13 @@
         const catsDisponiveis = new Set();
         lista.forEach(c => c.categorias.forEach(cat => catsDisponiveis.add(cat)));
 
-        return { canais: lista, categorias: Array.from(catsDisponiveis).sort() };
+        return {
+            canais: lista,
+            categorias: Array.from(catsDisponiveis).sort((a, b) => a.localeCompare(b, 'pt-BR'))
+        };
     }
 
+    // ---------- INIT ----------
     function init() {
         if (window._iptv) return;
 
@@ -337,7 +317,11 @@
             --tv-star:#f5b942;
         }
 
-        #${UID}{position:fixed;top:60px;left:60px;width:1000px;height:640px;
+        #${UID}{
+            --hub-cyan:#22d3ee;--hub-violet:#a78bfa;
+            --hub-grad:linear-gradient(120deg,var(--hub-cyan),var(--hub-violet));
+            --hub-ok:#34d399;--hub-err:#fb7185;--hub-muted:#8b8fa3;
+            position:fixed;top:60px;left:60px;width:1000px;height:640px;
             box-sizing:border-box;
             font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;
             background:var(--tv-bg);color:var(--tv-text);
@@ -376,11 +360,72 @@
         #${UID} .iptv-unhide:hover{background:var(--tv-accent);color:#fff}
 
         #${UID} .iptv-body{flex:1;min-height:0;position:relative;display:flex;flex-direction:column}
-        #${UID}.vista-home .tv-player{display:none}
-        #${UID}.vista-player .tv-home{display:none}
 
-        #${UID} .tv-home{flex:1;min-height:0;display:flex;flex-direction:column}
+        /* View toggle — todas as views escondidas por padrão, só a ativa aparece */
+        #${UID} .smart-home,
+        #${UID} .smart-app-container,
+        #${UID} .tv-home,
+        #${UID} .tv-player{display:none}
+        #${UID}.vista-smart  .smart-home{display:flex}
+        #${UID}.vista-app    .smart-app-container{display:flex}
+        #${UID}.vista-home   .tv-home{display:flex}
+        #${UID}.vista-player .tv-player{display:flex}
 
+        /* ─── Smart home (casca de apps) ─── */
+        #${UID} .smart-home{flex:1;min-height:0;flex-direction:column;
+            padding:36px 32px 24px;gap:26px;overflow-y:auto}
+        #${UID} .smart-home::-webkit-scrollbar{width:6px}
+        #${UID} .smart-home::-webkit-scrollbar-thumb{background:var(--tv-border);border-radius:3px}
+        #${UID} .smart-greet{font-size:26px;font-weight:700;color:#f1f2f8;
+            letter-spacing:-.01em;flex-shrink:0}
+        #${UID} .smart-row{display:flex;gap:18px;
+            overflow-x:auto;padding-bottom:8px;scroll-behavior:smooth}
+        #${UID} .smart-row::-webkit-scrollbar{height:4px}
+        #${UID} .smart-row::-webkit-scrollbar-thumb{background:var(--tv-border);border-radius:2px}
+        #${UID} .smart-row::-webkit-scrollbar-thumb:hover{background:var(--hub-cyan)}
+        #${UID} .smart-app{
+            all:unset;flex-shrink:0;
+            width:220px;height:130px;box-sizing:border-box;
+            display:flex;flex-direction:column;align-items:flex-start;
+            justify-content:space-between;padding:18px;
+            border-radius:16px;cursor:pointer;position:relative;overflow:hidden;
+            background:linear-gradient(175deg,rgba(20,20,28,.92) 0%,rgba(9,9,14,.97) 100%);
+            border:1px solid rgba(255,255,255,.08);
+            backdrop-filter:blur(18px) saturate(140%);
+            -webkit-backdrop-filter:blur(18px) saturate(140%);
+            transition:transform .18s cubic-bezier(.16,1,.3,1),
+                       border-color .18s, box-shadow .18s;
+        }
+        #${UID} .smart-app::before{
+            content:'';position:absolute;inset:0;
+            background:var(--app-accent,var(--hub-cyan));
+            opacity:.06;transition:opacity .18s;
+        }
+        #${UID} .smart-app:hover::before{opacity:.14}
+        #${UID} .smart-app:hover,
+        #${UID} .smart-app.focused{
+            transform:scale(1.045);
+            border-color:rgba(255,255,255,.7);
+            box-shadow:0 16px 40px rgba(0,0,0,.55),
+                       0 0 0 2px rgba(255,255,255,.85),
+                       0 0 40px rgba(34,211,238,.16);
+        }
+        #${UID} .smart-app-icon{
+            font-size:42px;line-height:1;
+            filter:drop-shadow(0 4px 12px rgba(0,0,0,.5));
+            position:relative;z-index:1;
+        }
+        #${UID} .smart-app-name{
+            font-size:15px;font-weight:700;color:#f1f2f8;
+            position:relative;z-index:1;
+        }
+
+        #${UID} .smart-app-container{flex:1;min-height:0;flex-direction:column;
+            position:relative;overflow:hidden}
+        #${UID} .smart-app-container .tv-empty{grid-column:auto}
+
+        /* ─── TV home (canal grid) ─── */
+        #${UID} .tv-home{flex:1;min-height:0;flex-direction:column}
         #${UID} .tv-toolbar{flex-shrink:0;padding:12px 16px 8px;display:flex;flex-direction:column;gap:9px}
         #${UID} .tv-search input{width:100%;background:var(--tv-bg-card);
             border:1px solid var(--tv-border);border-radius:8px;padding:9px 12px;
@@ -435,13 +480,14 @@
         #${UID} .tv-star:hover{transform:scale(1.15);background:rgba(10,12,16,.8)}
         #${UID} .tv-star.faved{color:var(--tv-star)}
 
-        #${UID} .tv-loading,#${UID} .tv-empty{grid-column:1/-1;padding:30px 10px;text-align:center;
+        #${UID} .tv-loading,#${UID} .tv-empty{padding:30px 10px;text-align:center;
             color:var(--tv-text-faint);font-size:12px}
         #${UID} .tv-spin{width:18px;height:18px;border:2px solid rgba(59,130,246,.2);
             border-top-color:var(--tv-accent);border-radius:50%;margin:0 auto 10px;
             animation:iptvSpin .7s linear infinite}
 
-        #${UID} .tv-player{flex:1;min-height:0;display:flex;flex-direction:column}
+        /* ─── Player ─── */
+        #${UID} .tv-player{flex:1;min-height:0;flex-direction:column}
         #${UID} .tv-video-wrap{flex:1;min-height:0;position:relative;background:#000;
             display:flex;align-items:center;justify-content:center;overflow:hidden}
         #${UID} .tv-video-wrap video{width:100%;height:100%;object-fit:contain;display:block}
@@ -475,7 +521,9 @@
 
         const win = document.createElement('div');
         win.id = UID;
-        win.className = 'vista-home';
+        win.className = 'vista-smart';
+        win.setAttribute('data-sang-ui', '');
+        win.setAttribute('data-hub', '1');
         win.innerHTML = `
             <div class="iptv-hdr" id="${UID}hdr">
                 <div class="iptv-brand">
@@ -483,12 +531,18 @@
                     <span class="iptv-chip-br">BR</span>
                 </div>
                 <div class="iptv-actions">
+                    <div class="iptv-btn" id="${UID}home" title="Início">⌂</div>
                     <div class="iptv-btn" id="${UID}hdrToggle" title="Ocultar cabeçalho">▭</div>
                     <div class="iptv-btn" id="${UID}min" title="Minimizar">−</div>
                     <div class="iptv-btn" id="${UID}cls" title="Fechar">✕</div>
                 </div>
             </div>
             <div class="iptv-body">
+                <div class="smart-home" id="${UID}smart">
+                    <div class="smart-greet" id="${UID}greet">Bom dia</div>
+                    <div class="smart-row" id="${UID}apps"></div>
+                </div>
+                <div class="smart-app-container" id="${UID}appContainer"></div>
                 <div class="tv-home">
                     <div class="tv-toolbar">
                         <div class="tv-search"><input type="text" id="${UID}search" placeholder="Buscar canal…" /></div>
@@ -520,6 +574,9 @@
         `;
         document.body.appendChild(win);
 
+        // Reaproveita hook do hub (proteção contra Lite Mode via data-sang-ui)
+        window._hubUI?.markProtected?.(win);
+
         const gridEl = win.querySelector('#' + UID + 'grid');
         const videoWrapEl = win.querySelector('#' + UID + 'video-wrap');
         const searchEl = win.querySelector('#' + UID + 'search');
@@ -527,6 +584,9 @@
         const hdr = win.querySelector('#' + UID + 'hdr');
         const resizeHandle = win.querySelector('#' + UID + 'resize');
         const backBtn = win.querySelector('#' + UID + 'back');
+        const appsRowEl = win.querySelector('#' + UID + 'apps');
+        const greetEl = win.querySelector('#' + UID + 'greet');
+        const appContainer = win.querySelector('#' + UID + 'appContainer');
 
         let allChannels = [];
         let allCategories = [];
@@ -536,17 +596,114 @@
         let filtroCategoria = null;
         let mostrarSoFavoritos = false;
         let termoBusca = '';
-        let vista = 'home';
+        let vista = 'smart';
         let layoutTimeout = null;
 
         const state = { winW: 1000, winHHome: 640 };
 
-        // ---- Flush em unload ----
+        // ---------- Apps registry ----------
+        const apps = new Map();
+        let appAtualId = null;
+        let appCleanup = null;
+        let focoEl = null;
+
+        apps.set('tv', {
+            id: 'tv',
+            name: 'TV Aberta',
+            icon: '📺',
+            accent: 'var(--hub-cyan)',
+            isBuiltin: true
+        });
+
+        function registrarApp(cfg) {
+            if (!cfg || !cfg.id || apps.has(cfg.id)) return false;
+            apps.set(cfg.id, cfg);
+            if (vista === 'smart') renderApps();
+            return true;
+        }
+
+        function fecharAppAtual() {
+            if (appCleanup) {
+                try { appCleanup(); } catch (e) { console.warn('[IPTV] app cleanup falhou:', e); }
+                appCleanup = null;
+            }
+            appContainer.innerHTML = '';
+            appAtualId = null;
+        }
+
+        function abrirApp(id) {
+            const app = apps.get(id);
+            if (!app) return;
+            if (appAtualId && appAtualId !== id) fecharAppAtual();
+            appAtualId = id;
+
+            if (app.isBuiltin) {
+                vista = 'home';
+                win.classList.remove('vista-smart', 'vista-player', 'vista-app');
+                win.classList.add('vista-home');
+                aplicarLayout(true);
+                return;
+            }
+
+            appContainer.innerHTML = '';
+            win.classList.remove('vista-smart', 'vista-home', 'vista-player');
+            win.classList.add('vista-app');
+            vista = 'app';
+
+            try {
+                const r = app.mount?.(appContainer);
+                appCleanup = typeof r === 'function' ? r : null;
+            } catch (e) {
+                console.warn('[IPTV] app mount falhou:', e);
+                appContainer.innerHTML = '<div class="tv-empty">App indisponível.</div>';
+            }
+            aplicarLayout(true);
+        }
+
+        function irParaSmart() {
+            if (vista === 'player') pararReproducao();
+            if (vista === 'app') fecharAppAtual();
+            vista = 'smart';
+            win.classList.remove('vista-home', 'vista-player', 'vista-app');
+            win.classList.add('vista-smart');
+            renderApps();
+            aplicarLayout(true);
+        }
+
+        function renderApps() {
+            const h = new Date().getHours();
+            greetEl.textContent = h < 12 ? 'Bom dia' : h < 18 ? 'Boa tarde' : 'Boa noite';
+            appsRowEl.innerHTML = [...apps.values()].map(a => `
+                <button class="smart-app focused-target" data-app="${escapeHtml(a.id)}"
+                        style="--app-accent:${a.accent || 'var(--tv-accent)'}">
+                    <div class="smart-app-icon">${a.icon || '📦'}</div>
+                    <div class="smart-app-name">${escapeHtml(a.name)}</div>
+                </button>
+            `).join('');
+            focarPrimeiro();
+        }
+
+        function focar(el) {
+            if (focoEl) focoEl.classList.remove('focused');
+            focoEl = el;
+            if (focoEl) {
+                focoEl.classList.add('focused');
+                try { focoEl.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'smooth' }); } catch (_) {}
+            }
+        }
+
+        function focarPrimeiro() {
+            if (vista !== 'smart') return;
+            const first = appsRowEl.querySelector('.smart-app');
+            if (first) focar(first);
+        }
+
+        // ---------- Flush em unload ----------
         function aoDescarregar() { persistirAgora(); }
         window.addEventListener('beforeunload', aoDescarregar);
         window.addEventListener('pagehide', aoDescarregar);
 
-        // ---- Layout ----
+        // ---------- Layout ----------
         function aplicarLayout(animar) {
             const headerVisible = !win.classList.contains('header-hidden');
             const headerH = headerVisible ? HEADER_HEIGHT : 0;
@@ -575,7 +732,7 @@
             }
         }
 
-        // ---- Drag ----
+        // ---------- Drag ----------
         let drag = null;
         hdr.addEventListener('mousedown', e => {
             if (e.target.closest('.iptv-btn')) return;
@@ -591,7 +748,7 @@
         document.addEventListener('mousemove', aoMoverJanela);
         document.addEventListener('mouseup', aoSoltarJanela);
 
-        // ---- Resize ----
+        // ---------- Resize ----------
         let resizeState = null;
         resizeHandle.addEventListener('mousedown', e => {
             e.preventDefault();
@@ -624,10 +781,10 @@
         document.addEventListener('mousemove', aoMoverResize);
         document.addEventListener('mouseup', aoSoltarResize);
 
-        // ---- Navegação home <-> player ----
+        // ---------- Navegação home <-> player ----------
         function irParaPlayer() {
             vista = 'player';
-            win.classList.remove('vista-home');
+            win.classList.remove('vista-smart', 'vista-home', 'vista-app');
             win.classList.add('vista-player');
             aplicarLayout(true);
         }
@@ -640,24 +797,30 @@
         function voltarParaHome() {
             pararReproducao();
             vista = 'home';
-            win.classList.remove('vista-player');
+            win.classList.remove('vista-smart', 'vista-player', 'vista-app');
             win.classList.add('vista-home');
             aplicarLayout(true);
         }
         backBtn.addEventListener('click', voltarParaHome);
 
-        // ---- Estrela (favorito) ----
+        // ---------- Estrela ----------
         function sincronizarEstrela(id) {
             const fav = ehFavorito(id);
-            win.querySelectorAll(`[data-star="${id}"]`).forEach(btn => {
+            win.querySelectorAll(`[data-star="${CSS.escape(id)}"]`).forEach(btn => {
                 btn.textContent = fav ? '★' : '☆';
                 btn.classList.toggle('faved', fav);
                 btn.title = fav ? 'Remover dos favoritos' : 'Adicionar aos favoritos';
             });
         }
 
-        // ---- Clique delegado ----
+        // ---------- Clique delegado ----------
         win.addEventListener('click', (e) => {
+            const smartCard = e.target.closest('.smart-app');
+            if (smartCard && vista === 'smart') {
+                e.preventDefault();
+                abrirApp(smartCard.dataset.app);
+                return;
+            }
             const starBtn = e.target.closest('.tv-star');
             if (starBtn && starBtn.dataset.star) {
                 e.stopPropagation();
@@ -674,7 +837,40 @@
             }
         });
 
-        // ---- Filtros ----
+        // ---------- Teclado ----------
+        function aoTeclado(e) {
+            if (win.style.display === 'none') return;
+            const t = e.target;
+            if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+
+            if (e.key === 'Escape') {
+                if (vista === 'player') { e.preventDefault(); voltarParaHome(); return; }
+                if (vista === 'home' || vista === 'app') { e.preventDefault(); irParaSmart(); return; }
+                return;
+            }
+
+            if (vista !== 'smart') return;
+
+            if (e.key === 'Enter' && focoEl) {
+                e.preventDefault();
+                abrirApp(focoEl.dataset.app);
+                return;
+            }
+
+            if (e.key === 'ArrowRight' || e.key === 'ArrowDown' || e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
+                const cards = [...appsRowEl.querySelectorAll('.smart-app')];
+                if (!cards.length) return;
+                e.preventDefault();
+                const forward = (e.key === 'ArrowRight' || e.key === 'ArrowDown');
+                const idx = focoEl ? cards.indexOf(focoEl) : -1;
+                let next = idx + (forward ? 1 : -1);
+                next = Math.max(0, Math.min(cards.length - 1, next));
+                if (cards[next]) focar(cards[next]);
+            }
+        }
+        document.addEventListener('keydown', aoTeclado);
+
+        // ---------- Filtros ----------
         filtersEl.addEventListener('click', (e) => {
             const chip = e.target.closest('.tv-chip');
             if (!chip) return;
@@ -705,18 +901,12 @@
             return '<span class="tv-tile-badge" title="Falhou ' + escapeHtml(formatarRelativoCurto(registro.em)) + '">OFFLINE</span>';
         }
 
-        // renderChannels agora lê o estado uma única vez. Antes eram ~600
-        // JSON.parse por render (2 leituras × 300 itens). Agora é O(1) por item.
         function renderChannels() {
             const q = termoBusca.toLowerCase();
             let filtered = allChannels;
 
-            if (mostrarSoFavoritos) {
-                filtered = filtered.filter(c => estado.favoritos.has(c.id));
-            }
-            if (filtroCategoria) {
-                filtered = filtered.filter(c => c.categorias.includes(filtroCategoria));
-            }
+            if (mostrarSoFavoritos) filtered = filtered.filter(c => estado.favoritos.has(c.id));
+            if (filtroCategoria) filtered = filtered.filter(c => c.categorias.includes(filtroCategoria));
             if (q) {
                 filtered = filtered.filter(c =>
                     c.name.toLowerCase().includes(q) ||
@@ -779,7 +969,7 @@
             }
         }
 
-        // ---- Reprodução com fallback em cascata ----
+        // ---------- Reprodução com fallback ----------
         async function playChannel(ch, itemEl) {
             const minhaChamada = ++chamadaAtual;
             clearTimeout(conectarTimeout);
@@ -878,7 +1068,7 @@
             tentar();
         }
 
-        // ---- Busca ----
+        // ---------- Busca ----------
         let buscaDebounce = null;
         searchEl.addEventListener('input', () => {
             clearTimeout(buscaDebounce);
@@ -888,7 +1078,7 @@
             }, 180);
         });
 
-        // ---- Header hide/unhide ----
+        // ---------- Header hide/unhide ----------
         function toggleHeader() {
             win.classList.toggle('header-hidden');
             aplicarLayout(true);
@@ -896,8 +1086,12 @@
         win.querySelector('#' + UID + 'hdrToggle').addEventListener('click', toggleHeader);
         win.querySelector('#' + UID + 'unhide').addEventListener('click', toggleHeader);
 
-        // ---- Carga inicial ----
+        // ---------- Botão Home ----------
+        win.querySelector('#' + UID + 'home').addEventListener('click', irParaSmart);
+
+        // ---------- Carga inicial ----------
         aplicarLayout(false);
+        irParaSmart();
 
         carregarDados()
             .then(({ canais, categorias }) => {
@@ -915,13 +1109,14 @@
                 gridEl.innerHTML = '<div class="tv-empty">⚠ Falha ao carregar canais.<br>' + escapeHtml(e.message) + '</div>';
             });
 
-        // ---- Minimizar / Fechar ----
+        // ---------- Minimizar / Fechar ----------
         function minimize() { win.style.display = 'none'; }
         function kill() {
             clearTimeout(conectarTimeout);
             clearTimeout(buscaDebounce);
             clearTimeout(layoutTimeout);
             chamadaAtual++;
+            fecharAppAtual();
             if (hls) { try { hls.destroy(); } catch (e) {} hls = null; }
             if (abortController) { try { abortController.abort(); } catch (e) {} abortController = null; }
             persistirAgora();
@@ -931,6 +1126,7 @@
             document.removeEventListener('mouseup', aoSoltarJanela);
             document.removeEventListener('mousemove', aoMoverResize);
             document.removeEventListener('mouseup', aoSoltarResize);
+            document.removeEventListener('keydown', aoTeclado);
             win.remove();
             style.remove();
             delete window._iptv;
@@ -940,7 +1136,11 @@
 
         window._iptv = {
             kill,
-            show: () => { win.style.display = 'flex'; aplicarLayout(false); }
+            show: () => { win.style.display = 'flex'; aplicarLayout(false); },
+            hide: () => { win.style.display = 'none'; },
+            registrarApp,
+            abrirApp,
+            irParaSmart
         };
     }
 
