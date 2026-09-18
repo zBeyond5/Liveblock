@@ -1201,6 +1201,71 @@
         }
         #${UID} .resize::before { width: 10px; height: 1.5px; bottom: 4px; right: 1px; }
         #${UID} .resize::after { width: 1.5px; height: 10px; bottom: 1px; right: 4px; }
+
+        /* ─── SVI ─── */
+        #${UID} .svi-wrap {
+            flex: 1; min-height: 0;
+            overflow-y: auto;
+            padding: 20px 22px 24px;
+            background: radial-gradient(60% 70% at 50% 0%, rgba(124,58,237,.1), transparent 60%), #08090d;
+        }
+        #${UID} .svi-wrap::-webkit-scrollbar { width: 5px; }
+        #${UID} .svi-wrap::-webkit-scrollbar-thumb { background: rgba(255,255,255,.08); border-radius: 3px; }
+        #${UID} .svi-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+            gap: 14px;
+        }
+        #${UID} .svi-card {
+            all: unset;
+            display: block;
+            cursor: pointer;
+            border-radius: 12px;
+            overflow: hidden;
+            background: rgba(255,255,255,.025);
+            border: 1px solid var(--line);
+            transition: transform .2s cubic-bezier(.22,1,.36,1), border-color .2s, background .2s;
+            position: relative;
+        }
+        #${UID} .svi-card:hover {
+            transform: translateY(-3px);
+            border-color: rgba(167,139,250,.5);
+            background: rgba(255,255,255,.045);
+        }
+        #${UID} .svi-card:focus-visible {
+            outline: none;
+            border-color: var(--violet);
+            box-shadow: 0 0 0 2px rgba(167,139,250,.5), 0 12px 28px -12px rgba(0,0,0,.6);
+        }
+        #${UID} .svi-card-thumb {
+            width: 100%;
+            aspect-ratio: 16 / 9;
+            object-fit: cover;
+            display: block;
+            background: #10131a;
+        }
+        #${UID} .svi-card-thumb-fallback {
+            display: grid; place-items: center;
+            color: var(--violet);
+            background: linear-gradient(135deg, #1e1b4b, #0c0a30);
+        }
+        #${UID} .svi-card-label {
+            padding: 8px 10px;
+            font-size: 11px;
+            font-weight: 600;
+            color: var(--text-dim);
+            white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+        }
+        #${UID} .svi-player {
+            flex: 1; min-height: 0;
+            background: #000;
+            position: relative;
+        }
+        #${UID} .svi-player iframe {
+            width: 100%; height: 100%;
+            border: 0; display: block;
+            background: #000;
+        }
         `;
         document.head.appendChild(style);
 
@@ -1797,6 +1862,274 @@
                     cancelado = true;
                     try { fetchAc.abort(); } catch(_) {}
                     limparPlayerAnime();
+                };
+            }
+        });
+
+        // ---------- SVI (embeds via CSV) ----------
+        apps.set('svi', {
+            id: 'svi', name: 'SVI', icon: 'play', tag: 'STREAM',
+            cardBg: 'linear-gradient(135deg, #7c3aed 0%, #4c1d95 100%)',
+            mount(container) {
+                const SVI_CSV_URL = 'https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/assets/PNG/AI/embed.csv';
+                container.innerHTML = '';
+
+                const bar = document.createElement('div');
+                bar.className = 'app-bar';
+                bar.innerHTML = `
+                    <div class="app-bar-left">
+                        <span class="app-bar-dot" id="${UID}sviDot"></span>
+                        <span class="app-bar-title">SVI</span>
+                        <span class="app-bar-sub" id="${UID}sviSub">carregando…</span>
+                    </div>
+                    <div class="app-bar-actions">
+                        <button class="hdr-btn" id="${UID}sviBack" title="Voltar ao catálogo" style="display:none">${svg('back', 16)}</button>
+                        <button class="hdr-btn" id="${UID}sviReload" title="Recarregar catálogo">${svg('chevronRight', 16)}</button>
+                    </div>
+                `;
+
+                const wrap = document.createElement('div');
+                wrap.className = 'app-frame-wrap';
+                wrap.style.overflow = 'hidden';
+                wrap.style.display = 'flex';
+                wrap.style.flexDirection = 'column';
+                wrap.style.background = '#08090d';
+
+                const gridWrap = document.createElement('div');
+                gridWrap.className = 'svi-wrap';
+                gridWrap.innerHTML = `
+                    <div class="anime-head">
+                        <div>
+                            <small>SVI</small>
+                            <h2>Catálogo</h2>
+                        </div>
+                        <div class="anime-head-sub" id="${UID}sviCount"></div>
+                    </div>
+                    <div class="svi-grid" id="${UID}sviGrid">
+                        <div class="anime-state"><div class="tv-spin"></div>Carregando catálogo…</div>
+                    </div>
+                `;
+
+                const playerWrap = document.createElement('div');
+                playerWrap.className = 'svi-player';
+                playerWrap.style.display = 'none';
+
+                wrap.appendChild(gridWrap);
+                wrap.appendChild(playerWrap);
+                container.appendChild(bar);
+                container.appendChild(wrap);
+
+                const grid = win.querySelector('#' + UID + 'sviGrid');
+                const sub = win.querySelector('#' + UID + 'sviSub');
+                const count = win.querySelector('#' + UID + 'sviCount');
+                const backA = win.querySelector('#' + UID + 'sviBack');
+                const reloadBtn = win.querySelector('#' + UID + 'sviReload');
+
+                let cancelado = false;
+                const fetchAc = new AbortController();
+
+                // ─── CSV parser robusto (RFC 4180-ish, detecta delimitador) ───
+                function detectDelimiter(line) {
+                    const counts = { ',': 0, ';': 0, '\t': 0 };
+                    let inQuotes = false;
+                    for (let i = 0; i < line.length; i++) {
+                        const ch = line[i];
+                        if (ch === '"') inQuotes = !inQuotes;
+                        else if (!inQuotes && ch in counts) counts[ch]++;
+                    }
+                    let best = ',', bestN = -1;
+                    for (const d in counts) if (counts[d] > bestN) { bestN = counts[d]; best = d; }
+                    return best;
+                }
+                function parseCSV(text) {
+                    const firstLine = text.split(/\r?\n/).find(l => l.trim().length) || '';
+                    const delim = detectDelimiter(firstLine);
+                    const rows = [];
+                    let row = [], field = '', inQuotes = false, i = 0;
+                    while (i < text.length) {
+                        const ch = text[i];
+                        if (inQuotes) {
+                            if (ch === '"') {
+                                if (text[i + 1] === '"') { field += '"'; i += 2; continue; }
+                                inQuotes = false; i++; continue;
+                            }
+                            field += ch; i++; continue;
+                        }
+                        if (ch === '"') { inQuotes = true; i++; continue; }
+                        if (ch === delim) { row.push(field); field = ''; i++; continue; }
+                        if (ch === '\r') { i++; continue; }
+                        if (ch === '\n') { row.push(field); rows.push(row); row = []; field = ''; i++; continue; }
+                        field += ch; i++;
+                    }
+                    if (field.length || row.length) { row.push(field); rows.push(row); }
+                    return rows;
+                }
+                function extractIframeSrc(html) {
+                    if (!html) return null;
+                    const m = html.match(/<iframe[^>]*\bsrc\s*=\s*["']?([^"'\s>]+)/i);
+                    return m ? m[1] : null;
+                }
+                const isUrl = s => /^https?:\/\//i.test((s || '').trim());
+                const isIframeHtml = s => /<iframe/i.test(s || '');
+
+                function limparPlayerSVI() {
+                    const ifr = playerWrap.querySelector('iframe');
+                    if (ifr) { try { ifr.src = 'about:blank'; } catch(_) {} }
+                    playerWrap.innerHTML = '';
+                }
+                function voltarCatalogo() {
+                    limparPlayerSVI();
+                    playerWrap.style.display = 'none';
+                    gridWrap.style.display = 'block';
+                    backA.style.display = 'none';
+                    sub.textContent = count.textContent || 'catálogo';
+                }
+                function abrirVideo(item) {
+                    gridWrap.style.display = 'none';
+                    playerWrap.style.display = 'block';
+                    backA.style.display = 'grid';
+                    sub.textContent = item.label;
+                    limparPlayerSVI();
+                    const iframe = document.createElement('iframe');
+                    iframe.src = item.embedSrc;
+                    iframe.setAttribute('allow', 'autoplay; fullscreen; encrypted-media; picture-in-picture');
+                    iframe.setAttribute('referrerpolicy', 'no-referrer');
+                    iframe.setAttribute('allowfullscreen', 'true');
+                    iframe.setAttribute('scrolling', 'no');
+                    iframe.setAttribute('frameborder', '0');
+                    playerWrap.appendChild(iframe);
+                }
+
+                function extrairLabel(thumb, embedSrc) {
+                    try {
+                        const u = new URL(thumb);
+                        const parts = u.pathname.split('/').filter(Boolean);
+                        const last = (parts[parts.length - 1] || '').replace(/\.[a-z0-9]+$/i, '');
+                        if (last && last.length > 1) return last;
+                    } catch(_) {}
+                    try {
+                        const u = new URL(embedSrc);
+                        const parts = u.pathname.split('/').filter(Boolean);
+                        return parts[parts.length - 1] || 'Vídeo';
+                    } catch(_) {}
+                    return 'Vídeo';
+                }
+
+                function renderCards(items) {
+                    if (!items.length) {
+                        grid.innerHTML = '<div class="anime-state">Nenhum vídeo encontrado no catálogo.</div>';
+                        return;
+                    }
+                    grid.innerHTML = '';
+                    items.forEach((item, idx) => {
+                        const card = document.createElement('button');
+                        card.className = 'svi-card';
+                        card.type = 'button';
+                        card.title = item.label;
+                        card.style.animation = `iptvTileIn .3s cubic-bezier(.22,1,.36,1) ${Math.min(idx * 22, 280)}ms backwards`;
+
+                        if (item.thumb) {
+                            const thumb = document.createElement('img');
+                            thumb.className = 'svi-card-thumb';
+                            thumb.loading = 'lazy';
+                            thumb.decoding = 'async';
+                            thumb.referrerPolicy = 'no-referrer';
+                            thumb.alt = '';
+                            thumb.src = item.thumb;
+                            thumb.onerror = () => {
+                                thumb.remove();
+                                const ph = document.createElement('div');
+                                ph.className = 'svi-card-thumb svi-card-thumb-fallback';
+                                ph.innerHTML = svg('play', 22);
+                                card.insertBefore(ph, card.firstChild);
+                            };
+                            card.appendChild(thumb);
+                        } else {
+                            const ph = document.createElement('div');
+                            ph.className = 'svi-card-thumb svi-card-thumb-fallback';
+                            ph.innerHTML = svg('play', 22);
+                            card.appendChild(ph);
+                        }
+
+                        const label = document.createElement('div');
+                        label.className = 'svi-card-label';
+                        label.textContent = item.label;
+                        card.appendChild(label);
+
+                        card.addEventListener('click', () => abrirVideo(item));
+                        grid.appendChild(card);
+                    });
+                }
+
+                async function carregarCatalogo() {
+                    sub.textContent = 'carregando…';
+                    count.textContent = '';
+                    grid.innerHTML = '<div class="anime-state"><div class="tv-spin"></div>Carregando catálogo…</div>';
+                    try {
+                        const res = await fetch(SVI_CSV_URL, { cache: 'no-store', signal: fetchAc.signal });
+                        if (!res.ok) throw new Error('HTTP ' + res.status);
+                        const text = await res.text();
+                        if (cancelado) return;
+
+                        const rows = parseCSV(text);
+                        if (!rows.length) throw new Error('CSV vazio');
+
+                        // Se primeira linha for cabeçalho (sem http e sem iframe), pula
+                        let start = 0;
+                        const firstRowStr = rows[0].join(' ');
+                        if (!isUrl(firstRowStr) && !isIframeHtml(firstRowStr)) start = 1;
+
+                        const items = [];
+                        for (let r = start; r < rows.length; r++) {
+                            const cells = rows[r].map(c => c.trim()).filter(Boolean);
+                            if (!cells.length) continue;
+
+                            let thumb = null, iframeHtml = null, embedSrc = null;
+                            for (const c of cells) {
+                                if (!thumb && isUrl(c) && /\.(jpg|jpeg|png|webp|gif|avif)(\?|$)/i.test(c)) {
+                                    thumb = c;
+                                }
+                                if (!iframeHtml && isIframeHtml(c)) {
+                                    iframeHtml = c;
+                                    embedSrc = extractIframeSrc(c);
+                                }
+                            }
+                            // Fallback: pega primeira URL que não seja o embed
+                            if (!thumb) {
+                                for (const c of cells) {
+                                    if (isUrl(c) && c !== embedSrc) { thumb = c; break; }
+                                }
+                            }
+                            if (!embedSrc) continue;
+
+                            items.push({
+                                thumb,
+                                embedSrc,
+                                label: extrairLabel(thumb || embedSrc, embedSrc),
+                            });
+                        }
+
+                        if (!items.length) throw new Error('Nenhum embed válido no CSV');
+
+                        renderCards(items);
+                        sub.textContent = items.length + ' vídeos';
+                        count.textContent = items.length + ' itens';
+                    } catch (e) {
+                        if (cancelado || e.name === 'AbortError') return;
+                        sub.textContent = 'erro';
+                        grid.innerHTML = '<div class="anime-state">⚠ Falha ao carregar catálogo.<br>' + escapeHtml(e.message) + '</div>';
+                    }
+                }
+
+                backA.onclick = voltarCatalogo;
+                reloadBtn.onclick = carregarCatalogo;
+
+                carregarCatalogo();
+
+                return () => {
+                    cancelado = true;
+                    try { fetchAc.abort(); } catch(_) {}
+                    limparPlayerSVI();
                 };
             }
         });
