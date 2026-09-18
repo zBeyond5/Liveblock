@@ -2374,6 +2374,7 @@
             if (!visible) item.style.display = 'none';
 
             logArea.appendChild(item);
+            packet.dir = dir;
             AppState.logs.push({ el: item, dir, searchString, rawText, packet });
 
             while (AppState.logs.length > AppState.maxLogs) {
@@ -3785,17 +3786,20 @@
     }
 
     function handleTraffic(data, dir, isDropped) {
-        if (!_alive) return;
-        try {
-            if (AppState.isPaused) return;
-            if (dir === 'RECV' && isDuplicate(data)) return;
-            const packet = Utils.parseData(data);
-            if (!packet) return;
+    if (!_alive) return;
+    try {
+        if (AppState.isPaused) return;
+        if (dir === 'RECV' && isDuplicate(data)) return;
+        const packet = Utils.parseData(data);
+        if (!packet) return;
 
-            // Grava (se ativo)
-            try { Recorder.capturar(packet, dir); } catch (e) {}
+        // ─── Watchers para RECV (SEND já roda em deveBloquear → wrapSend) ───
+        if (dir === 'RECV') {
+            try { Watchers.avaliar(packet, 'RECV'); } catch (e) {}
+        }
 
-            // Alimenta correlator com tráfego real
+        try { Recorder.capturar(packet, dir); } catch (e) {}
+ 
             if (!isDropped) {
                 try {
                     if (dir === 'SEND') Correlator.registrarEnvio(packet);
@@ -3817,8 +3821,6 @@
         }
     }
 
-    // Decide se um pacote OUT deve ser bloqueado. Retorna true se SIM.
-    // Blindado: qualquer erro → retorna false (deixa passar).
     function deveBloquear(packet, dir) {
         try {
             // Kill switch global
@@ -3849,8 +3851,7 @@
             if (!_alive) return originalSend(data);
 
             try {
-                // Normaliza para ArrayBuffer. Se não for convertível,
-                // passa direto — não é pacote binário nosso.
+
                 const buf = Utils.normalizeToArrayBuffer(data);
                 if (!buf) return originalSend(data);
 
@@ -3866,11 +3867,8 @@
                 // Log + correlação antes de enviar
                 handleTraffic(buf, 'SEND', false);
 
-                // Repassa o buffer NORMALIZADO (não o original) para evitar
-                // problemas se o wrapper tiver recebido string/typed array.
                 return originalSend(buf);
             } catch (e) {
-                // Qualquer erro inesperado → passa direto, sem travar o cliente.
                 console.error('[Analyzer] wrapSend error (fail-open):', e);
                 try { return originalSend(data); } catch (e2) { throw e2; }
             }
