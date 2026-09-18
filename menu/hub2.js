@@ -843,6 +843,7 @@
         const root = document.createElement('div');
         root.id = UID;
         root.setAttribute('data-hub', '1');
+        root.setAttribute('data-sang-ui', '');
         root.classList.add('hidden');
         root.innerHTML = `
         <div class="hub-hdr" id="${UID}hdr">
@@ -877,6 +878,7 @@
         const pill = document.createElement('div');
         pill.id = UID + 'pill';
         pill.setAttribute('data-hub', '1');
+        pill.setAttribute('data-sang-ui', '');
         pill.innerHTML = `
         <div id="${UID}pillinner">
             <div class="hub-p-hdr">
@@ -1252,7 +1254,19 @@
             ac.abort();
             document.querySelectorAll('#' + UID + ', #' + UID + 'pill, style[data-hub]').forEach(el => el.remove());
         }
-        window._hubUI = { kill };
+        window._hubUI = {
+            kill,
+            // Marca um elemento como protegido do Lite Mode do LiveBooster.
+            // Módulos podem chamar `window._hubUI?.markProtected?.(seuPainelRoot)`
+            // para garantir que o LiveBooster não mate animações/transições do painel.
+            // No-op se LiveBooster não estiver ativo ou se o elemento for inválido.
+            markProtected(el) {
+                if (el && typeof el.setAttribute === 'function') {
+                    el.setAttribute('data-sang-ui', '');
+                }
+                return el;
+            }
+        };
 
         showPill();
     }
