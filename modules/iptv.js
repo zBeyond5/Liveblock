@@ -1,4 +1,4 @@
-// modules/iptv.js (Smart TV shell)
+// modules/iptv.js (Smart TV shell v2)
 (function() {
     'use strict';
     const UID = '_iptv';
@@ -9,6 +9,7 @@
     const CHANNELS_API_URL = 'https://iptv-org.github.io/api/channels.json';
     const STREAMS_API_URL = 'https://iptv-org.github.io/api/streams.json';
     const CATEGORIES_API_URL = 'https://iptv-org.github.io/api/categories.json';
+    const JIKAN_TOP_ANIME_URL = 'https://api.jikan.moe/v4/top/anime?limit=24';
     const PAIS = 'BR';
     const PLAYLIST_URL = `https://iptv-org.github.io/iptv/countries/${PAIS.toLowerCase()}.m3u`;
     const FREE_TV_URL = 'https://raw.githubusercontent.com/Free-TV/IPTV/master/playlist.m3u8';
@@ -30,7 +31,7 @@
     const MIN_HOME_H = 420;
     const MAX_HOME_H = 1050;
 
-    // ---------- Storage bruto ----------
+    // ---------- Storage ----------
     function lerCache(chave, padrao) {
         try {
             const raw = localStorage.getItem(CACHE_PREFIX + chave);
@@ -41,14 +42,10 @@
         try { localStorage.setItem(CACHE_PREFIX + chave, JSON.stringify(valor)); } catch (e) {}
     }
 
-    // ---------- Estado em memória ----------
+    // ---------- Estado ----------
     const estado = {
-        favoritos: null,
-        falhas: null,
-        links: null,
-        _dirty: false,
-        _timeout: null,
-        _carregado: false,
+        favoritos: null, falhas: null, links: null,
+        _dirty: false, _timeout: null, _carregado: false,
     };
 
     function _garantirEstadoCarregado() {
@@ -78,7 +75,6 @@
         estado._timeout = setTimeout(persistirAgora, 500);
     }
 
-    // ---------- Favoritos ----------
     function obterFavoritos() { _garantirEstadoCarregado(); return estado.favoritos; }
     function toggleFavorito(id) {
         _garantirEstadoCarregado();
@@ -87,7 +83,6 @@
     }
     function ehFavorito(id) { _garantirEstadoCarregado(); return estado.favoritos.has(id); }
 
-    // ---------- Falhas ----------
     function obterFalhas() { _garantirEstadoCarregado(); return estado.falhas; }
     function _tsDe(em) { return typeof em === 'number' ? em : Date.parse(em); }
     function obterStatusFalha(id) {
@@ -113,7 +108,6 @@
         return 'há ' + Math.floor(diffMin / 60) + 'h';
     }
 
-    // ---------- Link funcional ----------
     function obterLinksFuncionais() { _garantirEstadoCarregado(); return estado.links; }
     function salvarLinkFuncional(id, url) {
         _garantirEstadoCarregado();
@@ -122,7 +116,6 @@
         persistirDebounced();
     }
 
-    // ---------- AbortController ----------
     let abortController = null;
 
     function loadHlsJs() {
@@ -248,22 +241,18 @@
         }
 
         const linksFuncionais = estado.links;
-
         const lista = [];
         for (const c of channels) {
             if (c.closed || c.is_nsfw) continue;
-
             const paises = Array.isArray(c.country) ? c.country : [c.country];
             const ehBR = paises.some(p => (p || '').toUpperCase() === PAIS);
             if (!ehBR) continue;
 
             const candidatos = (urlsPorCanal.get(c.id) || []).slice();
-
             const matchFreeTv = freeTvPorNome.get(normalizarNome(c.name));
             if (matchFreeTv && matchFreeTv.url && !candidatos.includes(matchFreeTv.url)) {
                 candidatos.push(matchFreeTv.url);
             }
-
             if (!candidatos.length) continue;
 
             const linkSalvo = linksFuncionais[c.id];
@@ -288,7 +277,6 @@
         }
 
         lista.sort((a, b) => a.name.localeCompare(b.name, 'pt-BR'));
-
         const catsDisponiveis = new Set();
         lista.forEach(c => c.categorias.forEach(cat => catsDisponiveis.add(cat)));
 
@@ -305,7 +293,6 @@
         _garantirEstadoCarregado();
         abortController = new AbortController();
 
-        // Fonts (cute). Não interfere na Geist do hub.
         if (!document.querySelector('link[data-iptv-font]')) {
             const fl = document.createElement('link');
             fl.rel = 'stylesheet';
@@ -523,14 +510,72 @@
         #${UID}:hover .iptv-unhide { opacity: 1; }
         #${UID} .iptv-unhide:hover { background: var(--hub-cyan); color: #0b0b10; }
 
-        /* ─── Body / views ─── */
+        /* ─── Layout com sidebar ─── */
         #${UID} .iptv-body {
             flex: 1;
             min-height: 0;
             position: relative;
             display: flex;
-            flex-direction: column;
+            flex-direction: row;
         }
+
+        #${UID} .iptv-sidebar {
+            width: 76px;
+            flex-shrink: 0;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 18px 0 14px;
+            gap: 6px;
+            background: rgba(0,0,0,.28);
+            border-right: 1px solid var(--tv-border);
+            z-index: 5;
+        }
+        #${UID} .iptv-sidebar-btn {
+            width: 46px; height: 46px;
+            border: 0;
+            border-radius: 14px;
+            background: transparent;
+            color: var(--tv-text-faint);
+            display: grid;
+            place-items: center;
+            font-size: 19px;
+            cursor: pointer;
+            transition: all .18s cubic-bezier(.16,1,.3,1);
+            position: relative;
+        }
+        #${UID} .iptv-sidebar-btn:hover {
+            background: rgba(255,255,255,.06);
+            color: var(--tv-text);
+        }
+        #${UID} .iptv-sidebar-btn.active {
+            background: var(--tv-accent-soft);
+            color: var(--hub-cyan);
+            box-shadow: inset 0 0 0 1px rgba(34,211,238,.25);
+        }
+        #${UID} .iptv-sidebar-btn.active::before {
+            content: '';
+            position: absolute;
+            left: -8px;
+            top: 50%;
+            transform: translateY(-50%);
+            width: 3px;
+            height: 22px;
+            background: var(--hub-grad);
+            border-radius: 3px;
+            box-shadow: 0 0 12px rgba(34,211,238,.6);
+        }
+        #${UID} .iptv-sidebar-spacer { flex: 1; }
+
+        #${UID} .iptv-main {
+            flex: 1;
+            min-width: 0;
+            min-height: 0;
+            display: flex;
+            flex-direction: column;
+            position: relative;
+        }
+
         #${UID} .smart-home,
         #${UID} .smart-app-container,
         #${UID} .tv-home,
@@ -545,8 +590,8 @@
             flex: 1;
             min-height: 0;
             flex-direction: column;
-            padding: 24px 28px 20px;
-            gap: 24px;
+            padding: 20px 24px 20px;
+            gap: 20px;
             overflow-y: auto;
             overflow-x: hidden;
         }
@@ -557,20 +602,20 @@
         }
         #${UID} .smart-home::-webkit-scrollbar-thumb:hover { background: var(--hub-cyan); }
 
-        /* Hero banner */
+        /* Hero */
         #${UID} .smart-hero {
             position: relative;
-            height: 240px;
+            height: 260px;
             flex-shrink: 0;
-            border-radius: 20px;
+            border-radius: 22px;
             overflow: hidden;
             background: #0a0e1f;
-            padding: 28px 32px;
+            padding: 32px 36px;
             display: flex;
             align-items: flex-end;
             border: 1px solid rgba(255,255,255,.07);
             box-shadow:
-                0 20px 50px rgba(0,0,0,.5),
+                0 24px 60px rgba(0,0,0,.55),
                 inset 0 1px 0 rgba(255,255,255,.06);
             animation: iptvHeroIn .5s cubic-bezier(.16,1,.3,1);
         }
@@ -599,6 +644,16 @@
             inset: 0;
             background: linear-gradient(0deg, rgba(8,9,13,.94) 0%, transparent 55%);
         }
+        #${UID} .smart-hero-art {
+            position: absolute;
+            right: -60px;
+            top: -20px;
+            width: 460px;
+            height: 320px;
+            opacity: .55;
+            filter: drop-shadow(0 20px 60px rgba(0,0,0,.6));
+            pointer-events: none;
+        }
         #${UID} .smart-hero-content {
             position: relative;
             z-index: 1;
@@ -619,32 +674,43 @@
         #${UID} .smart-hero-title {
             margin: 0;
             font-family: 'Fredoka', 'Quicksand', sans-serif;
-            font-size: 38px;
+            font-size: 42px;
             font-weight: 600;
-            letter-spacing: -.015em;
-            line-height: 1.05;
+            letter-spacing: -.02em;
+            line-height: 1.02;
             color: #fff;
             text-shadow: 0 4px 18px rgba(0,0,0,.6);
         }
+        #${UID} .smart-hero-title small {
+            display: block;
+            font-family: 'Quicksand', sans-serif;
+            font-size: 14px;
+            font-weight: 500;
+            letter-spacing: 0;
+            color: rgba(255,255,255,.55);
+            margin-bottom: 6px;
+            text-transform: uppercase;
+            letter-spacing: .18em;
+        }
         #${UID} .smart-hero-desc {
-            margin: 2px 0 4px;
+            margin: 2px 0 6px;
             font-family: 'Quicksand', sans-serif;
             font-size: 14px;
             font-weight: 500;
             color: rgba(255,255,255,.78);
-            line-height: 1.5;
+            line-height: 1.55;
             max-width: 460px;
             text-shadow: 0 2px 8px rgba(0,0,0,.5);
         }
         #${UID} .smart-hero-cta {
             all: unset;
-            margin-top: 6px;
+            margin-top: 4px;
             display: inline-flex;
             align-items: center;
             gap: 10px;
             padding: 11px 22px;
             border-radius: 12px;
-            background: var(--hub-grad);
+            background: #fff;
             color: #0b0b10;
             font-family: 'Quicksand', sans-serif;
             font-size: 13.5px;
@@ -652,15 +718,15 @@
             letter-spacing: .02em;
             cursor: pointer;
             width: fit-content;
-            box-shadow: 0 8px 22px rgba(34,211,238,.35), inset 0 1px 0 rgba(255,255,255,.35);
+            box-shadow: 0 8px 22px rgba(255,255,255,.18), inset 0 1px 0 rgba(255,255,255,.35);
             transition: transform .18s cubic-bezier(.16,1,.3,1), box-shadow .18s;
         }
         #${UID} .smart-hero-cta:hover {
             transform: translateY(-2px);
-            box-shadow: 0 12px 30px rgba(34,211,238,.5), inset 0 1px 0 rgba(255,255,255,.45);
+            box-shadow: 0 12px 30px rgba(255,255,255,.28), inset 0 1px 0 rgba(255,255,255,.45);
         }
         #${UID} .smart-hero-cta:focus-visible {
-            outline: 2px solid #fff;
+            outline: 2px solid var(--hub-cyan);
             outline-offset: 3px;
         }
         #${UID} .smart-hero-cta-icon {
@@ -668,7 +734,7 @@
             line-height: 1;
         }
 
-        /* Section label */
+        /* Section */
         #${UID} .smart-section {
             display: flex;
             flex-direction: column;
@@ -680,6 +746,15 @@
             font-weight: 500;
             letter-spacing: .01em;
             color: var(--tv-text);
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        #${UID} .smart-section-title::after {
+            content: '';
+            flex: 1;
+            height: 1px;
+            background: linear-gradient(90deg, rgba(255,255,255,.08), transparent);
         }
 
         /* App row */
@@ -693,79 +768,70 @@
         }
         #${UID} .smart-row::-webkit-scrollbar { display: none; }
 
-        /* App card */
+        /* App card (brand) */
         #${UID} .smart-app {
             all: unset;
             flex-shrink: 0;
-            width: 180px;
-            height: 150px;
+            width: 190px;
+            height: 118px;
             box-sizing: border-box;
             display: flex;
             flex-direction: column;
             align-items: center;
             justify-content: center;
-            gap: 14px;
-            padding: 18px;
-            border-radius: 18px;
+            gap: 8px;
+            padding: 16px;
+            border-radius: 16px;
             cursor: pointer;
             position: relative;
             overflow: hidden;
-            background: linear-gradient(175deg, rgba(20,23,31,.92) 0%, rgba(12,14,20,.97) 100%);
-            border: 1px solid rgba(255,255,255,.07);
+            background: var(--app-bg, linear-gradient(135deg, #1c1f28, #0e1017));
+            border: 1px solid rgba(255,255,255,.08);
             box-shadow:
-                0 8px 24px rgba(0,0,0,.35),
-                inset 0 1px 0 rgba(255,255,255,.04);
+                0 10px 26px rgba(0,0,0,.4),
+                inset 0 1px 0 rgba(255,255,255,.06);
             transition:
                 transform .22s cubic-bezier(.16,1,.3,1),
                 border-color .22s,
-                box-shadow .22s,
-                background .22s;
+                box-shadow .22s;
             animation: iptvAppIn .35s cubic-bezier(.16,1,.3,1) backwards;
         }
         #${UID} .smart-app::before {
             content: '';
             position: absolute;
             inset: 0;
-            background: var(--app-accent, var(--hub-cyan));
-            opacity: .05;
-            transition: opacity .22s;
+            background: radial-gradient(80% 100% at 50% 0%, rgba(255,255,255,.14), transparent 60%);
+            opacity: .5;
+            pointer-events: none;
         }
         #${UID} .smart-app::after {
             content: '';
             position: absolute;
-            top: 0; left: 14%; right: 14%;
+            top: 0; left: 12%; right: 12%;
             height: 1px;
-            background: linear-gradient(90deg, transparent, var(--app-accent, var(--hub-cyan)), transparent);
-            opacity: .4;
-            transition: opacity .22s;
+            background: linear-gradient(90deg, transparent, rgba(255,255,255,.5), transparent);
+            opacity: .5;
         }
         #${UID} .smart-app:hover {
             transform: translateY(-5px);
-            background: linear-gradient(175deg, rgba(27,31,42,.95) 0%, rgba(15,18,25,.98) 100%);
-            border-color: rgba(255,255,255,.15);
+            border-color: rgba(255,255,255,.22);
+            box-shadow:
+                0 20px 40px rgba(0,0,0,.5),
+                inset 0 1px 0 rgba(255,255,255,.1);
         }
-        #${UID} .smart-app:hover::before { opacity: .1; }
-        #${UID} .smart-app:hover::after { opacity: .7; }
-
         #${UID} .smart-app:focus-visible,
         #${UID} .smart-app.focused {
             outline: none;
-            transform: scale(1.06);
+            transform: scale(1.05) translateY(-2px);
             border-color: rgba(255,255,255,.85);
-            background: linear-gradient(175deg, rgba(27,31,42,.98) 0%, rgba(15,18,25,1) 100%);
             box-shadow:
                 0 0 0 2px rgba(255,255,255,.9),
                 0 0 50px rgba(34,211,238,.25),
                 0 20px 50px rgba(0,0,0,.6);
             animation: iptvFocusPulse 2.4s ease-in-out infinite;
         }
-        #${UID} .smart-app:focus-visible::before,
-        #${UID} .smart-app.focused::before { opacity: .16; }
-        #${UID} .smart-app:focus-visible::after,
-        #${UID} .smart-app.focused::after { opacity: 1; }
-
         #${UID} .smart-app-icon {
-            font-size: 52px;
+            font-size: 30px;
             line-height: 1;
             position: relative;
             z-index: 1;
@@ -773,22 +839,31 @@
             transition: transform .22s cubic-bezier(.16,1,.3,1);
         }
         #${UID} .smart-app:focus-visible .smart-app-icon,
-        #${UID} .smart-app.focused .smart-app-icon {
-            transform: scale(1.08);
-        }
+        #${UID} .smart-app.focused .smart-app-icon { transform: scale(1.1); }
         #${UID} .smart-app-name {
-            font-family: 'Quicksand', sans-serif;
+            font-family: 'Fredoka', 'Quicksand', sans-serif;
             font-size: 15px;
-            font-weight: 700;
-            letter-spacing: -.005em;
-            color: #f1f2f8;
+            font-weight: 600;
+            letter-spacing: .01em;
+            color: #fff;
             position: relative;
             z-index: 1;
             text-align: center;
-            text-shadow: 0 2px 8px rgba(0,0,0,.5);
+            text-shadow: 0 2px 8px rgba(0,0,0,.55);
+        }
+        #${UID} .smart-app-tag {
+            position: absolute;
+            bottom: 8px; right: 10px;
+            font-family: 'Quicksand', sans-serif;
+            font-size: 9px;
+            font-weight: 800;
+            letter-spacing: .1em;
+            color: rgba(255,255,255,.55);
+            text-transform: uppercase;
+            z-index: 1;
         }
 
-        /* Container de app */
+        /* ─── App containers ─── */
         #${UID} .smart-app-container {
             flex: 1;
             min-height: 0;
@@ -797,7 +872,152 @@
             overflow: hidden;
             background: #000;
         }
-        #${UID} .smart-app-container .tv-empty { grid-column: auto; }
+
+        /* Splash para apps externos */
+        #${UID} .app-splash {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 18px;
+            padding: 40px;
+            text-align: center;
+            background: radial-gradient(80% 100% at 50% 0%, var(--splash-glow, rgba(34,211,238,.2)), transparent 60%), #06080d;
+        }
+        #${UID} .app-splash-icon {
+            font-size: 72px;
+            line-height: 1;
+            filter: drop-shadow(0 12px 30px rgba(0,0,0,.6));
+        }
+        #${UID} .app-splash-title {
+            font-family: 'Fredoka', 'Quicksand', sans-serif;
+            font-size: 28px;
+            font-weight: 600;
+            color: #fff;
+            letter-spacing: -.01em;
+        }
+        #${UID} .app-splash-desc {
+            font-family: 'Quicksand', sans-serif;
+            font-size: 14px;
+            color: rgba(255,255,255,.7);
+            max-width: 420px;
+            line-height: 1.55;
+        }
+        #${UID} .app-splash-btn {
+            all: unset;
+            padding: 12px 26px;
+            border-radius: 12px;
+            background: var(--hub-grad);
+            color: #0b0b10;
+            font-family: 'Quicksand', sans-serif;
+            font-size: 14px;
+            font-weight: 700;
+            cursor: pointer;
+            box-shadow: 0 10px 26px rgba(34,211,238,.35);
+            transition: transform .18s;
+        }
+        #${UID} .app-splash-btn:hover { transform: translateY(-2px); }
+        #${UID} .app-splash-btn:focus-visible { outline: 2px solid #fff; outline-offset: 3px; }
+
+        /* ─── Anime grid ─── */
+        #${UID} .anime-wrap {
+            flex: 1;
+            min-height: 0;
+            overflow-y: auto;
+            padding: 22px 26px;
+            background: radial-gradient(60% 80% at 50% 0%, rgba(167,139,250,.12), transparent 60%), #06080d;
+        }
+        #${UID} .anime-wrap::-webkit-scrollbar { width: 6px; }
+        #${UID} .anime-wrap::-webkit-scrollbar-thumb { background: var(--tv-border); border-radius: 3px; }
+        #${UID} .anime-head {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 18px;
+            gap: 16px;
+        }
+        #${UID} .anime-title {
+            font-family: 'Fredoka', 'Quicksand', sans-serif;
+            font-size: 24px;
+            font-weight: 600;
+            color: #fff;
+            letter-spacing: -.01em;
+        }
+        #${UID} .anime-title small {
+            display: block;
+            font-family: 'Quicksand', sans-serif;
+            font-size: 11px;
+            font-weight: 700;
+            letter-spacing: .16em;
+            color: var(--hub-violet);
+            text-transform: uppercase;
+            margin-bottom: 4px;
+        }
+        #${UID} .anime-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+            gap: 14px;
+        }
+        #${UID} .anime-card {
+            all: unset;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            cursor: pointer;
+            border-radius: 12px;
+            overflow: hidden;
+            background: rgba(255,255,255,.03);
+            border: 1px solid rgba(255,255,255,.06);
+            transition: transform .2s cubic-bezier(.16,1,.3,1), border-color .2s, background .2s;
+            position: relative;
+        }
+        #${UID} .anime-card:hover {
+            transform: translateY(-4px);
+            border-color: rgba(167,139,250,.4);
+            background: rgba(255,255,255,.06);
+        }
+        #${UID} .anime-card:focus-visible,
+        #${UID} .anime-card.focused {
+            outline: none;
+            border-color: var(--hub-violet);
+            box-shadow: 0 0 0 2px rgba(167,139,250,.55), 0 12px 30px rgba(0,0,0,.5);
+        }
+        #${UID} .anime-poster {
+            aspect-ratio: 2 / 3;
+            width: 100%;
+            object-fit: cover;
+            display: block;
+            background: #10131a;
+        }
+        #${UID} .anime-name {
+            padding: 0 10px 4px;
+            font-family: 'Quicksand', sans-serif;
+            font-size: 12px;
+            font-weight: 700;
+            color: var(--tv-text);
+            line-height: 1.3;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            display: -webkit-box;
+            -webkit-line-clamp: 2;
+            -webkit-box-orient: vertical;
+        }
+        #${UID} .anime-meta {
+            padding: 0 10px 12px;
+            font-family: 'Quicksand', sans-serif;
+            font-size: 10.5px;
+            font-weight: 500;
+            color: var(--tv-text-faint);
+        }
+        #${UID} .anime-state {
+            grid-column: 1 / -1;
+            text-align: center;
+            padding: 60px 20px;
+            font-family: 'Quicksand', sans-serif;
+            font-size: 14px;
+            color: var(--tv-text-faint);
+        }
 
         /* ─── TV home ─── */
         #${UID} .tv-home {
@@ -807,7 +1027,7 @@
         }
         #${UID} .tv-toolbar {
             flex-shrink: 0;
-            padding: 18px 28px 12px;
+            padding: 18px 24px 12px;
             display: flex;
             flex-direction: column;
             gap: 12px;
@@ -881,7 +1101,7 @@
             flex: 1;
             min-height: 0;
             overflow-y: auto;
-            padding: 8px 28px 24px;
+            padding: 8px 24px 24px;
             display: grid;
             grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
             gap: 16px;
@@ -1196,6 +1416,9 @@
                     </div>
                 </div>
                 <div class="iptv-actions">
+                    <div class="iptv-btn" id="${UID}actSearch" title="Buscar">⌕</div>
+                    <div class="iptv-btn" id="${UID}actBell" title="Notificações">◔</div>
+                    <div class="iptv-btn" id="${UID}actUser" title="Perfil">◐</div>
                     <div class="iptv-btn" id="${UID}home" title="Início">⌂</div>
                     <div class="iptv-btn" id="${UID}hdrToggle" title="Ocultar cabeçalho">▭</div>
                     <div class="iptv-btn" id="${UID}min" title="Minimizar">−</div>
@@ -1203,48 +1426,74 @@
                 </div>
             </div>
             <div class="iptv-body">
-                <div class="smart-home" id="${UID}smart">
-                    <div class="smart-hero">
-                        <div class="smart-hero-bg" aria-hidden="true"></div>
-                        <div class="smart-hero-content">
-                            <span class="smart-hero-eyebrow" id="${UID}greet">Bom dia</span>
-                            <h1 class="smart-hero-title">Bem-vindo ao IPTV</h1>
-                            <p class="smart-hero-desc">Canais abertos brasileiros ao vivo, direto do seu navegador. Escolha um app abaixo para começar.</p>
-                            <button class="smart-hero-cta" type="button" data-app="tv">
-                                <span class="smart-hero-cta-icon" aria-hidden="true">▶</span>
-                                <span>Assistir TV Aberta</span>
-                            </button>
-                        </div>
-                    </div>
-                    <div class="smart-section">
-                        <div class="smart-section-title">Seus apps</div>
-                        <div class="smart-row" id="${UID}apps"></div>
-                    </div>
-                </div>
-                <div class="smart-app-container" id="${UID}appContainer"></div>
-                <div class="tv-home">
-                    <div class="tv-toolbar">
-                        <div class="tv-search"><input type="text" id="${UID}search" placeholder="Buscar canal…" /></div>
-                        <div class="tv-chips" id="${UID}filters"></div>
-                    </div>
-                    <div class="tv-grid" id="${UID}grid">
-                        <div class="tv-loading"><div class="tv-spin"></div>Carregando canais…</div>
-                    </div>
-                </div>
-                <div class="tv-player">
-                    <div class="tv-video-wrap" id="${UID}video-wrap">
-                        <div class="tv-placeholder">▶ Selecione um canal</div>
-                    </div>
-                    <div class="tv-controlbar">
-                        <button class="tv-back" id="${UID}back">← Canais</button>
-                        <div class="tv-now">
-                            <img class="tv-now-logo" id="${UID}nowLogo" alt="" />
-                            <div class="tv-now-text">
-                                <div class="tv-now-name" id="${UID}nowName">—</div>
-                                <div class="tv-now-meta" id="${UID}nowMeta"></div>
+                <aside class="iptv-sidebar">
+                    <button class="iptv-sidebar-btn active" data-nav="home" title="Início">⌂</button>
+                    <button class="iptv-sidebar-btn" data-nav="search" title="Buscar">⌕</button>
+                    <button class="iptv-sidebar-btn" data-nav="library" title="Biblioteca">▤</button>
+                    <button class="iptv-sidebar-btn" data-nav="apps" title="Apps">▦</button>
+                    <div class="iptv-sidebar-spacer"></div>
+                    <button class="iptv-sidebar-btn" data-nav="downloads" title="Downloads">⤓</button>
+                    <button class="iptv-sidebar-btn" data-nav="settings" title="Configurações">⚙</button>
+                </aside>
+                <div class="iptv-main">
+                    <div class="smart-home" id="${UID}smart">
+                        <div class="smart-hero">
+                            <div class="smart-hero-bg" aria-hidden="true"></div>
+                            <svg class="smart-hero-art" viewBox="0 0 400 300" aria-hidden="true">
+                                <defs>
+                                    <linearGradient id="${UID}heroArt" x1="0" y1="0" x2="1" y2="1">
+                                        <stop offset="0%" stop-color="#22d3ee" stop-opacity=".6"/>
+                                        <stop offset="100%" stop-color="#a78bfa" stop-opacity=".15"/>
+                                    </linearGradient>
+                                </defs>
+                                <rect x="40" y="40" width="320" height="220" rx="16" fill="url(#${UID}heroArt)" opacity=".25"/>
+                                <rect x="60" y="60" width="280" height="180" rx="12" fill="none" stroke="url(#${UID}heroArt)" stroke-width="1.5" opacity=".55"/>
+                                <circle cx="200" cy="150" r="36" fill="none" stroke="url(#${UID}heroArt)" stroke-width="1.5" opacity=".7"/>
+                                <path d="M188 138 L188 162 L208 150 Z" fill="url(#${UID}heroArt)" opacity=".8"/>
+                            </svg>
+                            <div class="smart-hero-content">
+                                <span class="smart-hero-eyebrow" id="${UID}greet">Bom dia</span>
+                                <h1 class="smart-hero-title">
+                                    <small>Sua central de mídia</small>
+                                    Bem-vindo ao IPTV
+                                </h1>
+                                <p class="smart-hero-desc">Canais abertos brasileiros ao vivo, streaming e anime — tudo em um só lugar. Escolha um app abaixo para começar.</p>
+                                <button class="smart-hero-cta" type="button" data-app="tv">
+                                    <span class="smart-hero-cta-icon" aria-hidden="true">▶</span>
+                                    <span>Assistir agora</span>
+                                </button>
                             </div>
                         </div>
-                        <button class="tv-star" id="${UID}nowStar" title="Favoritar">☆</button>
+                        <div class="smart-section">
+                            <div class="smart-section-title">Seus apps</div>
+                            <div class="smart-row" id="${UID}apps"></div>
+                        </div>
+                    </div>
+                    <div class="smart-app-container" id="${UID}appContainer"></div>
+                    <div class="tv-home">
+                        <div class="tv-toolbar">
+                            <div class="tv-search"><input type="text" id="${UID}search" placeholder="Buscar canal…" /></div>
+                            <div class="tv-chips" id="${UID}filters"></div>
+                        </div>
+                        <div class="tv-grid" id="${UID}grid">
+                            <div class="tv-loading"><div class="tv-spin"></div>Carregando canais…</div>
+                        </div>
+                    </div>
+                    <div class="tv-player">
+                        <div class="tv-video-wrap" id="${UID}video-wrap">
+                            <div class="tv-placeholder">▶ Selecione um canal</div>
+                        </div>
+                        <div class="tv-controlbar">
+                            <button class="tv-back" id="${UID}back">← Canais</button>
+                            <div class="tv-now">
+                                <img class="tv-now-logo" id="${UID}nowLogo" alt="" />
+                                <div class="tv-now-text">
+                                    <div class="tv-now-name" id="${UID}nowName">—</div>
+                                    <div class="tv-now-meta" id="${UID}nowMeta"></div>
+                                </div>
+                            </div>
+                            <button class="tv-star" id="${UID}nowStar" title="Favoritar">☆</button>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -1253,7 +1502,6 @@
         `;
         document.body.appendChild(win);
 
-        // Proteção contra Lite Mode (redundante com data-sang-ui)
         window._hubUI?.markProtected?.(win);
 
         const gridEl = win.querySelector('#' + UID + 'grid');
@@ -1302,20 +1550,206 @@
         let appCleanup = null;
         let focoEl = null;
 
+        // TV Aberta (builtin)
         apps.set('tv', {
             id: 'tv',
             name: 'TV Aberta',
             icon: '📺',
-            accent: 'var(--hub-cyan)',
-            isBuiltin: true
+            bg: 'linear-gradient(135deg, #0e7490, #164e63)',
+            tag: 'BR',
+            isBuiltin: true,
         });
 
-        function registrarApp(cfg) {
-            if (!cfg || !cfg.id || apps.has(cfg.id)) return false;
-            apps.set(cfg.id, cfg);
-            if (vista === 'smart') renderApps();
-            return true;
+        // Streaming apps (mount = splash com CTA)
+        function registrarAppExterno(cfg) {
+            apps.set(cfg.id, {
+                id: cfg.id,
+                name: cfg.name,
+                icon: cfg.icon,
+                bg: cfg.bg,
+                tag: cfg.tag,
+                glow: cfg.glow,
+                desc: cfg.desc,
+                url: cfg.url,
+                mount(container) {
+                    container.innerHTML = '';
+                    const splash = document.createElement('div');
+                    splash.className = 'app-splash';
+                    splash.style.setProperty('--splash-glow', cfg.glow || 'rgba(34,211,238,.2)');
+
+                    const icon = document.createElement('div');
+                    icon.className = 'app-splash-icon';
+                    icon.textContent = cfg.icon;
+
+                    const title = document.createElement('div');
+                    title.className = 'app-splash-title';
+                    title.textContent = cfg.name;
+
+                    const desc = document.createElement('div');
+                    desc.className = 'app-splash-desc';
+                    desc.textContent = cfg.desc || 'Abre o site em nova aba (embeds costumam ser bloqueados).';
+
+                    const btn = document.createElement('button');
+                    btn.className = 'app-splash-btn';
+                    btn.type = 'button';
+                    btn.textContent = 'Abrir ' + cfg.name;
+                    btn.addEventListener('click', () => window.open(cfg.url, '_blank', 'noopener'));
+
+                    splash.appendChild(icon);
+                    splash.appendChild(title);
+                    splash.appendChild(desc);
+                    splash.appendChild(btn);
+                    container.appendChild(splash);
+
+                    return () => { /* nada a limpar */ };
+                }
+            });
         }
+
+        registrarAppExterno({
+            id: 'netflix',
+            name: 'Netflix',
+            icon: '🎬',
+            bg: 'linear-gradient(135deg, #E50914, #7f0209)',
+            glow: 'rgba(229,9,20,.35)',
+            tag: 'ASSINATURA',
+            desc: 'Filmes, séries e originais. Abre em nova aba.',
+            url: 'https://www.netflix.com/browse',
+        });
+        registrarAppExterno({
+            id: 'prime',
+            name: 'Prime Video',
+            icon: '📼',
+            bg: 'linear-gradient(135deg, #00A8E1, #005f80)',
+            glow: 'rgba(0,168,225,.35)',
+            tag: 'ASSINATURA',
+            desc: 'Originais Amazon, filmes e séries. Abre em nova aba.',
+            url: 'https://www.primevideo.com/',
+        });
+        registrarAppExterno({
+            id: 'youtube',
+            name: 'YouTube',
+            icon: '▶',
+            bg: 'linear-gradient(135deg, #FF0000, #7f0000)',
+            glow: 'rgba(255,0,0,.35)',
+            tag: 'GRÁTIS',
+            desc: 'Vídeos, clipes e lives. Abre em nova aba.',
+            url: 'https://www.youtube.com/',
+        });
+        registrarAppExterno({
+            id: 'disney',
+            name: 'Disney+',
+            icon: '🏰',
+            bg: 'linear-gradient(135deg, #0C1445, #1a237e)',
+            glow: 'rgba(26,35,126,.45)',
+            tag: 'ASSINATURA',
+            desc: 'Disney, Pixar, Marvel, Star Wars. Abre em nova aba.',
+            url: 'https://www.disneyplus.com/',
+        });
+        registrarAppExterno({
+            id: 'voot',
+            name: 'Voot',
+            icon: '🎭',
+            bg: 'linear-gradient(135deg, #7C3AED, #4c1d95)',
+            glow: 'rgba(124,58,237,.4)',
+            tag: 'GRÁTIS',
+            desc: 'Conteúdo indiano e reality shows. Abre em nova aba.',
+            url: 'https://www.voot.com/',
+        });
+
+        // Anime (app com grid de pôsteres via Jikan)
+        apps.set('anime', {
+            id: 'anime',
+            name: 'Anime',
+            icon: '🎌',
+            bg: 'linear-gradient(135deg, #F47521, #B54708)',
+            glow: 'rgba(244,117,33,.4)',
+            tag: 'NOVO',
+            mount(container) {
+                container.innerHTML = '';
+                const wrap = document.createElement('div');
+                wrap.className = 'anime-wrap';
+
+                const head = document.createElement('div');
+                head.className = 'anime-head';
+                const h = document.createElement('div');
+                h.className = 'anime-title';
+                h.innerHTML = '<small>Anime</small>Top do momento';
+                head.appendChild(h);
+                wrap.appendChild(head);
+
+                const grid = document.createElement('div');
+                grid.className = 'anime-grid';
+                grid.innerHTML = '<div class="anime-state"><div class="tv-spin"></div>Carregando animes…</div>';
+                wrap.appendChild(grid);
+                container.appendChild(wrap);
+
+                let cancelado = false;
+                const ac = new AbortController();
+                const signal = ac.signal;
+
+                fetch(JIKAN_TOP_ANIME_URL, { signal })
+                    .then(r => {
+                        if (!r.ok) throw new Error('HTTP ' + r.status);
+                        return r.json();
+                    })
+                    .then(data => {
+                        if (cancelado) return;
+                        const lista = Array.isArray(data?.data) ? data.data : [];
+                        if (!lista.length) {
+                            grid.innerHTML = '<div class="anime-state">Nenhum anime encontrado.</div>';
+                            return;
+                        }
+                        grid.innerHTML = '';
+                        lista.forEach(a => {
+                            const titulo = a.title_english || a.title || 'Anime';
+                            const img = a.images?.jpg?.image_url || '';
+                            const nota = a.score ? '★ ' + a.score.toFixed(1) : '—';
+                            const ano = a.year || (a.aired?.prop?.from?.year) || '—';
+
+                            const card = document.createElement('button');
+                            card.className = 'anime-card';
+                            card.type = 'button';
+                            card.title = titulo;
+
+                            const poster = document.createElement('img');
+                            poster.className = 'anime-poster';
+                            poster.loading = 'lazy';
+                            poster.referrerPolicy = 'no-referrer';
+                            poster.src = img;
+                            poster.alt = '';
+
+                            const nome = document.createElement('div');
+                            nome.className = 'anime-name';
+                            nome.textContent = titulo;
+
+                            const meta = document.createElement('div');
+                            meta.className = 'anime-meta';
+                            meta.textContent = nota + ' · ' + ano;
+
+                            card.appendChild(poster);
+                            card.appendChild(nome);
+                            card.appendChild(meta);
+
+                            card.addEventListener('click', () => {
+                                const q = encodeURIComponent(titulo);
+                                window.open('https://www.crunchyroll.com/search?q=' + q, '_blank', 'noopener');
+                            });
+
+                            grid.appendChild(card);
+                        });
+                    })
+                    .catch(e => {
+                        if (cancelado || e.name === 'AbortError') return;
+                        grid.innerHTML = '<div class="anime-state">⚠ Falha ao carregar animes.<br>' + escapeHtml(e.message) + '</div>';
+                    });
+
+                return () => {
+                    cancelado = true;
+                    try { ac.abort(); } catch (_) {}
+                };
+            }
+        });
 
         function fecharAppAtual() {
             if (appCleanup) {
@@ -1331,6 +1765,7 @@
             if (!app) return;
             if (appAtualId && appAtualId !== id) fecharAppAtual();
             appAtualId = id;
+            setSidebarAtivo(id === 'tv' ? 'library' : 'apps');
 
             if (app.isBuiltin) {
                 vista = 'home';
@@ -1361,8 +1796,15 @@
             vista = 'smart';
             win.classList.remove('vista-home', 'vista-player', 'vista-app');
             win.classList.add('vista-smart');
+            setSidebarAtivo('home');
             renderApps();
             aplicarLayout(true);
+        }
+
+        function setSidebarAtivo(nav) {
+            win.querySelectorAll('.iptv-sidebar-btn').forEach(b => {
+                b.classList.toggle('active', b.dataset.nav === nav);
+            });
         }
 
         function renderApps() {
@@ -1370,10 +1812,11 @@
             if (greetEl) greetEl.textContent = h < 12 ? 'Bom dia' : h < 18 ? 'Boa tarde' : 'Boa noite';
             appsRowEl.innerHTML = [...apps.values()].map((a, i) => `
                 <button class="smart-app focused-target" data-app="${escapeHtml(a.id)}"
-                        style="--app-accent:${a.accent || 'var(--tv-accent)'};animation-delay:${Math.min(i * 40, 240)}ms"
+                        style="--app-bg:${a.bg || 'linear-gradient(135deg, #1c1f28, #0e1017)'};animation-delay:${Math.min(i * 40, 240)}ms"
                         type="button">
                     <div class="smart-app-icon">${a.icon || '📦'}</div>
                     <div class="smart-app-name">${escapeHtml(a.name)}</div>
+                    ${a.tag ? `<span class="smart-app-tag">${escapeHtml(a.tag)}</span>` : ''}
                 </button>
             `).join('');
             focarPrimeiro();
@@ -1482,6 +1925,7 @@
             vista = 'player';
             win.classList.remove('vista-smart', 'vista-home', 'vista-app');
             win.classList.add('vista-player');
+            setSidebarAtivo('library');
             aplicarLayout(true);
         }
         function pararReproducao() {
@@ -1495,6 +1939,7 @@
             vista = 'home';
             win.classList.remove('vista-smart', 'vista-player', 'vista-app');
             win.classList.add('vista-home');
+            setSidebarAtivo('library');
             aplicarLayout(true);
         }
         backBtn.addEventListener('click', voltarParaHome);
@@ -1511,21 +1956,27 @@
 
         // ---------- Clique delegado ----------
         win.addEventListener('click', (e) => {
-            // Hero CTA
             const heroCta = e.target.closest('.smart-hero-cta');
             if (heroCta && vista === 'smart') {
                 e.preventDefault();
                 abrirApp(heroCta.dataset.app || 'tv');
                 return;
             }
-            // Smart app card
             const smartCard = e.target.closest('.smart-app');
             if (smartCard && vista === 'smart') {
                 e.preventDefault();
                 abrirApp(smartCard.dataset.app);
                 return;
             }
-            // Star
+            const sidebarBtn = e.target.closest('.iptv-sidebar-btn');
+            if (sidebarBtn) {
+                const nav = sidebarBtn.dataset.nav;
+                if (nav === 'home') irParaSmart();
+                else if (nav === 'library') abrirApp('tv');
+                else if (nav === 'apps') { irParaSmart(); }
+                else setSidebarAtivo(nav);
+                return;
+            }
             const starBtn = e.target.closest('.tv-star');
             if (starBtn && starBtn.dataset.star) {
                 e.stopPropagation();
@@ -1535,7 +1986,6 @@
                 if (mostrarSoFavoritos && vista === 'home') renderChannels();
                 return;
             }
-            // Channel tile
             const tile = e.target.closest('.tv-tile');
             if (tile && vista === 'home') {
                 const canal = allChannels.find(c => c.id === tile.dataset.id);
@@ -1592,7 +2042,7 @@
 
         function renderFiltros() {
             const chips = [];
-            chips.push(`<span class="tv-chip fav-chip${mostrarSoFavoritos ? ' active' : ''}" data-fav="1">★ Favoritos</span>`);
+            chips.push(`<span class="tv-chip fav-chip${mostarSoFavoritosClass()}" data-fav="1">★ Favoritos</span>`);
             chips.push(`<span class="tv-chip${filtroCategoria === null ? ' active' : ''}" data-cat="">Todos</span>`);
             allCategories.forEach(cat => {
                 const ativo = filtroCategoria === cat ? ' active' : '';
@@ -1600,6 +2050,8 @@
             });
             filtersEl.innerHTML = chips.join('');
         }
+
+        function mostarSoFavoritosClass() { return mostrarSoFavoritos ? ' active' : ''; }
 
         function badgeFalhaHtml(id) {
             const registro = obterStatusFalha(id);
@@ -1792,8 +2244,18 @@
         win.querySelector('#' + UID + 'hdrToggle').addEventListener('click', toggleHeader);
         win.querySelector('#' + UID + 'unhide').addEventListener('click', toggleHeader);
 
-        // ---------- Botão Home ----------
+        // ---------- Header actions ----------
         win.querySelector('#' + UID + 'home').addEventListener('click', irParaSmart);
+        win.querySelector('#' + UID + 'actSearch').addEventListener('click', () => {
+            irParaSmart();
+            setTimeout(() => searchEl?.focus?.(), 120);
+        });
+        win.querySelector('#' + UID + 'actBell').addEventListener('click', () => {
+            // reservado
+        });
+        win.querySelector('#' + UID + 'actUser').addEventListener('click', () => {
+            // reservado
+        });
 
         // ---------- Carga inicial ----------
         aplicarLayout(false);
@@ -1845,7 +2307,12 @@
             kill,
             show: () => { win.style.display = 'flex'; aplicarLayout(false); },
             hide: () => { win.style.display = 'none'; },
-            registrarApp,
+            registrarApp: (cfg) => {
+                if (!cfg || !cfg.id || apps.has(cfg.id)) return false;
+                apps.set(cfg.id, cfg);
+                if (vista === 'smart') renderApps();
+                return true;
+            },
             abrirApp,
             irParaSmart
         };
