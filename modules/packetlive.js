@@ -1,6 +1,4 @@
-// modules/packetlive.js — Sang Analyzer + Sender + IA (v5)
-// v5: Notebook persistente, Correlator OUT↔IN, Fuzzer de bytes, Race Tester,
-// tab PESQUISA com 4 sub-abas, IA com contexto do notebook, cleanup completo.
+// modules/packetlive.js 
 (function() {
     'use strict';
     const UID = '_analyzer';
@@ -320,6 +318,28 @@
     };
     let _alive = true;
 
+    // ═══════════════════════════════════════════════════════════════
+    // TEMA AURORA GLASS — paleta unificada
+    // ═══════════════════════════════════════════════════════════════
+    const Theme = {
+        cyan:    '#22d3ee',
+        violet:  '#a78bfa',
+        ok:      '#34d399',
+        err:     '#fb7185',
+        warn:    '#f5b942',
+        text:    '#f1f2f8',
+        textDim: '#a0a4b3',
+        textMute:'#8b8fa3',
+        grad:    'linear-gradient(120deg, #22d3ee 0%, #a78bfa 100%)',
+        bgPanel: 'linear-gradient(175deg, rgba(20,20,28,0.92), rgba(9,9,14,0.97))',
+        bgSoft:  'rgba(28,28,38,0.72)',
+        bgHard:  'rgba(9,9,14,0.97)',
+        line:    'rgba(255,255,255,0.08)',
+        line2:   'rgba(255,255,255,0.12)',
+        blur:    'blur(18px) saturate(140%)',
+        radius:  '16px'
+    };
+
     // ─── Storage ───
     const Storage = {
         get(key, def) {
@@ -352,6 +372,9 @@
         dicionario: Storage.get('dicionario', {})
     };
 
+    // ═══════════════════════════════════════════════════════════════
+    // Utils — robusto a tipos alternativos (String, TypedArray, etc.)
+    // ═══════════════════════════════════════════════════════════════
     const Utils = {
         bufferToHex(buffer) {
             if (!buffer || buffer.byteLength === 0) return '';
@@ -361,10 +384,30 @@
         },
         bufferToString(buffer) {
             if (!buffer || buffer.byteLength === 0) return '';
-            return new TextDecoder('utf-8').decode(buffer).replace(/[^\x20-\x7E]/g, '\u00B7');
+            try {
+                return new TextDecoder('utf-8').decode(buffer).replace(/[^\x20-\x7E]/g, '\u00B7');
+            } catch (e) { return ''; }
+        },
+        // Converte qualquer tipo aceito por WebSocket.send em ArrayBuffer.
+        // Retorna null se não for convertível (ex: Blob assíncrono, objeto).
+        normalizeToArrayBuffer(data) {
+            if (data == null) return null;
+            if (data instanceof ArrayBuffer) return data;
+            if (ArrayBuffer.isView(data)) {
+                try {
+                    return data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength);
+                } catch (e) { return null; }
+            }
+            if (typeof data === 'string') {
+                try {
+                    const enc = new TextEncoder().encode(data);
+                    return enc.buffer.slice(enc.byteOffset, enc.byteOffset + enc.byteLength);
+                } catch (e) { return null; }
+            }
+            return null;
         },
         buildPacket(headerId, hexPayloadStr) {
-            const cleanHex = hexPayloadStr.replace(/[^0-9A-Fa-f]/g, '');
+            const cleanHex = String(hexPayloadStr || '').replace(/[^0-9A-Fa-f]/g, '');
             const payloadLen = cleanHex.length / 2;
             const buffer = new ArrayBuffer(4 + 2 + payloadLen);
             const view = new DataView(buffer);
@@ -372,65 +415,94 @@
             view.setInt16(4, headerId, false);
             const u8 = new Uint8Array(buffer);
             for (let i = 0; i < payloadLen; i++) {
-                u8[6 + i] = parseInt(cleanHex.substr(i * 2, 2), 16);
+                u8[6 + i] = parseInt(cleanHex.substr(i * 2, 2), 16) || 0;
             }
             return buffer;
         },
         parseData(data) {
             if (!(data instanceof ArrayBuffer) || data.byteLength < 6) return null;
-            const view = new DataView(data);
-            const header = view.getInt16(4, false);
-            const fullHex = this.bufferToHex(data);
-            const payloadBuf = data.slice(6);
-            const payloadHex = this.bufferToHex(payloadBuf);
-            return {
-                header,
-                fullHex,
-                payloadHex,
-                ascii: this.bufferToString(payloadBuf),
-                byteLength: data.byteLength,
-                payloadLength: data.byteLength - 6
-            };
+            try {
+                const view = new DataView(data);
+                const header = view.getInt16(4, false);
+                const fullHex = this.bufferToHex(data);
+                const payloadBuf = data.slice(6);
+                const payloadHex = this.bufferToHex(payloadBuf);
+                return {
+                    header,
+                    fullHex,
+                    payloadHex,
+                    ascii: this.bufferToString(payloadBuf),
+                    byteLength: data.byteLength,
+                    payloadLength: data.byteLength - 6
+                };
+            } catch (e) { return null; }
         }
     };
 
+    // ═══════════════════════════════════════════════════════════════
+    // PacketFilter — bloqueio blindado, nunca falha
+    // ═══════════════════════════════════════════════════════════════
     const PacketFilter = {
+        _normHex(s) { return String(s || '').replace(/\s/g, '').toUpperCase(); },
+        _matchPayload(packet, rule) {
+            if (!rule) return false;
+            // Regra pode ser HEX (só 0-9A-F, sem espaços) ou texto ASCII
+            const limpaRegra = String(rule).trim();
+            if (!limpaRegra) return false;
+            const regraHex = this._normHex(limpaRegra);
+            const ehHex = /^[0-9A-F]+$/.test(regraHex) && regraHex.length >= 2 && regraHex.length % 2 === 0;
+            if (ehHex && packet.fullHex.replace(/\s/g, '').toUpperCase().includes(regraHex)) return true;
+            if (packet.ascii && packet.ascii.includes(limpaRegra)) return true;
+            return false;
+        },
         isVisualBlocked(packet) {
-            if (AppState.blIds.has(packet.header)) return true;
-            const cleanPacketHex = packet.fullHex.replace(/\s/g, '').toUpperCase();
-            for (const rule of AppState.blPayloads) {
-                if (cleanPacketHex.includes(rule.replace(/\s/g, '').toUpperCase()) || packet.ascii.includes(rule)) return true;
+            if (!packet) return false;
+            try {
+                if (AppState.blIds.has(packet.header)) return true;
+                for (const rule of AppState.blPayloads) {
+                    if (this._matchPayload(packet, rule)) return true;
+                }
+            } catch (e) {
+                console.error('[Analyzer] isVisualBlocked error:', e);
             }
             return false;
         },
         isNetworkDropped(packet) {
-            if (AppState.dropIds.has(packet.header)) return true;
-            const cleanPacketHex = packet.fullHex.replace(/\s/g, '').toUpperCase();
-            for (const rule of AppState.dropPayloads) {
-                if (cleanPacketHex.includes(rule.replace(/\s/g, '').toUpperCase()) || packet.ascii.includes(rule)) return true;
+            if (!packet) return false;
+            try {
+                if (AppState.dropIds.has(packet.header)) return true;
+                for (const rule of AppState.dropPayloads) {
+                    if (this._matchPayload(packet, rule)) return true;
+                }
+            } catch (e) {
+                console.error('[Analyzer] isNetworkDropped error:', e);
             }
             return false;
         },
         manageList(type, action, val) {
-            let targetSet, targetArr, storeKeyId, storeKeyStr;
-            if (type === 'VISUAL') {
-                targetSet = AppState.blIds; targetArr = AppState.blPayloads;
-                storeKeyId = 'bl_ids'; storeKeyStr = 'bl_payloads';
-            } else {
-                targetSet = AppState.dropIds; targetArr = AppState.dropPayloads;
-                storeKeyId = 'drop_ids'; storeKeyStr = 'drop_payloads';
+            try {
+                let targetSet, targetArr, storeKeyId, storeKeyStr;
+                if (type === 'VISUAL') {
+                    targetSet = AppState.blIds; targetArr = AppState.blPayloads;
+                    storeKeyId = 'bl_ids'; storeKeyStr = 'bl_payloads';
+                } else {
+                    targetSet = AppState.dropIds; targetArr = AppState.dropPayloads;
+                    storeKeyId = 'drop_ids'; storeKeyStr = 'drop_payloads';
+                }
+                if (action === 'ADD_ID' && !isNaN(val) && val !== '') { targetSet.add(Number(val)); Storage.set(storeKeyId, [...targetSet]); }
+                if (action === 'ADD_STR' && val && String(val).trim()) { const v = String(val).trim(); if (!targetArr.includes(v)) targetArr.push(v); Storage.set(storeKeyStr, targetArr); }
+                if (action === 'REMOVE_ID' && !isNaN(val)) { targetSet.delete(Number(val)); Storage.set(storeKeyId, [...targetSet]); }
+                if (action === 'REMOVE_STR' && val) { const idx = targetArr.indexOf(val); if (idx > -1) targetArr.splice(idx, 1); Storage.set(storeKeyStr, targetArr); }
+                if (action === 'CLEAR') { targetSet.clear(); targetArr.length = 0; Storage.set(storeKeyId, []); Storage.set(storeKeyStr, []); }
+            } catch (e) {
+                console.error('[Analyzer] manageList error:', e);
             }
-            if (action === 'ADD_ID' && !isNaN(val)) { targetSet.add(Number(val)); Storage.set(storeKeyId, [...targetSet]); }
-            if (action === 'ADD_STR' && val) { if (!targetArr.includes(val)) targetArr.push(val); Storage.set(storeKeyStr, targetArr); }
-            if (action === 'REMOVE_ID' && !isNaN(val)) { targetSet.delete(Number(val)); Storage.set(storeKeyId, [...targetSet]); }
-            if (action === 'REMOVE_STR' && val) { const idx = targetArr.indexOf(val); if (idx > -1) targetArr.splice(idx, 1); Storage.set(storeKeyStr, targetArr); }
-            if (action === 'CLEAR') { targetSet.clear(); targetArr.length = 0; Storage.set(storeKeyId, []); Storage.set(storeKeyStr, []); }
         }
     };
 
     const InboundTransformer = { rules: {}, transform(data) { return data; } };
 
-    // ─── Emitter interno (desacopla camadas) ───
+    // ─── Emitter interno  ───
     const Emitter = {
         _map: {},
         on(evt, cb) {
@@ -445,7 +517,7 @@
         clear() { this._map = {}; }
     };
 
-    // ═══════════════════════════════════════════════════════════════
+     // ═══════════════════════════════════════════════════════════════
     // NOTEBOOK — base de conhecimento por pacote, persistente
     // ═══════════════════════════════════════════════════════════════
     const Notebook = {
@@ -516,7 +588,6 @@
         _pares: null,
         _envios: null,
         _persistTimer: null,
-        // IDs que por design não têm resposta — não são suspeitos
         _noise: new Set([452, 2450, 1312, 1150, 1157, 1706]),
         _init() {
             if (this._pares) return;
@@ -549,7 +620,6 @@
         registrarRecebimento(packet) {
             this._init();
             const agora = Date.now();
-            // Protocolo sequencial: a resposta corresponde ao pedido mais antigo pendente
             for (let i = 0; i < this._pendentes.length; i++) {
                 const p = this._pendentes[i];
                 if (p.consumido) continue;
@@ -708,6 +778,288 @@
     };
 
     // ═══════════════════════════════════════════════════════════════
+    // RECORDER — grava janela de tráfego real (OUT + IN) com timestamps
+    // ═══════════════════════════════════════════════════════════════
+    const Recorder = {
+        _gravando: false,
+        _inicio: 0,
+        _eventos: [],   // { t, dir, header, payloadHex, byteLength, fullHex }
+        _limite: 2000,
+        _notificar() { Emitter.emit('recorder:changed', { gravando: this._gravando, total: this._eventos.length }); },
+        iniciar() {
+            if (this._gravando) return false;
+            this._gravando = true;
+            this._inicio = Date.now();
+            this._eventos = [];
+            this._notificar();
+            return true;
+        },
+        parar() {
+            if (!this._gravando) return null;
+            this._gravando = false;
+            this._notificar();
+            return {
+                inicio: this._inicio,
+                duracao: Date.now() - this._inicio,
+                eventos: this._eventos.slice()
+            };
+        },
+        capturar(packet, dir) {
+            if (!this._gravando) return;
+            try {
+                this._eventos.push({
+                    t: Date.now(),
+                    dir,
+                    header: packet.header,
+                    payloadHex: packet.payloadHex,
+                    fullHex: packet.fullHex,
+                    byteLength: packet.byteLength
+                });
+                if (this._eventos.length > this._limite) this._eventos.shift();
+                if (this._eventos.length % 25 === 0) this._notificar();
+            } catch (e) {}
+        },
+        limpar() {
+            this._eventos = [];
+            this._notificar();
+        },
+        get eventos() { return this._eventos; },
+        get gravando() { return this._gravando; },
+        exportar() {
+            return JSON.stringify({
+                version: 1,
+                inicio: this._inicio,
+                duracao: Date.now() - this._inicio,
+                eventos: this._eventos
+            }, null, 2);
+        },
+        importar(json) {
+            try {
+                const d = JSON.parse(json);
+                if (!d || !Array.isArray(d.eventos)) return false;
+                this._eventos = d.eventos;
+                this._inicio = d.inicio || Date.now();
+                this._gravando = false;
+                this._notificar();
+                return true;
+            } catch (e) { return false; }
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════════
+    // REPLAY — reproduz gravação, respeitando delays originais, com hooks de mutação
+    // ═══════════════════════════════════════════════════════════════
+    const Replay = {
+        _ativo: false,
+        _runId: 0,
+        _log(msg, tipo) { Emitter.emit('replay:log', { msg, tipo }); },
+        async executar(eventos, opts = {}) {
+            if (this._ativo) { this._log('Já existe replay em andamento.', 'erro'); return; }
+            if (!window.gameWS) { this._log('Sem conexão WebSocket.', 'erro'); return; }
+            const outs = eventos.filter(e => e.dir === 'SEND');
+            if (!outs.length) { this._log('Gravação sem pacotes OUT.', 'erro'); return; }
+
+            this._ativo = true;
+            const myRunId = ++this._runId;
+            const speed = opts.speed || 1;
+            const mutar = typeof opts.mutar === 'function' ? opts.mutar : null;
+            const baseT = outs[0].t;
+
+            this._log(`▶ Replay #${myRunId} — ${outs.length} OUTs, speed ${speed}×${mutar ? ', com mutação' : ''}`, 'info');
+
+            for (let i = 0; i < outs.length; i++) {
+                if (!this._ativo || myRunId !== this._runId) break;
+                if (!window.gameWS) break;
+                const ev = outs[i];
+                let header = ev.header;
+                let payloadHex = ev.payloadHex;
+
+                if (mutar) {
+                    const m = mutar({ header, payloadHex, indice: i });
+                    if (m === false) { this._log(`⊘ #${i+1} pulado por mutação`, 'aviso'); continue; }
+                    if (m && typeof m === 'object') {
+                        header = Number.isFinite(m.header) ? m.header : header;
+                        payloadHex = typeof m.payloadHex === 'string' ? m.payloadHex : payloadHex;
+                    }
+                }
+
+                const buf = Utils.buildPacket(header, payloadHex);
+                try { window.gameWS.send(buf); }
+                catch (e) { this._log(`Erro no #${i+1}: ${e.message || e}`, 'erro'); break; }
+
+                const nome = PacketNames.nome(header, 'SEND') || '?';
+                this._log(`➡ #${i+1} ${nome} (ID ${header})`, 'envio');
+
+                if (i < outs.length - 1) {
+                    const delta = (outs[i + 1].t - ev.t) / speed;
+                    const espera = Math.max(16, Math.min(5000, delta));
+                    await new Promise(r => setTimeout(r, espera));
+                }
+            }
+
+            await new Promise(r => setTimeout(r, 400));
+            this._ativo = false;
+            this._log('✓ Replay concluído.', 'ok');
+            Emitter.emit('replay:done', { runId: myRunId });
+        },
+        parar() {
+            this._ativo = false;
+            this._runId++;
+            this._log('⏹ Replay interrompido.', 'aviso');
+        },
+        get ativo() { return this._ativo; }
+    };
+
+    // ═══════════════════════════════════════════════════════════════
+    // PACKET DIFF — compara dois pacotes do mesmo ID byte a byte
+    // ═══════════════════════════════════════════════════════════════
+    const PacketDiff = {
+        comparar(a, b) {
+            if (!a || !b) return null;
+            const bufA = a instanceof ArrayBuffer ? a : null;
+            const bufB = b instanceof ArrayBuffer ? b : null;
+            const hexA = bufA ? Utils.bufferToHex(bufA).split(' ') : String(a.fullHex || '').split(' ');
+            const hexB = bufB ? Utils.bufferToHex(bufB).split(' ') : String(b.fullHex || '').split(' ');
+            const len = Math.max(hexA.length, hexB.length);
+            const bytes = [];
+            let diferentes = 0;
+            for (let i = 0; i < len; i++) {
+                const va = hexA[i] || null;
+                const vb = hexB[i] || null;
+                const igual = va === vb;
+                if (!igual) diferentes++;
+                bytes.push({ offset: i, a: va, b: vb, igual });
+            }
+            return {
+                bytes,
+                total: len,
+                diferentes,
+                igual: len > 0 && diferentes === 0,
+                byteLengthA: hexA.length,
+                byteLengthB: hexB.length
+            };
+        },
+        // Agrupa logs por header e retorna mapa id → lista de pacotes
+        agruparPorId(logs) {
+            const mapa = new Map();
+            for (const l of logs) {
+                const id = l.packet.header;
+                if (!mapa.has(id)) mapa.set(id, []);
+                mapa.get(id).push(l.packet);
+            }
+            return mapa;
+        },
+        // Diff contra uma referência fixa (baseline) para destacar só divergências
+        compararComBaseline(packet, baseline) {
+            return this.comparar(packet, baseline);
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════════
+    // WATCHERS — regras declarativas que disparam ações em pacotes
+    // ═══════════════════════════════════════════════════════════════
+    const Watchers = {
+        _regras: null,
+        _limite: 5000,
+        _lastFire: new Map(),   // regraId → timestamp da última execução
+        _init() {
+            if (this._regras) return;
+            this._regras = Storage.get('watchers_regras', []);
+        },
+        _save() {
+            Storage.set('watchers_regras', this._regras);
+            Emitter.emit('watchers:changed');
+        },
+        listar() { this._init(); return this._regras; },
+        adicionar(cfg) {
+            this._init();
+            const regra = {
+                id: 'r_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6),
+                nome: String(cfg.nome || 'Sem nome').slice(0, 60),
+                ativo: cfg.ativo !== false,
+                dir: cfg.dir || 'ANY',                 // 'SEND' | 'RECV' | 'ANY'
+                headerId: Number.isFinite(cfg.headerId) ? cfg.headerId : null,
+                payloadContem: String(cfg.payloadContem || '').trim(),
+                asciiContem: String(cfg.asciiContem || '').trim(),
+                minBytes: Number.isFinite(cfg.minBytes) ? cfg.minBytes : null,
+                maxBytes: Number.isFinite(cfg.maxBytes) ? cfg.maxBytes : null,
+                cooldownMs: Number.isFinite(cfg.cooldownMs) ? cfg.cooldownMs : 200,
+                acoes: Array.isArray(cfg.acoes) ? cfg.acoes : ['log'],  // 'log' | 'nota' | 'bloquear' | 'notify'
+                notaTexto: String(cfg.notaTexto || '').slice(0, 200),
+                disparos: 0
+            };
+            this._regras.push(regra);
+            this._save();
+            return regra;
+        },
+        remover(id) {
+            this._init();
+            const idx = this._regras.findIndex(r => r.id === id);
+            if (idx > -1) { this._regras.splice(idx, 1); this._save(); }
+        },
+        alternar(id) {
+            this._init();
+            const r = this._regras.find(x => x.id === id);
+            if (r) { r.ativo = !r.ativo; this._save(); }
+        },
+        limpar() { this._init(); this._regras = []; this._save(); },
+        _match(regra, packet, dir) {
+            try {
+                if (!regra.ativo) return false;
+                if (regra.dir !== 'ANY' && regra.dir !== dir) return false;
+                if (Number.isFinite(regra.headerId) && packet.header !== regra.headerId) return false;
+                if (regra.minBytes != null && packet.byteLength < regra.minBytes) return false;
+                if (regra.maxBytes != null && packet.byteLength > regra.maxBytes) return false;
+                if (regra.payloadContem) {
+                    const regraHex = String(regra.payloadContem).replace(/\s/g, '').toUpperCase();
+                    const pacoteHex = packet.fullHex.replace(/\s/g, '').toUpperCase();
+                    if (!pacoteHex.includes(regraHex)) return false;
+                }
+                if (regra.asciiContem && !(packet.ascii || '').includes(regra.asciiContem)) return false;
+                return true;
+            } catch (e) { return false; }
+        },
+        // Retorna true se alguma regra pediu bloqueio de rede
+        avaliar(packet, dir) {
+            this._init();
+            if (!this._regras.length) return false;
+            let bloquear = false;
+            const agora = Date.now();
+            for (const regra of this._regras) {
+                if (!this._match(regra, packet, dir)) continue;
+                const last = this._lastFire.get(regra.id) || 0;
+                if (agora - last < regra.cooldownMs) continue;
+                this._lastFire.set(regra.id, agora);
+                regra.disparos++;
+                this._executarAcoes(regra, packet, dir);
+                if (regra.acoes.includes('bloquear') && dir === 'SEND') bloquear = true;
+            }
+            if (this._regras.length % 50 === 0) this._save();
+            return bloquear;
+        },
+        _executarAcoes(regra, packet, dir) {
+            const nome = PacketNames.nome(packet.header, dir) || '?';
+            const linhaBase = `[W:${regra.nome}] ${dir === 'SEND' ? 'OUT' : 'IN'}.${nome} #${packet.header} ${packet.byteLength}b`;
+            if (regra.acoes.includes('log')) {
+                Emitter.emit('watchers:hit', { regra, packet, dir, linha: linhaBase });
+            }
+            if (regra.acoes.includes('nota')) {
+                try {
+                    const texto = (regra.notaTexto || 'Regra disparou') + ` — ${packet.payloadHex.slice(0, 60)}`;
+                    Notebook.addNota(packet.header, texto);
+                } catch (e) {}
+            }
+            if (regra.acoes.includes('notify')) {
+                try {
+                    if (window._hubUI && typeof window._hubUI.toast === 'function') {
+                        window._hubUI.toast(linhaBase, 'warn');
+                    }
+                } catch (e) {}
+            }
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════════
     // SANG AI SERVICE — prompts orientados a pesquisa de exploit
     // ═══════════════════════════════════════════════════════════════
     const SangAI = {
@@ -762,6 +1114,7 @@
         _contextoBase() {
             const suspeitos = Correlator.suspeitos().slice(0, 5);
             const nb = Notebook.listar().slice(0, 8);
+            const regras = Watchers.listar().slice(0, 5);
 
             let extra = '';
             if (suspeitos.length) {
@@ -780,6 +1133,10 @@
                     return `  ID ${e.id} (${nome}): ${nH} hipóteses, ${nR} resultados` +
                         (nota ? ` — última nota: "${nota.texto.slice(0, 80)}"` : '');
                 }).join('\n');
+            }
+            if (regras.length) {
+                extra += '\n\nWATCHERS ATIVOS:\n';
+                extra += regras.map(r => `  "${r.nome}" (${r.dir}, ID ${r.headerId ?? 'any'}, ações: ${r.acoes.join('+')})`).join('\n');
             }
 
             return (
@@ -839,7 +1196,6 @@
                 { maxTokens: 500 }
             );
 
-            // Auto-save no notebook (sem sobrescrever notas/hipóteses do usuário)
             try {
                 const existente = Notebook.get(packet.header);
                 if (!existente) {
@@ -851,7 +1207,7 @@
                 } else {
                     Notebook.update(packet.header, { ultimaAnalise: r });
                 }
-            } catch (e) { /* silencioso */ }
+            } catch (e) {}
 
             return r;
         },
@@ -902,6 +1258,40 @@
             };
         },
 
+        async criarRegraWatcher(descricao, amostras) {
+            const amostrasTxt = amostras.length
+                ? amostras.slice(0, 15).map(p =>
+                    `ID ${p.header} | ${p.byteLength}b | ASCII: "${p.ascii.slice(0, 40) || '(binário)'}"`
+                  ).join('\n')
+                : '(nenhuma amostra)';
+
+            const resp = await this._chamar(
+                'Você converte pedidos em português em REGRAS de observação de pacote.\n' +
+                'Responda SOMENTE com JSON válido, sem markdown.\n\n' +
+                'Formato EXATO:\n' +
+                '{"nome":"curto","dir":"SEND|RECV|ANY","headerId":123,"payloadContem":"HEX ou vazio","asciiContem":"texto ou vazio","acoes":["log"]}\n\n' +
+                '- "dir": qual direção observar\n' +
+                '- "headerId": ID numérico ou null\n' +
+                '- "payloadContem": trecho em HEX (só 0-9A-F) ou ""\n' +
+                '- "asciiContem": texto que deve estar no ASCII ou ""\n' +
+                '- "acoes": subconjunto de ["log","nota","bloquear","notify"]\n\n' +
+                'Amostras recentes:\n' + amostrasTxt,
+                `Pedido: "${descricao}"`,
+                { maxTokens: 400, temperature: 0.1 }
+            );
+
+            const dados = this._parseJson(resp);
+            if (!dados) throw new Error('A IA respondeu em formato inválido.');
+            return {
+                nome: String(dados.nome || 'Regra IA').slice(0, 60),
+                dir: ['SEND', 'RECV', 'ANY'].includes(dados.dir) ? dados.dir : 'ANY',
+                headerId: Number.isFinite(dados.headerId) ? Number(dados.headerId) : null,
+                payloadContem: String(dados.payloadContem || '').trim(),
+                asciiContem: String(dados.asciiContem || '').trim(),
+                acoes: Array.isArray(dados.acoes) ? dados.acoes.filter(a => ['log','nota','bloquear','notify'].includes(a)) : ['log']
+            };
+        },
+
         async gerarJs(descricao, contexto) {
             const codigo = await this._chamar(
                 this._contextoBase() +
@@ -948,7 +1338,6 @@
             );
         }
     };
-
     // ─── Helpers de janela ───
     function clampToViewport(targetEl, x, y) {
         const rect = targetEl.getBoundingClientRect();
@@ -1052,12 +1441,12 @@
         btn.textContent = '\u2715';
         btn.title = 'Fechar';
         Object.assign(btn.style, {
-            background: 'transparent', color: '#8a8a9a', border: 'none',
+            background: 'transparent', color: Theme.textMute, border: 'none',
             cursor: 'pointer', fontSize: '14px', padding: '2px 6px',
             borderRadius: '4px', transition: 'all 0.15s', marginLeft: '4px'
         });
-        on(btn, 'mouseenter', () => { btn.style.background = '#ef4444'; btn.style.color = '#fff'; });
-        on(btn, 'mouseleave', () => { btn.style.background = 'transparent'; btn.style.color = '#8a8a9a'; });
+        on(btn, 'mouseenter', () => { btn.style.background = Theme.err; btn.style.color = '#fff'; });
+        on(btn, 'mouseleave', () => { btn.style.background = 'transparent'; btn.style.color = Theme.textMute; });
         on(btn, 'click', (e) => { e.stopPropagation(); onClose(); });
         return btn;
     }
@@ -1069,15 +1458,18 @@
         Object.assign(el.style, {
             position: 'fixed', top: '0', left: '50%', transform: 'translateX(-50%)',
             display: 'flex', alignItems: 'center', gap: '6px', padding: '6px 16px',
-            background: '#0a0a0f', border: '1px solid #1a1a2e', borderTop: 'none',
-            borderRadius: '0 0 8px 8px', zIndex: '100000',
+            background: Theme.bgPanel,
+            backdropFilter: Theme.blur, WebkitBackdropFilter: Theme.blur,
+            border: '1px solid ' + Theme.line, borderTop: 'none',
+            borderRadius: '0 0 12px 12px', zIndex: '100000',
             fontFamily: 'monospace', fontSize: '12px', userSelect: 'none',
-            backdropFilter: 'blur(8px)'
+            boxShadow: '0 8px 26px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.05)'
         });
         const btnBase = {
-            background: '#13131a', color: '#e1e1e6', border: '1px solid #1a1a2e',
+            background: 'rgba(255,255,255,0.03)', color: Theme.text,
+            border: '1px solid ' + Theme.line,
             cursor: 'pointer', padding: '5px 12px', fontSize: '11px',
-            fontFamily: 'monospace', borderRadius: '6px', transition: 'all 0.15s ease',
+            fontFamily: 'monospace', borderRadius: '8px', transition: 'all 0.15s ease',
             whiteSpace: 'nowrap', outline: 'none'
         };
         const btnAnalyzer = document.createElement('button');
@@ -1096,14 +1488,14 @@
         let analyzerVisible = false, senderVisible = false;
         function highlight(btn, on_) {
             if (on_) {
-                btn.style.background = 'linear-gradient(135deg, #6c63ff, #a855f7)';
+                btn.style.background = Theme.grad;
                 btn.style.borderColor = 'transparent';
-                btn.style.color = '#fff';
-                btn.style.boxShadow = '0 0 10px rgba(108,99,255,0.35)';
+                btn.style.color = '#0b0b10';
+                btn.style.boxShadow = '0 0 12px rgba(34,211,238,0.35)';
             } else {
-                btn.style.background = '#13131a';
-                btn.style.borderColor = '#1a1a2e';
-                btn.style.color = '#e1e1e6';
+                btn.style.background = 'rgba(255,255,255,0.03)';
+                btn.style.borderColor = Theme.line;
+                btn.style.color = Theme.text;
                 btn.style.boxShadow = 'none';
             }
         }
@@ -1145,65 +1537,69 @@
         el.id = 'hl-analyzer';
         Object.assign(el.style, {
             position: 'fixed', top: '50px', left: '10px',
-            width: '760px', height: '680px',
+            width: '820px', height: '700px',
             maxHeight: 'calc(100vh - 70px)',
-            background: '#0f0f16', color: '#e1e1e6',
-            border: '1px solid #1e1e2e', zIndex: '99998',
+            background: Theme.bgPanel,
+            backdropFilter: Theme.blur, WebkitBackdropFilter: Theme.blur,
+            color: Theme.text,
+            border: '1px solid ' + Theme.line, zIndex: '99998',
             fontFamily: 'monospace', fontSize: '12px',
-            borderRadius: '10px', display: 'none', flexDirection: 'column',
-            boxShadow: '0 12px 40px rgba(0,0,0,0.6), 0 0 0 1px rgba(108,99,255,0.06)'
+            borderRadius: Theme.radius, display: 'none', flexDirection: 'column',
+            boxShadow: '0 20px 50px rgba(0,0,0,0.55), 0 2px 8px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.06)',
+            overflow: 'hidden'
         });
 
         el.innerHTML = `
             <div class="drag-header" style="
-                background:linear-gradient(180deg, #12121c 0%, #0a0a12 100%);
+                background:linear-gradient(180deg, rgba(20,20,28,0.85) 0%, rgba(9,9,14,0.92) 100%);
                 padding:11px 14px;cursor:move;
-                border-bottom:1px solid #1e1e2e;border-radius:10px 10px 0 0;
+                border-bottom:1px solid ${Theme.line};border-radius:${Theme.radius} ${Theme.radius} 0 0;
                 font-weight:bold;display:flex;justify-content:space-between;align-items:center;
-                font-size:12px;color:#e1e1e6;user-select:none;letter-spacing:0.05em;
+                font-size:12px;color:${Theme.text};user-select:none;letter-spacing:0.05em;
             ">
                 <span style="display:flex;align-items:center;gap:10px;">
-                    <span style="width:8px;height:8px;border-radius:50%;background:#00d4aa;
-                        box-shadow:0 0 8px #00d4aa,0 0 16px rgba(0,212,170,0.5);"></span>
-                    <span style="background:linear-gradient(90deg,#e1e1e6,#8a8a9a);
+                    <span style="width:8px;height:8px;border-radius:50%;background:${Theme.cyan};
+                        box-shadow:0 0 8px ${Theme.cyan},0 0 16px rgba(34,211,238,0.5);"></span>
+                    <span style="background:linear-gradient(100deg,${Theme.cyan} 0%,${Theme.violet} 50%,#fff 100%);
                         -webkit-background-clip:text;background-clip:text;color:transparent;">
                         SANG ANALYZER
                     </span>
                 </span>
                 <div id="analyzerHeaderBtns" style="display:flex;gap:5px;align-items:center;">
-                    <button id="btnFontMinus" title="Diminuir fonte" style="background:#1a1a2e;color:#e1e1e6;border:1px solid #1e1e2e;cursor:pointer;padding:3px 8px;border-radius:4px;font-size:11px;">A−</button>
-                    <button id="btnFontPlus" title="Aumentar fonte" style="background:#1a1a2e;color:#e1e1e6;border:1px solid #1e1e2e;cursor:pointer;padding:3px 8px;border-radius:4px;font-size:11px;">A+</button>
+                    <button id="btnFontMinus" title="Diminuir fonte" style="background:rgba(255,255,255,0.03);color:${Theme.text};border:1px solid ${Theme.line};cursor:pointer;padding:3px 8px;border-radius:6px;font-size:11px;">A−</button>
+                    <button id="btnFontPlus" title="Aumentar fonte" style="background:rgba(255,255,255,0.03);color:${Theme.text};border:1px solid ${Theme.line};cursor:pointer;padding:3px 8px;border-radius:6px;font-size:11px;">A+</button>
                 </div>
             </div>
 
-            <div id="analyzerTabs" style="display:flex;background:#0a0a12;border-bottom:1px solid #1e1e2e;padding:0 8px;gap:2px;">
-                <button class="az-tab active" data-tab="log" style="background:transparent;color:#e1e1e6;border:none;cursor:pointer;padding:10px 16px;font-size:11px;font-family:monospace;letter-spacing:0.05em;position:relative;transition:color 0.15s;outline:none;">📋 LOG</button>
-                <button class="az-tab" data-tab="filtros" style="background:transparent;color:#8a8a9a;border:none;cursor:pointer;padding:10px 16px;font-size:11px;font-family:monospace;letter-spacing:0.05em;position:relative;transition:color 0.15s;outline:none;">🛡️ FILTROS</button>
-                <button class="az-tab" data-tab="pesquisa" style="background:transparent;color:#8a8a9a;border:none;cursor:pointer;padding:10px 16px;font-size:11px;font-family:monospace;letter-spacing:0.05em;position:relative;transition:color 0.15s;outline:none;">🧪 PESQUISA</button>
-                <button class="az-tab" data-tab="ia" style="background:transparent;color:#8a8a9a;border:none;cursor:pointer;padding:10px 16px;font-size:11px;font-family:monospace;letter-spacing:0.05em;position:relative;transition:color 0.15s;outline:none;">✨ SANG AI</button>
+            <div id="analyzerTabs" style="display:flex;background:rgba(0,0,0,0.2);border-bottom:1px solid ${Theme.line};padding:0 8px;gap:2px;">
+                <button class="az-tab active" data-tab="log">📋 LOG</button>
+                <button class="az-tab" data-tab="filtros">🛡️ FILTROS</button>
+                <button class="az-tab" data-tab="pesquisa">🧪 PESQUISA</button>
+                <button class="az-tab" data-tab="ia">✨ SANG AI</button>
             </div>
 
             <div id="paneLog" style="display:flex;flex-direction:column;flex:1;overflow:hidden;min-height:0;">
-                <div style="padding:8px 12px;display:flex;gap:12px;align-items:center;background:#0a0a12;border-bottom:1px solid #1e1e2e;">
-                    <label style="display:flex;align-items:center;gap:5px;cursor:pointer;font-size:11px;color:#00d4aa;font-weight:600;">
-                        <input type="checkbox" id="chkSend" checked style="accent-color:#00d4aa;cursor:pointer;"> ENVIADOS
+                <div style="padding:8px 12px;display:flex;gap:12px;align-items:center;background:rgba(0,0,0,0.2);border-bottom:1px solid ${Theme.line};">
+                    <label style="display:flex;align-items:center;gap:5px;cursor:pointer;font-size:11px;color:${Theme.cyan};font-weight:600;">
+                        <input type="checkbox" id="chkSend" checked style="accent-color:${Theme.cyan};cursor:pointer;"> ENVIADOS
                     </label>
-                    <label style="display:flex;align-items:center;gap:5px;cursor:pointer;font-size:11px;color:#6c63ff;font-weight:600;">
-                        <input type="checkbox" id="chkRecv" checked style="accent-color:#6c63ff;cursor:pointer;"> RECEBIDOS
+                    <label style="display:flex;align-items:center;gap:5px;cursor:pointer;font-size:11px;color:${Theme.violet};font-weight:600;">
+                        <input type="checkbox" id="chkRecv" checked style="accent-color:${Theme.violet};cursor:pointer;"> RECEBIDOS
                     </label>
                     <div style="flex:1;min-width:0;">
                         <input id="logSearch" type="text" placeholder="🔍 ID, nome do pacote, hex, texto…"
-                            style="width:100%;background:#13131a;color:#e1e1e6;border:1px solid #1e1e2e;
-                            padding:6px 10px;font-size:11px;border-radius:6px;font-family:monospace;outline:none;box-sizing:border-box;">
+                            style="width:100%;background:rgba(255,255,255,0.03);color:${Theme.text};border:1px solid ${Theme.line};
+                            padding:6px 10px;font-size:11px;border-radius:8px;font-family:monospace;outline:none;box-sizing:border-box;">
                     </div>
-                    <span id="logCounter" style="font-size:10px;color:#8a8a9a;white-space:nowrap;">0 logs</span>
+                    <span id="logCounter" style="font-size:10px;color:${Theme.textMute};white-space:nowrap;">0 logs</span>
                 </div>
 
-                <div style="padding:6px 12px;display:flex;gap:6px;background:#0a0a12;border-bottom:1px solid #1e1e2e;">
-                    <button id="btnPauseLogs" style="flex:1;background:#13131a;color:#e1e1e6;border:1px solid #1e1e2e;cursor:pointer;padding:6px 10px;border-radius:6px;font-size:11px;font-family:monospace;transition:all 0.15s;">⏸ PAUSAR</button>
-                    <button id="btnCopyAll" style="flex:1;background:#13131a;color:#00d4aa;border:1px solid #1e1e2e;cursor:pointer;padding:6px 10px;border-radius:6px;font-size:11px;font-family:monospace;transition:all 0.15s;">📋 COPIAR</button>
-                    <button id="btnClearLogs" style="flex:1;background:#13131a;color:#ef4444;border:1px solid #1e1e2e;cursor:pointer;padding:6px 10px;border-radius:6px;font-size:11px;font-family:monospace;transition:all 0.15s;">🗑 LIMPAR</button>
-                    <button id="btnKillSwitch" style="background:#13131a;color:#ef4444;border:1px solid #ef4444;cursor:pointer;padding:6px 12px;border-radius:6px;font-weight:bold;font-size:11px;font-family:monospace;transition:all 0.2s;white-space:nowrap;">⚠️ DROP ALL</button>
+                <div style="padding:6px 12px;display:flex;gap:6px;background:rgba(0,0,0,0.2);border-bottom:1px solid ${Theme.line};">
+                    <button id="btnPauseLogs" class="az-btn">⏸ PAUSAR</button>
+                    <button id="btnCopyAll" class="az-btn" style="color:${Theme.cyan};">📋 COPIAR</button>
+                    <button id="btnClearLogs" class="az-btn" style="color:${Theme.err};">🗑 LIMPAR</button>
+                    <button id="btnRecToggle" class="az-btn" style="color:${Theme.err};">⏺ REC</button>
+                    <button id="btnKillSwitch" style="background:rgba(255,255,255,0.03);color:${Theme.err};border:1px solid ${Theme.err};cursor:pointer;padding:6px 12px;border-radius:8px;font-weight:bold;font-size:11px;font-family:monospace;transition:all 0.2s;white-space:nowrap;">⚠️ DROP ALL</button>
                 </div>
 
                 <div id="logArea" style="flex:1;overflow-y:auto;padding:10px;min-height:80px;"></div>
@@ -1211,157 +1607,236 @@
 
             <div id="paneFiltros" style="display:none;flex-direction:column;flex:1;overflow:hidden;min-height:0;padding:14px;gap:14px;">
                 <div style="display:flex;gap:14px;flex:1;min-height:0;">
-                    <div style="flex:1;display:flex;flex-direction:column;min-width:0;background:#13131a;border:1px solid #1e1e2e;border-radius:8px;padding:12px;">
-                        <div style="color:#6c63ff;font-weight:bold;margin-bottom:10px;font-size:11px;letter-spacing:0.05em;display:flex;align-items:center;gap:6px;">
-                            <span style="width:6px;height:6px;border-radius:50%;background:#6c63ff;"></span> OCULTAR DO LOG
+                    <div class="az-card">
+                        <div class="az-card-title" style="color:${Theme.violet};">
+                            <span style="width:6px;height:6px;border-radius:50%;background:${Theme.violet};"></span> OCULTAR DO LOG
                         </div>
-                        <div style="font-size:10px;color:#6a6a7a;margin-bottom:8px;line-height:1.5;">Some da visualização — o pacote ainda trafega.</div>
+                        <div class="az-card-desc">Some da visualização — o pacote ainda trafega.</div>
                         <div style="display:flex;gap:4px;margin-bottom:6px;">
-                            <input id="vId" type="number" placeholder="ID" style="width:70px;background:#0a0a12;color:#e1e1e6;border:1px solid #1e1e2e;padding:6px 8px;font-size:11px;border-radius:5px;outline:none;box-sizing:border-box;font-family:monospace;">
-                            <button id="btnAddVId" style="background:#13131a;color:#6c63ff;border:1px solid #6c63ff;cursor:pointer;padding:6px 12px;border-radius:5px;font-size:11px;font-weight:bold;">+</button>
+                            <input id="vId" type="number" placeholder="ID" style="width:70px;background:rgba(0,0,0,0.25);color:${Theme.text};border:1px solid ${Theme.line};padding:6px 8px;font-size:11px;border-radius:6px;outline:none;box-sizing:border-box;font-family:monospace;">
+                            <button id="btnAddVId" class="az-mini" style="color:${Theme.violet};border-color:${Theme.violet};">+</button>
                         </div>
                         <div style="display:flex;gap:4px;margin-bottom:8px;">
-                            <input id="vStr" type="text" placeholder="HEX ou texto" style="flex:1;background:#0a0a12;color:#e1e1e6;border:1px solid #1e1e2e;padding:6px 8px;font-size:11px;border-radius:5px;outline:none;min-width:0;box-sizing:border-box;font-family:monospace;">
-                            <button id="btnAddVStr" style="background:#13131a;color:#6c63ff;border:1px solid #6c63ff;cursor:pointer;padding:6px 12px;border-radius:5px;font-size:11px;font-weight:bold;">+</button>
+                            <input id="vStr" type="text" placeholder="HEX ou texto" style="flex:1;background:rgba(0,0,0,0.25);color:${Theme.text};border:1px solid ${Theme.line};padding:6px 8px;font-size:11px;border-radius:6px;outline:none;min-width:0;box-sizing:border-box;font-family:monospace;">
+                            <button id="btnAddVStr" class="az-mini" style="color:${Theme.violet};border-color:${Theme.violet};">+</button>
                         </div>
                         <div id="listV" style="flex:1;overflow-y:auto;margin-bottom:8px;font-size:10px;"></div>
-                        <button id="btnClrV" style="width:100%;background:#13131a;color:#ef4444;border:1px solid #ef4444;cursor:pointer;padding:5px;border-radius:5px;font-size:10px;">LIMPAR TUDO</button>
+                        <button id="btnClrV" class="az-mini-full" style="color:${Theme.err};border-color:${Theme.err};">LIMPAR TUDO</button>
                     </div>
-                    <div style="flex:1;display:flex;flex-direction:column;min-width:0;background:#13131a;border:1px solid #1e1e2e;border-radius:8px;padding:12px;">
-                        <div style="color:#ef4444;font-weight:bold;margin-bottom:10px;font-size:11px;letter-spacing:0.05em;display:flex;align-items:center;gap:6px;">
-                            <span style="width:6px;height:6px;border-radius:50%;background:#ef4444;"></span> BLOQUEAR ENVIO
+                    <div class="az-card">
+                        <div class="az-card-title" style="color:${Theme.err};">
+                            <span style="width:6px;height:6px;border-radius:50%;background:${Theme.err};"></span> BLOQUEAR ENVIO
                         </div>
-                        <div style="font-size:10px;color:#6a6a7a;margin-bottom:8px;line-height:1.5;">Impede o pacote de sair — o servidor nunca recebe.</div>
+                        <div class="az-card-desc">Impede o pacote de sair — o servidor nunca recebe.</div>
                         <div style="display:flex;gap:4px;margin-bottom:6px;">
-                            <input id="dId" type="number" placeholder="ID" style="width:70px;background:#0a0a12;color:#e1e1e6;border:1px solid #1e1e2e;padding:6px 8px;font-size:11px;border-radius:5px;outline:none;box-sizing:border-box;font-family:monospace;">
-                            <button id="btnAddDId" style="background:#13131a;color:#ef4444;border:1px solid #ef4444;cursor:pointer;padding:6px 12px;border-radius:5px;font-size:11px;font-weight:bold;">+</button>
+                            <input id="dId" type="number" placeholder="ID" style="width:70px;background:rgba(0,0,0,0.25);color:${Theme.text};border:1px solid ${Theme.line};padding:6px 8px;font-size:11px;border-radius:6px;outline:none;box-sizing:border-box;font-family:monospace;">
+                            <button id="btnAddDId" class="az-mini" style="color:${Theme.err};border-color:${Theme.err};">+</button>
                         </div>
                         <div style="display:flex;gap:4px;margin-bottom:8px;">
-                            <input id="dStr" type="text" placeholder="HEX ou texto" style="flex:1;background:#0a0a12;color:#e1e1e6;border:1px solid #1e1e2e;padding:6px 8px;font-size:11px;border-radius:5px;outline:none;min-width:0;box-sizing:border-box;font-family:monospace;">
-                            <button id="btnAddDStr" style="background:#13131a;color:#ef4444;border:1px solid #ef4444;cursor:pointer;padding:6px 12px;border-radius:5px;font-size:11px;font-weight:bold;">+</button>
+                            <input id="dStr" type="text" placeholder="HEX ou texto" style="flex:1;background:rgba(0,0,0,0.25);color:${Theme.text};border:1px solid ${Theme.line};padding:6px 8px;font-size:11px;border-radius:6px;outline:none;min-width:0;box-sizing:border-box;font-family:monospace;">
+                            <button id="btnAddDStr" class="az-mini" style="color:${Theme.err};border-color:${Theme.err};">+</button>
                         </div>
                         <div id="listD" style="flex:1;overflow-y:auto;margin-bottom:8px;font-size:10px;"></div>
-                        <button id="btnClrD" style="width:100%;background:#13131a;color:#ef4444;border:1px solid #ef4444;cursor:pointer;padding:5px;border-radius:5px;font-size:10px;">LIMPAR TUDO</button>
+                        <button id="btnClrD" class="az-mini-full" style="color:${Theme.err};border-color:${Theme.err};">LIMPAR TUDO</button>
                     </div>
                 </div>
 
-                <div style="background:linear-gradient(135deg, rgba(168,85,247,0.08), rgba(108,99,255,0.05));
-                    border:1px solid rgba(168,85,247,0.25);border-radius:8px;padding:12px;">
-                    <div style="color:#c4b5fd;font-weight:bold;font-size:11px;letter-spacing:0.05em;margin-bottom:8px;display:flex;align-items:center;gap:6px;">
-                        ✨ FILTRO EM LINGUAGEM NATURAL
-                    </div>
+                <div class="az-card" style="background:linear-gradient(135deg, rgba(167,139,250,0.08), rgba(34,211,238,0.04));border-color:rgba(167,139,250,0.25);">
+                    <div class="az-card-title" style="color:${Theme.violet};">✨ FILTRO EM LINGUAGEM NATURAL</div>
                     <div style="display:flex;gap:6px;">
                         <input id="nlFiltro" type="text" placeholder="Ex: esconde pacotes de movimento, oculta chats próximos…"
-                            style="flex:1;background:#0a0a12;color:#e1e1e6;border:1px solid rgba(168,85,247,0.3);
-                            padding:8px 10px;font-size:11px;border-radius:6px;outline:none;
+                            style="flex:1;background:rgba(0,0,0,0.3);color:${Theme.text};border:1px solid rgba(167,139,250,0.3);
+                            padding:8px 10px;font-size:11px;border-radius:8px;outline:none;
                             font-family:monospace;box-sizing:border-box;min-width:0;">
-                        <button id="btnNlFiltro" style="background:linear-gradient(135deg,#a855f7,#6c63ff);
-                            color:#fff;border:none;cursor:pointer;padding:8px 16px;border-radius:6px;
-                            font-weight:bold;font-size:11px;font-family:monospace;white-space:nowrap;
-                            transition:all 0.15s;">GERAR</button>
+                        <button id="btnNlFiltro" class="az-grad-btn">GERAR</button>
                     </div>
-                    <div id="nlFiltroResultado" style="margin-top:8px;font-size:10.5px;color:#8a8a9a;line-height:1.5;"></div>
+                    <div id="nlFiltroResultado" style="margin-top:8px;font-size:10.5px;color:${Theme.textMute};line-height:1.5;"></div>
                 </div>
             </div>
 
             <div id="panePesquisa" style="display:none;flex-direction:column;flex:1;overflow:hidden;min-height:0;">
-                <div id="pesquisaSubtabs" style="display:flex;background:#0a0a12;border-bottom:1px solid #1e1e2e;padding:0 12px;gap:4px;">
-                    <button class="pesq-tab active" data-ptab="notebook" style="background:transparent;color:#e1e1e6;border:none;cursor:pointer;padding:8px 14px;font-size:10.5px;font-family:monospace;letter-spacing:0.05em;position:relative;transition:color 0.15s;outline:none;">📓 Notebook</button>
-                    <button class="pesq-tab" data-ptab="correlacao" style="background:transparent;color:#8a8a9a;border:none;cursor:pointer;padding:8px 14px;font-size:10.5px;font-family:monospace;letter-spacing:0.05em;position:relative;transition:color 0.15s;outline:none;">🔗 Correlação</button>
-                    <button class="pesq-tab" data-ptab="fuzz" style="background:transparent;color:#8a8a9a;border:none;cursor:pointer;padding:8px 14px;font-size:10.5px;font-family:monospace;letter-spacing:0.05em;position:relative;transition:color 0.15s;outline:none;">💥 Fuzz</button>
-                    <button class="pesq-tab" data-ptab="race" style="background:transparent;color:#8a8a9a;border:none;cursor:pointer;padding:8px 14px;font-size:10.5px;font-family:monospace;letter-spacing:0.05em;position:relative;transition:color 0.15s;outline:none;">⚡ Race</button>
+                <div id="pesquisaSubtabs" style="display:flex;background:rgba(0,0,0,0.25);border-bottom:1px solid ${Theme.line};padding:0 10px;gap:2px;overflow-x:auto;flex-shrink:0;">
+                    <button class="pesq-tab active" data-ptab="notebook">📓 Notebook</button>
+                    <button class="pesq-tab" data-ptab="correlacao">🔗 Correlação</button>
+                    <button class="pesq-tab" data-ptab="fuzz">💥 Fuzz</button>
+                    <button class="pesq-tab" data-ptab="race">⚡ Race</button>
+                    <button class="pesq-tab" data-ptab="recorder">⏺ Gravação</button>
+                    <button class="pesq-tab" data-ptab="replay">▶ Replay</button>
+                    <button class="pesq-tab" data-ptab="diff">⇄ Diff</button>
+                    <button class="pesq-tab" data-ptab="watchers">👁 Watch</button>
                 </div>
 
-                <div id="pesqNotebook" style="display:flex;flex-direction:column;flex:1;overflow:hidden;min-height:0;">
-                    <div style="padding:8px 12px;display:flex;gap:6px;background:#0a0a12;border-bottom:1px solid #1e1e2e;">
-                        <button id="nbExportar" style="background:#13131a;color:#00d4aa;border:1px solid #1e1e2e;cursor:pointer;padding:6px 12px;border-radius:6px;font-size:11px;font-family:monospace;">⬇ EXPORTAR</button>
-                        <button id="nbImportar" style="background:#13131a;color:#6c63ff;border:1px solid #6c63ff;cursor:pointer;padding:6px 12px;border-radius:6px;font-size:11px;font-family:monospace;">⬆ IMPORTAR</button>
-                        <button id="nbLimpar" style="background:#13131a;color:#ef4444;border:1px solid #ef4444;cursor:pointer;padding:6px 12px;border-radius:6px;font-size:11px;font-family:monospace;">🗑 LIMPAR</button>
+                <div id="pesqNotebook" class="pesq-pane" style="display:flex;flex-direction:column;flex:1;overflow:hidden;min-height:0;">
+                    <div style="padding:8px 12px;display:flex;gap:6px;background:rgba(0,0,0,0.2);border-bottom:1px solid ${Theme.line};">
+                        <button id="nbExportar" class="az-mini" style="color:${Theme.cyan};border-color:${Theme.cyan};">⬇ EXPORTAR</button>
+                        <button id="nbImportar" class="az-mini" style="color:${Theme.violet};border-color:${Theme.violet};">⬆ IMPORTAR</button>
+                        <button id="nbLimpar" class="az-mini" style="color:${Theme.err};border-color:${Theme.err};">🗑 LIMPAR</button>
                         <div style="flex:1"></div>
-                        <span id="nbCounter" style="font-size:10px;color:#8a8a9a;align-self:center;">0 entradas</span>
+                        <span id="nbCounter" style="font-size:10px;color:${Theme.textMute};align-self:center;">0 entradas</span>
                     </div>
                     <div id="nbLista" style="flex:1;overflow-y:auto;padding:10px;"></div>
                 </div>
 
-                <div id="pesqCorrelacao" style="display:none;flex-direction:column;flex:1;overflow:hidden;min-height:0;">
-                    <div style="padding:8px 12px;display:flex;gap:6px;background:#0a0a12;border-bottom:1px solid #1e1e2e;">
-                        <button id="corrAtualizar" style="background:#13131a;color:#6c63ff;border:1px solid #6c63ff;cursor:pointer;padding:6px 12px;border-radius:6px;font-size:11px;font-family:monospace;">↻ ATUALIZAR</button>
-                        <button id="corrLimpar" style="background:#13131a;color:#ef4444;border:1px solid #ef4444;cursor:pointer;padding:6px 12px;border-radius:6px;font-size:11px;font-family:monospace;">🗑 LIMPAR DADOS</button>
+                <div id="pesqCorrelacao" class="pesq-pane" style="display:none;flex-direction:column;flex:1;overflow:hidden;min-height:0;">
+                    <div style="padding:8px 12px;display:flex;gap:6px;background:rgba(0,0,0,0.2);border-bottom:1px solid ${Theme.line};">
+                        <button id="corrAtualizar" class="az-mini" style="color:${Theme.violet};border-color:${Theme.violet};">↻ ATUALIZAR</button>
+                        <button id="corrLimpar" class="az-mini" style="color:${Theme.err};border-color:${Theme.err};">🗑 LIMPAR DADOS</button>
                         <div style="flex:1"></div>
-                        <span id="corrCounter" style="font-size:10px;color:#8a8a9a;align-self:center;">—</span>
+                        <span id="corrCounter" style="font-size:10px;color:${Theme.textMute};align-self:center;">—</span>
                     </div>
                     <div id="corrConteudo" style="flex:1;overflow-y:auto;padding:10px;"></div>
                 </div>
 
-                <div id="pesqFuzz" style="display:none;flex-direction:column;flex:1;overflow:hidden;min-height:0;">
-                    <div style="padding:10px 12px;background:#0a0a12;border-bottom:1px solid #1e1e2e;display:flex;flex-direction:column;gap:8px;">
-                        <div style="font-size:10px;color:#8a8a9a;line-height:1.5;">
+                <div id="pesqFuzz" class="pesq-pane" style="display:none;flex-direction:column;flex:1;overflow:hidden;min-height:0;">
+                    <div style="padding:10px 12px;background:rgba(0,0,0,0.2);border-bottom:1px solid ${Theme.line};display:flex;flex-direction:column;gap:8px;">
+                        <div style="font-size:10px;color:${Theme.textMute};line-height:1.5;">
                             Testa um byte por vez de um pacote OUT e observa se o servidor reage.
-                            <strong style="color:#f5b942;">Sem resposta = campo ignorado (candidato a exploit)</strong>.
+                            <strong style="color:${Theme.warn};">Sem resposta = campo ignorado (candidato a exploit)</strong>.
                         </div>
                         <div style="display:flex;gap:6px;flex-wrap:wrap;">
-                            <label style="font-size:10.5px;color:#8a8a9a;">ID alvo
-                                <input id="fuzzId" type="number" placeholder="2865" style="width:70px;background:#13131a;color:#e1e1e6;border:1px solid #1e1e2e;padding:5px 7px;border-radius:4px;font-size:11px;font-family:monospace;outline:none;margin-left:4px;box-sizing:border-box;">
-                            </label>
-                            <label style="font-size:10.5px;color:#8a8a9a;">Offset
-                                <input id="fuzzOffset" type="number" value="0" style="width:50px;background:#13131a;color:#e1e1e6;border:1px solid #1e1e2e;padding:5px 7px;border-radius:4px;font-size:11px;font-family:monospace;outline:none;margin-left:4px;box-sizing:border-box;">
-                            </label>
-                            <label style="font-size:10.5px;color:#8a8a9a;">De
-                                <input id="fuzzDe" type="number" value="0" style="width:50px;background:#13131a;color:#e1e1e6;border:1px solid #1e1e2e;padding:5px 7px;border-radius:4px;font-size:11px;font-family:monospace;outline:none;margin-left:4px;box-sizing:border-box;">
-                            </label>
-                            <label style="font-size:10.5px;color:#8a8a9a;">Até
-                                <input id="fuzzAte" type="number" value="10" style="width:50px;background:#13131a;color:#e1e1e6;border:1px solid #1e1e2e;padding:5px 7px;border-radius:4px;font-size:11px;font-family:monospace;outline:none;margin-left:4px;box-sizing:border-box;">
-                            </label>
-                            <label style="font-size:10.5px;color:#8a8a9a;">Delay
-                                <input id="fuzzDelay" type="number" value="400" style="width:60px;background:#13131a;color:#e1e1e6;border:1px solid #1e1e2e;padding:5px 7px;border-radius:4px;font-size:11px;font-family:monospace;outline:none;margin-left:4px;box-sizing:border-box;">
-                            </label>
-                            <button id="fuzzIniciar" style="background:linear-gradient(135deg,#a855f7,#6c63ff);color:#fff;border:none;cursor:pointer;padding:6px 16px;border-radius:6px;font-size:11px;font-weight:bold;font-family:monospace;">▶ INICIAR</button>
-                            <button id="fuzzParar" style="background:#13131a;color:#ef4444;border:1px solid #ef4444;cursor:pointer;padding:6px 16px;border-radius:6px;font-size:11px;font-weight:bold;font-family:monospace;display:none;">⏹ PARAR</button>
+                            <label class="az-label">ID<input id="fuzzId" type="number" placeholder="2865" class="az-input-xs"></label>
+                            <label class="az-label">Offset<input id="fuzzOffset" type="number" value="0" class="az-input-xs"></label>
+                            <label class="az-label">De<input id="fuzzDe" type="number" value="0" class="az-input-xs"></label>
+                            <label class="az-label">Até<input id="fuzzAte" type="number" value="10" class="az-input-xs"></label>
+                            <label class="az-label">Delay<input id="fuzzDelay" type="number" value="400" class="az-input-xs"></label>
+                            <button id="fuzzIniciar" class="az-grad-btn">▶ INICIAR</button>
+                            <button id="fuzzParar" class="az-mini" style="color:${Theme.err};border-color:${Theme.err};display:none;">⏹ PARAR</button>
                         </div>
                     </div>
                     <div id="fuzzLog" style="flex:1;overflow-y:auto;padding:10px;font-size:11px;line-height:1.6;"></div>
                 </div>
 
-                <div id="pesqRace" style="display:none;flex-direction:column;flex:1;overflow:hidden;min-height:0;">
-                    <div style="padding:10px 12px;background:#0a0a12;border-bottom:1px solid #1e1e2e;display:flex;flex-direction:column;gap:8px;">
-                        <div style="font-size:10px;color:#8a8a9a;line-height:1.5;">
-                            Envia <strong>N pacotes no mesmo tick</strong> (sem delay). Útil pra testar race conditions —
-                            ex: <code style="background:#1e1e2e;padding:1px 5px;border-radius:3px;">TRADE_CONFIRM ×2</code>.
+                <div id="pesqRace" class="pesq-pane" style="display:none;flex-direction:column;flex:1;overflow:hidden;min-height:0;">
+                    <div style="padding:10px 12px;background:rgba(0,0,0,0.2);border-bottom:1px solid ${Theme.line};display:flex;flex-direction:column;gap:8px;">
+                        <div style="font-size:10px;color:${Theme.textMute};line-height:1.5;">
+                            Envia <strong>N pacotes no mesmo tick</strong> (sem delay). Útil pra testar race conditions.
                         </div>
                         <div style="display:flex;gap:6px;">
-                            <input id="raceId" type="number" placeholder="ID" style="width:70px;background:#13131a;color:#e1e1e6;border:1px solid #1e1e2e;padding:6px 8px;border-radius:5px;font-size:11px;font-family:monospace;outline:none;box-sizing:border-box;">
-                            <input id="raceHex" type="text" placeholder="Payload HEX" style="flex:1;background:#13131a;color:#e1e1e6;border:1px solid #1e1e2e;padding:6px 8px;border-radius:5px;font-size:11px;font-family:monospace;outline:none;min-width:0;box-sizing:border-box;">
-                            <input id="raceQtd" type="number" value="2" min="2" max="10" style="width:50px;background:#13131a;color:#e1e1e6;border:1px solid #1e1e2e;padding:6px 8px;border-radius:5px;font-size:11px;font-family:monospace;outline:none;box-sizing:border-box;">
-                            <button id="raceAdd" style="background:#13131a;color:#6c63ff;border:1px solid #6c63ff;cursor:pointer;padding:6px 12px;border-radius:5px;font-size:11px;font-weight:bold;">+</button>
+                            <input id="raceId" type="number" placeholder="ID" style="width:70px;background:rgba(0,0,0,0.25);color:${Theme.text};border:1px solid ${Theme.line};padding:6px 8px;border-radius:6px;font-size:11px;font-family:monospace;outline:none;box-sizing:border-box;">
+                            <input id="raceHex" type="text" placeholder="Payload HEX" style="flex:1;background:rgba(0,0,0,0.25);color:${Theme.text};border:1px solid ${Theme.line};padding:6px 8px;border-radius:6px;font-size:11px;font-family:monospace;outline:none;min-width:0;box-sizing:border-box;">
+                            <input id="raceQtd" type="number" value="2" min="2" max="10" style="width:50px;background:rgba(0,0,0,0.25);color:${Theme.text};border:1px solid ${Theme.line};padding:6px 8px;border-radius:6px;font-size:11px;font-family:monospace;outline:none;box-sizing:border-box;">
+                            <button id="raceAdd" class="az-mini" style="color:${Theme.violet};border-color:${Theme.violet};">+</button>
                         </div>
-                        <div id="raceLista" style="background:#13131a;border:1px solid #1e1e2e;border-radius:6px;padding:6px;min-height:40px;max-height:140px;overflow-y:auto;font-size:11px;"></div>
+                        <div id="raceLista" style="background:rgba(0,0,0,0.25);border:1px solid ${Theme.line};border-radius:8px;padding:6px;min-height:40px;max-height:140px;overflow-y:auto;font-size:11px;"></div>
                         <div style="display:flex;gap:6px;">
-                            <button id="raceEnviar" style="flex:1;background:linear-gradient(135deg,#ef4444,#b91c1c);color:#fff;border:none;cursor:pointer;padding:10px;border-radius:6px;font-size:12px;font-weight:bold;font-family:monospace;">⚡ ENVIAR AGORA</button>
-                            <button id="raceLimpar" style="background:#13131a;color:#ef4444;border:1px solid #ef4444;cursor:pointer;padding:10px 14px;border-radius:6px;font-size:11px;font-family:monospace;">LIMPAR</button>
+                            <button id="raceEnviar" style="flex:1;background:linear-gradient(135deg,${Theme.err},#b91c1c);color:#fff;border:none;cursor:pointer;padding:10px;border-radius:8px;font-size:12px;font-weight:bold;font-family:monospace;">⚡ ENVIAR AGORA</button>
+                            <button id="raceLimpar" class="az-mini" style="color:${Theme.err};border-color:${Theme.err};">LIMPAR</button>
                         </div>
                     </div>
                     <div id="raceLog" style="flex:1;overflow-y:auto;padding:10px;font-size:11px;line-height:1.6;"></div>
+                </div>
+
+                <div id="pesqRecorder" class="pesq-pane" style="display:none;flex-direction:column;flex:1;overflow:hidden;min-height:0;">
+                    <div style="padding:10px 12px;background:rgba(0,0,0,0.2);border-bottom:1px solid ${Theme.line};display:flex;flex-direction:column;gap:8px;">
+                        <div style="font-size:10px;color:${Theme.textMute};line-height:1.5;">
+                            Grava uma janela de tráfego real (OUT + IN) com timestamps. Depois você pode <strong>exportar</strong>, <strong>importar</strong> ou <strong>reproduzir</strong>.
+                        </div>
+                        <div style="display:flex;gap:6px;">
+                            <button id="recIniciar" style="background:linear-gradient(135deg,${Theme.err},#b91c1c);color:#fff;border:none;cursor:pointer;padding:8px 18px;border-radius:8px;font-weight:bold;font-size:11px;font-family:monospace;">⏺ GRAVAR</button>
+                            <button id="recParar" class="az-mini" style="color:${Theme.err};border-color:${Theme.err};display:none;">⏹ PARAR</button>
+                            <button id="recExportar" class="az-mini" style="color:${Theme.cyan};border-color:${Theme.cyan};">⬇ EXPORTAR</button>
+                            <button id="recImportar" class="az-mini" style="color:${Theme.violet};border-color:${Theme.violet};">⬆ IMPORTAR</button>
+                            <button id="recLimpar" class="az-mini" style="color:${Theme.err};border-color:${Theme.err};">🗑 LIMPAR</button>
+                            <div style="flex:1"></div>
+                            <span id="recCounter" style="font-size:10px;color:${Theme.textMute};align-self:center;">0 eventos</span>
+                        </div>
+                    </div>
+                    <div id="recPreview" style="flex:1;overflow-y:auto;padding:10px;font-size:11px;line-height:1.55;"></div>
+                </div>
+
+                <div id="pesqReplay" class="pesq-pane" style="display:none;flex-direction:column;flex:1;overflow:hidden;min-height:0;">
+                    <div style="padding:10px 12px;background:rgba(0,0,0,0.2);border-bottom:1px solid ${Theme.line};display:flex;flex-direction:column;gap:8px;">
+                        <div style="font-size:10px;color:${Theme.textMute};line-height:1.5;">
+                            Reproduz a gravação atual, respeitando os delays originais. Altere a <strong>velocidade</strong> ou aplique uma <strong>mutação</strong> em cada pacote OUT antes do envio.
+                        </div>
+                        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+                            <label class="az-label">Velocidade
+                                <input id="repSpeed" type="number" value="1" step="0.25" min="0.25" max="10" class="az-input-xs">
+                            </label>
+                            <label style="display:flex;align-items:center;gap:5px;font-size:10.5px;color:${Theme.textMute};">
+                                <input type="checkbox" id="repMutar" style="accent-color:${Theme.violet};"> Mutação
+                            </label>
+                            <label class="az-label">Offset mutação
+                                <input id="repOffset" type="number" value="0" class="az-input-xs">
+                            </label>
+                            <label class="az-label">Byte (hex)
+                                <input id="repByte" type="text" value="00" maxlength="2" class="az-input-xs" style="width:36px;text-transform:uppercase;">
+                            </label>
+                            <button id="repExecutar" class="az-grad-btn">▶ EXECUTAR</button>
+                            <button id="repParar" class="az-mini" style="color:${Theme.err};border-color:${Theme.err};display:none;">⏹ PARAR</button>
+                            <div style="flex:1"></div>
+                            <span id="repCounter" style="font-size:10px;color:${Theme.textMute};">0 OUTs prontos</span>
+                        </div>
+                    </div>
+                    <div id="repLog" style="flex:1;overflow-y:auto;padding:10px;font-size:11px;line-height:1.6;"></div>
+                </div>
+
+                <div id="pesqDiff" class="pesq-pane" style="display:none;flex-direction:column;flex:1;overflow:hidden;min-height:0;">
+                    <div style="padding:10px 12px;background:rgba(0,0,0,0.2);border-bottom:1px solid ${Theme.line};display:flex;flex-direction:column;gap:8px;">
+                        <div style="font-size:10px;color:${Theme.textMute};line-height:1.5;">
+                            Escolha um <strong>ID</strong> e compare os dois últimos pacotes capturados desse ID. Bytes diferentes aparecem destacados.
+                        </div>
+                        <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;">
+                            <label class="az-label">ID<input id="diffId" type="number" placeholder="2865" class="az-input-xs"></label>
+                            <button id="diffComparar" class="az-grad-btn">⇄ COMPARAR</button>
+                            <button id="diffFixarBaseline" class="az-mini" style="color:${Theme.cyan};border-color:${Theme.cyan};">📌 FIXAR BASELINE</button>
+                            <button id="diffLimparBaseline" class="az-mini" style="color:${Theme.err};border-color:${Theme.err};">Limpar baseline</button>
+                            <span id="diffBaselineInfo" style="font-size:10px;color:${Theme.textMute};"></span>
+                        </div>
+                    </div>
+                    <div id="diffResultado" style="flex:1;overflow-y:auto;padding:12px;font-size:11px;line-height:1.55;"></div>
+                </div>
+
+                <div id="pesqWatchers" class="pesq-pane" style="display:none;flex-direction:column;flex:1;overflow:hidden;min-height:0;">
+                    <div style="padding:10px 12px;background:rgba(0,0,0,0.2);border-bottom:1px solid ${Theme.line};display:flex;flex-direction:column;gap:8px;">
+                        <div style="font-size:10px;color:${Theme.textMute};line-height:1.5;">
+                            Regras que disparam ações quando um pacote bate. Ações: <strong>log</strong> (aparece no painel), <strong>nota</strong> (salva no Notebook), <strong>bloquear</strong> (impede envio OUT), <strong>notify</strong> (notificação do Hub).
+                        </div>
+                        <div style="display:flex;gap:6px;">
+                            <input id="wNome" type="text" placeholder="Nome da regra" class="az-input-flex">
+                            <select id="wDir" class="az-input-select">
+                                <option value="ANY">ANY</option>
+                                <option value="SEND">OUT</option>
+                                <option value="RECV">IN</option>
+                            </select>
+                            <input id="wHeaderId" type="number" placeholder="ID" class="az-input-xs">
+                            <input id="wPayload" type="text" placeholder="Payload HEX contém" class="az-input-flex">
+                            <button id="wAdicionar" class="az-grad-btn">+ ADICIONAR</button>
+                        </div>
+                        <div style="display:flex;gap:6px;align-items:center;">
+                            <input id="wAiDesc" type="text" placeholder="✨ Descreva a regra — ex: quando receber chat com palavra X, marcar no notebook" class="az-input-flex" style="border-color:rgba(167,139,250,0.3);">
+                            <button id="wAiGerar" class="az-grad-btn">✨ GERAR COM IA</button>
+                            <button id="wLimpar" class="az-mini" style="color:${Theme.err};border-color:${Theme.err};">🗑 LIMPAR TUDO</button>
+                        </div>
+                    </div>
+                    <div style="display:flex;gap:6px;flex:1;min-height:0;padding:10px;">
+                        <div style="flex:1;display:flex;flex-direction:column;min-width:0;">
+                            <div style="font-size:10px;color:${Theme.textMute};margin-bottom:6px;letter-spacing:0.05em;">REGRAS ATIVAS</div>
+                            <div id="wLista" style="flex:1;overflow-y:auto;background:rgba(0,0,0,0.2);border:1px solid ${Theme.line};border-radius:8px;padding:6px;"></div>
+                        </div>
+                        <div style="flex:1;display:flex;flex-direction:column;min-width:0;">
+                            <div style="font-size:10px;color:${Theme.textMute};margin-bottom:6px;letter-spacing:0.05em;">HITS RECENTES</div>
+                            <div id="wHits" style="flex:1;overflow-y:auto;background:rgba(0,0,0,0.2);border:1px solid ${Theme.line};border-radius:8px;padding:6px;font-size:10.5px;line-height:1.5;"></div>
+                        </div>
+                    </div>
                 </div>
             </div>
 
             <div id="paneIA" style="display:none;flex-direction:column;flex:1;overflow:hidden;min-height:0;">
                 <div id="iaChat" style="flex:1;overflow-y:auto;padding:14px;display:flex;flex-direction:column;gap:10px;min-height:0;"></div>
-                <div style="padding:8px 12px;background:#0a0a12;border-top:1px solid #1e1e2e;display:flex;gap:6px;flex-wrap:wrap;">
-                    <button class="ia-quick" data-q="seq10" style="background:#13131a;color:#c4b5fd;border:1px solid rgba(168,85,247,0.3);cursor:pointer;padding:5px 10px;border-radius:5px;font-size:10px;font-family:monospace;">Últimos 10</button>
-                    <button class="ia-quick" data-q="exploit" style="background:#13131a;color:#ffb3b3;border:1px solid rgba(239,68,68,0.35);cursor:pointer;padding:5px 10px;border-radius:5px;font-size:10px;font-family:monospace;">Candidatos a exploit</button>
-                    <button class="ia-quick" data-q="anomalias" style="background:#13131a;color:#c4b5fd;border:1px solid rgba(168,85,247,0.3);cursor:pointer;padding:5px 10px;border-radius:5px;font-size:10px;font-family:monospace;">Anomalias</button>
-                    <button class="ia-quick" data-q="resumo" style="background:#13131a;color:#c4b5fd;border:1px solid rgba(168,85,247,0.3);cursor:pointer;padding:5px 10px;border-radius:5px;font-size:10px;font-family:monospace;">Resumir tráfego</button>
+                <div style="padding:8px 12px;background:rgba(0,0,0,0.2);border-top:1px solid ${Theme.line};display:flex;gap:6px;flex-wrap:wrap;">
+                    <button class="ia-quick" data-q="seq10">Últimos 10</button>
+                    <button class="ia-quick" data-q="exploit">Candidatos a exploit</button>
+                    <button class="ia-quick" data-q="anomalias">Anomalias</button>
+                    <button class="ia-quick" data-q="resumo">Resumir tráfego</button>
                 </div>
-                <div style="padding:10px 12px;background:#0a0a12;border-top:1px solid #1e1e2e;display:flex;gap:6px;align-items:flex-end;">
+                <div style="padding:10px 12px;background:rgba(0,0,0,0.2);border-top:1px solid ${Theme.line};display:flex;gap:6px;align-items:flex-end;">
                     <textarea id="iaInput" rows="1" placeholder="Pergunte algo ou descreva o que procura…"
-                        style="flex:1;background:#13131a;color:#e1e1e6;border:1px solid #1e1e2e;
-                        padding:8px 10px;font-size:11.5px;border-radius:6px;outline:none;
+                        style="flex:1;background:rgba(0,0,0,0.25);color:${Theme.text};border:1px solid ${Theme.line};
+                        padding:8px 10px;font-size:11.5px;border-radius:8px;outline:none;
                         font-family:monospace;resize:none;min-height:36px;max-height:100px;
                         box-sizing:border-box;line-height:1.4;"></textarea>
-                    <button id="iaSend" style="background:linear-gradient(135deg,#a855f7,#6c63ff);
-                        color:#fff;border:none;cursor:pointer;padding:8px 16px;border-radius:6px;
-                        font-weight:bold;font-size:11px;font-family:monospace;white-space:nowrap;
-                        transition:all 0.15s;">ENVIAR</button>
+                    <button id="iaSend" class="az-grad-btn">ENVIAR</button>
                 </div>
             </div>
         `;
@@ -1391,11 +1866,11 @@
             pesquisa: el.querySelector('#panePesquisa'),
             ia: el.querySelector('#paneIA')
         };
-        const tabUnderlineCss = 'position:absolute;left:0;right:0;bottom:-1px;height:2px;background:linear-gradient(90deg,#a855f7,#6c63ff);border-radius:2px;';
+        const tabUnderlineCss = `position:absolute;left:12px;right:12px;bottom:-1px;height:2px;background:${Theme.grad};border-radius:2px;`;
         function setActiveTab(name) {
             tabs.forEach(t => {
                 const isActive = t.dataset.tab === name;
-                t.style.color = isActive ? '#e1e1e6' : '#8a8a9a';
+                t.style.color = isActive ? Theme.text : Theme.textMute;
                 let u = t.querySelector('.az-underline');
                 if (isActive && !u) { u = document.createElement('span'); u.className = 'az-underline'; u.style.cssText = tabUnderlineCss; t.appendChild(u); }
                 else if (!isActive && u) u.remove();
@@ -1430,10 +1905,10 @@
         on(btnKill, 'click', () => {
             AppState.killSwitchActive = !AppState.killSwitchActive;
             if (AppState.killSwitchActive) {
-                btnKill.style.background = '#ef4444'; btnKill.style.color = '#fff';
+                btnKill.style.background = Theme.err; btnKill.style.color = '#fff';
                 btnKill.textContent = '🛑 DROP ATIVO';
             } else {
-                btnKill.style.background = '#13131a'; btnKill.style.color = '#ef4444';
+                btnKill.style.background = 'rgba(255,255,255,0.03)'; btnKill.style.color = Theme.err;
                 btnKill.textContent = '⚠️ DROP ALL';
             }
         });
@@ -1444,12 +1919,12 @@
             AppState.isPaused = !AppState.isPaused;
             if (AppState.isPaused) {
                 btnPause.textContent = '▶ CONTINUAR';
-                btnPause.style.color = '#00d4aa';
-                btnPause.style.borderColor = '#00d4aa';
+                btnPause.style.color = Theme.cyan;
+                btnPause.style.borderColor = Theme.cyan;
             } else {
                 btnPause.textContent = '⏸ PAUSAR';
-                btnPause.style.color = '#e1e1e6';
-                btnPause.style.borderColor = '#1e1e2e';
+                btnPause.style.color = Theme.text;
+                btnPause.style.borderColor = Theme.line;
             }
         });
 
@@ -1460,6 +1935,24 @@
             if (AppState.logs.length === 0) return;
             navigator.clipboard.writeText(AppState.logs.map(l => l.rawText).join('\n\n-----------------\n\n'));
         });
+
+        // ─── Rec toggle (na toolbar do LOG) ───
+        const btnRecToggle = el.querySelector('#btnRecToggle');
+        function syncRecBtn() {
+            const on_ = Recorder.gravando;
+            btnRecToggle.textContent = on_ ? '⏹ STOP' : '⏺ REC';
+            btnRecToggle.style.background = on_ ? Theme.err : 'rgba(255,255,255,0.03)';
+            btnRecToggle.style.color = on_ ? '#fff' : Theme.err;
+            btnRecToggle.style.borderColor = on_ ? Theme.err : Theme.line;
+            btnRecToggle.style.fontWeight = on_ ? 'bold' : 'normal';
+        }
+        on(btnRecToggle, 'click', () => {
+            if (Recorder.gravando) Recorder.parar();
+            else Recorder.iniciar();
+            syncRecBtn();
+        });
+        Emitter.on('recorder:changed', syncRecBtn);
+        syncRecBtn();
 
         function refreshVisibility() {
             const q = searchInp.value.toLowerCase();
@@ -1483,9 +1976,9 @@
             const d = document.createElement('div');
             Object.assign(d.style, {
                 display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-                background: '#0a0a12', border: '1px solid #1e1e2e',
+                background: 'rgba(0,0,0,0.25)', border: '1px solid ' + Theme.line,
                 margin: '2px 0', padding: '3px 7px', fontSize: '10px',
-                color: '#b8b8c8', borderRadius: '4px'
+                color: Theme.textDim, borderRadius: '6px'
             });
             const span = document.createElement('span');
             span.textContent = displayVal;
@@ -1501,18 +1994,18 @@
         function renderFilters() {
             const lv = el.querySelector('#listV'); lv.innerHTML = '';
             const ld = el.querySelector('#listD'); ld.innerHTML = '';
-            AppState.blIds.forEach(id => lv.appendChild(createTag('VISUAL', 'REMOVE_ID', id, 'ID ' + id, '#6c63ff')));
-            AppState.blPayloads.forEach(s => lv.appendChild(createTag('VISUAL', 'REMOVE_STR', s, 'HEX ' + s, '#6c63ff')));
-            AppState.dropIds.forEach(id => ld.appendChild(createTag('DROP', 'REMOVE_ID', id, 'ID ' + id, '#ef4444')));
-            AppState.dropPayloads.forEach(s => ld.appendChild(createTag('DROP', 'REMOVE_STR', s, 'HEX ' + s, '#ef4444')));
+            AppState.blIds.forEach(id => lv.appendChild(createTag('VISUAL', 'REMOVE_ID', id, 'ID ' + id, Theme.violet)));
+            AppState.blPayloads.forEach(s => lv.appendChild(createTag('VISUAL', 'REMOVE_STR', s, 'HEX ' + s, Theme.violet)));
+            AppState.dropIds.forEach(id => ld.appendChild(createTag('DROP', 'REMOVE_ID', id, 'ID ' + id, Theme.err)));
+            AppState.dropPayloads.forEach(s => ld.appendChild(createTag('DROP', 'REMOVE_STR', s, 'HEX ' + s, Theme.err)));
             if (!AppState.blIds.size && !AppState.blPayloads.length) {
                 const e = document.createElement('div');
-                e.style.cssText = 'color:#5a5a6a;font-size:10px;text-align:center;padding:14px;font-style:italic;';
+                e.style.cssText = `color:${Theme.textMute};font-size:10px;text-align:center;padding:14px;font-style:italic;`;
                 e.textContent = 'Nenhum filtro — tudo aparece.'; lv.appendChild(e);
             }
             if (!AppState.dropIds.size && !AppState.dropPayloads.length) {
                 const e = document.createElement('div');
-                e.style.cssText = 'color:#5a5a6a;font-size:10px;text-align:center;padding:14px;font-style:italic;';
+                e.style.cssText = `color:${Theme.textMute};font-size:10px;text-align:center;padding:14px;font-style:italic;`;
                 e.textContent = 'Nenhum bloqueio — todo envio passa.'; ld.appendChild(e);
             }
         }
@@ -1532,29 +2025,29 @@
         async function gerarFiltroNL() {
             const desc = nlInput.value.trim();
             if (!desc) return;
-            if (!SangAI.disponivel()) { nlResult.innerHTML = '<span style="color:#ef4444;">⚠ Sang AI não configurada.</span>'; return; }
+            if (!SangAI.disponivel()) { nlResult.innerHTML = `<span style="color:${Theme.err};">⚠ Sang AI não configurada.</span>`; return; }
             if (SangAI._busy) return;
             SangAI._busy = true;
             nlBtn.disabled = true; nlBtn.textContent = '⏳';
-            nlResult.innerHTML = '<span style="color:#8a8a9a;">Consultando SangMax…</span>';
+            nlResult.innerHTML = `<span style="color:${Theme.textMute};">Consultando SangMax…</span>`;
             try {
                 const amostras = AppState.logs.slice(-15).map(l => l.packet);
                 const r = await SangAI.criarFiltroLinguagemNatural(desc, amostras);
                 if (!r.ids.length && !r.strings.length) {
-                    nlResult.innerHTML = '<span style="color:#f5b942;">⚠ Não consegui extrair filtros concretos.</span>' + (r.motivo ? `<br><span style="color:#8a8a9a;">${esc(r.motivo)}</span>` : '');
+                    nlResult.innerHTML = `<span style="color:${Theme.warn};">⚠ Não consegui extrair filtros concretos.</span>` + (r.motivo ? `<br><span style="color:${Theme.textMute};">${esc(r.motivo)}</span>` : '');
                     return;
                 }
                 r.ids.forEach(id => PacketFilter.manageList('VISUAL', 'ADD_ID', String(id)));
                 r.strings.forEach(s => PacketFilter.manageList('VISUAL', 'ADD_STR', s));
                 renderFilters();
                 nlResult.innerHTML =
-                    `<span style="color:#00d4aa;">✓ Aplicado em OCULTAR DO LOG</span>` +
-                    (r.motivo ? `<br><span style="color:#8a8a9a;">${esc(r.motivo)}</span>` : '') +
-                    (r.ids.length ? `<br><span style="color:#6c63ff;">IDs: ${r.ids.join(', ')}</span>` : '') +
-                    (r.strings.length ? `<br><span style="color:#6c63ff;">Strings: ${esc(r.strings.join(', '))}</span>` : '');
+                    `<span style="color:${Theme.ok};">✓ Aplicado em OCULTAR DO LOG</span>` +
+                    (r.motivo ? `<br><span style="color:${Theme.textMute};">${esc(r.motivo)}</span>` : '') +
+                    (r.ids.length ? `<br><span style="color:${Theme.violet};">IDs: ${r.ids.join(', ')}</span>` : '') +
+                    (r.strings.length ? `<br><span style="color:${Theme.violet};">Strings: ${esc(r.strings.join(', '))}</span>` : '');
                 nlInput.value = '';
             } catch (e) {
-                nlResult.innerHTML = `<span style="color:#ef4444;">Erro: ${esc(e.message || e)}</span>`;
+                nlResult.innerHTML = `<span style="color:${Theme.err};">Erro: ${esc(e.message || e)}</span>`;
             } finally {
                 SangAI._busy = false; nlBtn.disabled = false; nlBtn.textContent = 'GERAR';
             }
@@ -1578,6 +2071,7 @@
                 '• **Analisar os últimos N pacotes** — botão "Últimos 10"\n' +
                 '• **Apontar candidatos a exploit** — botão "Candidatos a exploit"\n' +
                 '• **Sugerir filtros** com base no tráfego\n' +
+                '• **Gerar regras de Watcher** automaticamente\n' +
                 '• **Responder perguntas** sobre IDs, campos e padrões do protocolo\n\n' +
                 'Pergunta à vontade.'
             );
@@ -1590,25 +2084,26 @@
             const div = document.createElement('div');
             div.style.cssText = 'max-width:88%;padding:10px 14px;border-radius:12px;font-size:12px;line-height:1.55;white-space:pre-wrap;word-wrap:break-word;animation:iaMsgIn 0.28s cubic-bezier(0.34,1.56,0.64,1);';
             if (tipo === 'user') {
-                div.style.background = 'linear-gradient(135deg,#6c63ff,#a855f7)';
-                div.style.color = '#fff';
+                div.style.background = Theme.grad;
+                div.style.color = '#0b0b10';
                 div.style.alignSelf = 'flex-end';
                 div.style.borderBottomRightRadius = '4px';
+                div.style.fontWeight = '600';
             } else if (tipo === 'ia') {
-                div.style.background = 'rgba(168,85,247,0.08)';
-                div.style.border = '1px solid rgba(168,85,247,0.2)';
+                div.style.background = 'rgba(167,139,250,0.08)';
+                div.style.border = '1px solid rgba(167,139,250,0.2)';
                 div.style.color = '#e9d5ff';
                 div.style.alignSelf = 'flex-start';
                 div.style.borderBottomLeftRadius = '4px';
             } else if (tipo === 'erro') {
-                div.style.background = 'rgba(239,68,68,0.08)';
-                div.style.border = '1px solid rgba(239,68,68,0.25)';
-                div.style.color = '#fca5a5';
+                div.style.background = 'rgba(251,113,133,0.08)';
+                div.style.border = '1px solid rgba(251,113,133,0.25)';
+                div.style.color = '#fecdd3';
                 div.style.alignSelf = 'center';
                 div.style.fontSize = '11px';
             } else if (tipo === 'sys') {
                 div.style.background = 'rgba(255,255,255,0.03)';
-                div.style.color = '#8a7aa8';
+                div.style.color = Theme.textMute;
                 div.style.alignSelf = 'center';
                 div.style.fontSize = '10.5px';
                 div.style.fontStyle = 'italic';
@@ -1617,7 +2112,7 @@
             }
             const html = esc(texto)
                 .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-                .replace(/`([^`]+)`/g, '<code style="background:rgba(168,85,247,0.15);padding:1px 5px;border-radius:4px;font-size:11px;color:#e9d5ff;">$1</code>');
+                .replace(/`([^`]+)`/g, `<code style="background:rgba(167,139,250,0.15);padding:1px 5px;border-radius:4px;font-size:11px;color:#e9d5ff;">$1</code>`);
             div.innerHTML = html;
             iaChat.appendChild(div);
             iaChat.scrollTop = iaChat.scrollHeight;
@@ -1626,7 +2121,7 @@
 
         function iaAddLoading(texto) {
             const div = document.createElement('div');
-            div.style.cssText = 'align-self:flex-start;background:rgba(168,85,247,0.08);border:1px solid rgba(168,85,247,0.2);border-radius:12px;border-bottom-left-radius:4px;padding:11px 16px;display:flex;align-items:center;gap:8px;animation:iaMsgIn 0.28s;font-size:11px;color:#c4b5fd;';
+            div.style.cssText = `align-self:flex-start;background:rgba(167,139,250,0.08);border:1px solid rgba(167,139,250,0.2);border-radius:12px;border-bottom-left-radius:4px;padding:11px 16px;display:flex;align-items:center;gap:8px;animation:iaMsgIn 0.28s;font-size:11px;color:#c4b5fd;`;
             div.innerHTML = `<span class="ia-dot"></span><span class="ia-dot"></span><span class="ia-dot"></span><span style="margin-left:6px;">${esc(texto || 'pensando…')}</span>`;
             iaChat.appendChild(div);
             iaChat.scrollTop = iaChat.scrollHeight;
@@ -1710,12 +2205,12 @@
             const btn = document.createElement('button');
             btn.textContent = '↗'; btn.title = 'Enviar pro Sender';
             Object.assign(btn.style, {
-                background: '#6c63ff', color: '#fff', border: 'none',
+                background: Theme.violet, color: '#0b0b10', border: 'none',
                 cursor: 'pointer', padding: '2px 8px', marginLeft: '4px',
                 fontSize: '11px', fontWeight: 'bold', borderRadius: '4px', transition: 'background 0.15s'
             });
-            on(btn, 'mouseenter', () => { btn.style.background = '#7d74ff'; });
-            on(btn, 'mouseleave', () => { btn.style.background = '#6c63ff'; });
+            on(btn, 'mouseenter', () => { btn.style.background = '#b8a3ff'; });
+            on(btn, 'mouseleave', () => { btn.style.background = Theme.violet; });
             on(btn, 'click', (e) => { e.stopPropagation(); if (SenderRef.fill) SenderRef.fill(packet.header, packet.payloadHex); });
             return btn;
         }
@@ -1725,7 +2220,7 @@
             const btn = document.createElement('button');
             btn.textContent = '🧠'; btn.title = 'Explicar com Sang AI';
             Object.assign(btn.style, {
-                background: 'linear-gradient(135deg,#a855f7,#6c63ff)', color: '#fff', border: 'none',
+                background: Theme.grad, color: '#0b0b10', border: 'none',
                 cursor: 'pointer', padding: '2px 8px', marginLeft: '4px',
                 fontSize: '11px', fontWeight: 'bold', borderRadius: '4px'
             });
@@ -1739,7 +2234,7 @@
                 if (info) info.remove();
                 info = document.createElement('div');
                 info.className = 'ai-info';
-                info.style.cssText = 'margin-top:8px;padding:9px 12px;background:rgba(168,85,247,0.08);border-left:3px solid #a855f7;border-radius:0 6px 6px 0;color:#c4b5fd;font-size:0.9em;line-height:1.55;font-style:italic;';
+                info.style.cssText = 'margin-top:8px;padding:9px 12px;background:rgba(167,139,250,0.08);border-left:3px solid ' + Theme.violet + ';border-radius:0 6px 6px 0;color:#c4b5fd;font-size:0.9em;line-height:1.55;font-style:italic;';
                 info.textContent = 'Sang AI analisando…';
                 container.appendChild(info);
                 try {
@@ -1747,9 +2242,9 @@
                     info.style.fontStyle = 'normal';
                     info.textContent = analise;
                 } catch (err) {
-                    info.style.background = 'rgba(239,68,68,0.08)';
-                    info.style.borderLeftColor = '#ef4444';
-                    info.style.color = '#fca5a5';
+                    info.style.background = 'rgba(251,113,133,0.08)';
+                    info.style.borderLeftColor = Theme.err;
+                    info.style.color = '#fecdd3';
                     info.style.fontStyle = 'normal';
                     info.textContent = '⚠ ' + (err.message || err);
                 } finally {
@@ -1774,7 +2269,7 @@
             const expandBtn = document.createElement('button');
             expandBtn.textContent = `Mostrar tudo (${byteLength} bytes)`;
             Object.assign(expandBtn.style, {
-                background: '#1e1e2e', color: '#6c63ff', border: '1px solid #6c63ff',
+                background: 'rgba(255,255,255,0.04)', color: Theme.violet, border: '1px solid ' + Theme.violet,
                 cursor: 'pointer', padding: '2px 8px', fontSize: '10px',
                 borderRadius: '4px', fontFamily: 'monospace', marginTop: '4px'
             });
@@ -1802,23 +2297,23 @@
             atualizarDicionario(packet);
 
             let borderColor, idColor, dirLabel;
-            if (isDropped) { borderColor = '#ef4444'; idColor = '#ef4444'; dirLabel = '❌ DROP'; }
-            else if (dir === 'SEND') { borderColor = '#00d4aa'; idColor = '#00d4aa'; dirLabel = '➡ SEND'; }
-            else { borderColor = '#6c63ff'; idColor = '#6c63ff'; dirLabel = '⬅ RECV'; }
+            if (isDropped) { borderColor = Theme.err; idColor = Theme.err; dirLabel = '❌ DROP'; }
+            else if (dir === 'SEND') { borderColor = Theme.cyan; idColor = Theme.cyan; dirLabel = '➡ SEND'; }
+            else { borderColor = Theme.violet; idColor = Theme.violet; dirLabel = '⬅ RECV'; }
 
             const nomePktRaw = PacketNames.nome(packet.header, dir);
             const rawText = `${time} | Pacote #${id}\n${dirLabel} ID: ${packet.header}${nomePktRaw ? ' (' + nomePktRaw + ')' : ''} | ${packet.byteLength} bytes\n${packet.fullHex}\n${packet.ascii}`;
 
             const item = document.createElement('div');
-            item.style.cssText = `border-left:3px solid ${borderColor};background:#13131a;border-radius:0 6px 6px 0;margin-bottom:8px;padding:9px 11px;animation:iaMsgIn 0.22s ease-out;`;
+            item.style.cssText = `border-left:3px solid ${borderColor};background:rgba(255,255,255,0.02);border-radius:0 8px 8px 0;margin-bottom:8px;padding:9px 11px;animation:iaMsgIn 0.22s ease-out;`;
 
             const top = document.createElement('div');
             top.style.cssText = 'display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:6px;flex-wrap:wrap;';
             const left = document.createElement('div');
-            left.style.cssText = 'display:flex;align-items:center;gap:6px;font-size:0.85em;color:#8a8a9a;flex-wrap:wrap;';
+            left.style.cssText = `display:flex;align-items:center;gap:6px;font-size:0.85em;color:${Theme.textMute};flex-wrap:wrap;`;
             const numBadge = document.createElement('span');
             numBadge.textContent = '#' + id;
-            numBadge.style.cssText = 'background:#1e1e2e;color:#8a8a9a;padding:1px 6px;border-radius:4px;font-size:0.9em;';
+            numBadge.style.cssText = 'background:rgba(255,255,255,0.06);color:' + Theme.textMute + ';padding:1px 6px;border-radius:4px;font-size:0.9em;';
             left.appendChild(numBadge);
             const timeSpan = document.createElement('span');
             timeSpan.textContent = time;
@@ -1826,7 +2321,7 @@
             if (isDropped) {
                 const db = document.createElement('span');
                 db.textContent = 'DROPPED';
-                db.style.cssText = 'background:rgba(239,68,68,0.15);color:#ef4444;padding:1px 6px;border-radius:4px;font-weight:bold;font-size:0.9em;';
+                db.style.cssText = 'background:rgba(251,113,133,0.15);color:' + Theme.err + ';padding:1px 6px;border-radius:4px;font-weight:bold;font-size:0.9em;';
                 left.appendChild(db);
             }
             top.appendChild(left);
@@ -1837,12 +2332,12 @@
             const copyBtn = document.createElement('button');
             copyBtn.textContent = '📋'; copyBtn.title = 'Copiar';
             Object.assign(copyBtn.style, {
-                background: '#1e1e2e', color: '#8a8a9a', border: '1px solid #1e1e2e',
+                background: 'rgba(255,255,255,0.04)', color: Theme.textMute, border: '1px solid ' + Theme.line,
                 cursor: 'pointer', fontSize: '11px', padding: '2px 8px',
                 borderRadius: '4px', fontFamily: 'monospace', transition: 'all 0.15s'
             });
-            on(copyBtn, 'mouseenter', () => { copyBtn.style.background = '#2a2a3e'; copyBtn.style.color = '#e1e1e6'; });
-            on(copyBtn, 'mouseleave', () => { copyBtn.style.background = '#1e1e2e'; copyBtn.style.color = '#8a8a9a'; });
+            on(copyBtn, 'mouseenter', () => { copyBtn.style.background = 'rgba(255,255,255,0.08)'; copyBtn.style.color = Theme.text; });
+            on(copyBtn, 'mouseleave', () => { copyBtn.style.background = 'rgba(255,255,255,0.04)'; copyBtn.style.color = Theme.textMute; });
             on(copyBtn, 'click', () => { navigator.clipboard.writeText(rawText); });
             right.appendChild(copyBtn);
             top.appendChild(right);
@@ -1853,7 +2348,7 @@
             const idLine = document.createElement('div');
             idLine.style.cssText = `color:${idColor};font-weight:bold;font-size:0.95em;`;
             idLine.innerHTML = `${dirLabel} · ID ${packet.header}` +
-                (nomePktRaw ? ` <span style="color:#8a8a9a;font-weight:normal;font-size:0.9em;">(${esc(nomePktRaw)})</span>` : '') +
+                (nomePktRaw ? ` <span style="color:${Theme.textMute};font-weight:normal;font-size:0.9em;">(${esc(nomePktRaw)})</span>` : '') +
                 ` · ${packet.byteLength} bytes`;
             idWrap.appendChild(idLine);
             const analyzeBtn = createAnalyzeButton(packet, item);
@@ -1866,7 +2361,7 @@
             item.appendChild(hexWrap);
 
             const asciiDiv = document.createElement('div');
-            asciiDiv.style.cssText = 'color:#6a6a7a;font-size:0.9em;font-style:italic;';
+            asciiDiv.style.cssText = `color:${Theme.textMute};font-size:0.9em;font-style:italic;`;
             asciiDiv.textContent = packet.ascii || '(binário)';
             item.appendChild(asciiDiv);
 
@@ -1896,12 +2391,16 @@
             notebook: el.querySelector('#pesqNotebook'),
             correlacao: el.querySelector('#pesqCorrelacao'),
             fuzz: el.querySelector('#pesqFuzz'),
-            race: el.querySelector('#pesqRace')
+            race: el.querySelector('#pesqRace'),
+            recorder: el.querySelector('#pesqRecorder'),
+            replay: el.querySelector('#pesqReplay'),
+            diff: el.querySelector('#pesqDiff'),
+            watchers: el.querySelector('#pesqWatchers')
         };
         function setActivePesqTab(name) {
             pesqTabs.forEach(t => {
                 const ativo = t.dataset.ptab === name;
-                t.style.color = ativo ? '#e1e1e6' : '#8a8a9a';
+                t.style.color = ativo ? Theme.text : Theme.textMute;
                 let u = t.querySelector('.az-underline');
                 if (ativo && !u) { u = document.createElement('span'); u.className = 'az-underline'; u.style.cssText = tabUnderlineCss; t.appendChild(u); }
                 else if (!ativo && u) u.remove();
@@ -1909,6 +2408,10 @@
             Object.keys(pesqPanes).forEach(k => { pesqPanes[k].style.display = (k === name) ? 'flex' : 'none'; });
             if (name === 'notebook') pesquisarRender();
             if (name === 'correlacao') correlacaoRender();
+            if (name === 'recorder') recorderRender();
+            if (name === 'replay') replayRender();
+            if (name === 'diff') diffRender();
+            if (name === 'watchers') watchersRender();
         }
         pesqTabs.forEach(t => on(t, 'click', () => setActivePesqTab(t.dataset.ptab)));
 
@@ -1920,7 +2423,7 @@
             container.innerHTML = '';
             if (!lista.length) {
                 const vazio = document.createElement('div');
-                vazio.style.cssText = 'color:#5a5a6a;font-size:11px;text-align:center;padding:24px;font-style:italic;';
+                vazio.style.cssText = `color:${Theme.textMute};font-size:11px;text-align:center;padding:24px;font-style:italic;`;
                 vazio.textContent = 'Notebook vazio. Clique no 🧠 de um pacote no log pra começar.';
                 container.appendChild(vazio);
                 return;
@@ -1928,7 +2431,7 @@
             lista.forEach(entry => {
                 const nome = entry.nome || PacketNames.nome(entry.id, 'SEND') || PacketNames.nome(entry.id, 'RECV') || '?';
                 const div = document.createElement('div');
-                div.style.cssText = 'background:#13131a;border:1px solid #1e1e2e;border-radius:8px;padding:10px 12px;margin-bottom:8px;';
+                div.style.cssText = 'background:rgba(255,255,255,0.025);border:1px solid ' + Theme.line + ';border-radius:10px;padding:10px 12px;margin-bottom:8px;';
                 const hipoteses = (entry.hipoteses || []);
                 const resultados = (entry.resultados || []);
                 const notas = (entry.notas || []);
@@ -1936,36 +2439,36 @@
                 div.innerHTML = `
                     <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px;">
                         <div style="display:flex;align-items:center;gap:8px;">
-                            <span style="background:#1e1e2e;color:#a855f7;padding:2px 8px;border-radius:4px;font-weight:bold;font-size:11px;">ID ${entry.id}</span>
-                            <span style="color:#e1e1e6;font-weight:bold;font-size:11.5px;">${esc(nome)}</span>
+                            <span style="background:rgba(167,139,250,0.15);color:${Theme.violet};padding:2px 8px;border-radius:4px;font-weight:bold;font-size:11px;">ID ${entry.id}</span>
+                            <span style="color:${Theme.text};font-weight:bold;font-size:11.5px;">${esc(nome)}</span>
                         </div>
-                        <button class="nb-del" style="background:transparent;color:#ef4444;border:none;cursor:pointer;font-size:12px;">✕</button>
+                        <button class="nb-del" style="background:transparent;color:${Theme.err};border:none;cursor:pointer;font-size:12px;">✕</button>
                     </div>
-                    <div style="font-size:10px;color:#6a6a7a;margin-bottom:6px;">
+                    <div style="font-size:10px;color:${Theme.textMute};margin-bottom:6px;">
                         ${hipoteses.length} hipóteses · ${resultados.length} resultados · ${notas.length} notas
                         · atualizado ${new Date(entry.atualizado || entry.criado).toLocaleString('pt-BR')}
                     </div>
                     ${analise ? `
-                        <div style="background:rgba(168,85,247,0.06);border-left:2px solid #a855f7;padding:6px 10px;border-radius:0 4px 4px 0;font-size:10.5px;color:#c4b5fd;line-height:1.5;margin-bottom:6px;white-space:pre-wrap;">
+                        <div style="background:rgba(167,139,250,0.06);border-left:2px solid ${Theme.violet};padding:6px 10px;border-radius:0 4px 4px 0;font-size:10.5px;color:#c4b5fd;line-height:1.5;margin-bottom:6px;white-space:pre-wrap;">
                             ${esc(analise.slice(0, 400))}${analise.length > 400 ? '…' : ''}
                         </div>
                     ` : ''}
-                    <div class="nb-hipoteses" style="font-size:10.5px;color:#8a8a9a;margin-bottom:4px;"></div>
-                    <div class="nb-notas" style="font-size:10.5px;color:#8a8a9a;"></div>
+                    <div class="nb-hipoteses" style="font-size:10.5px;color:${Theme.textDim};margin-bottom:4px;"></div>
+                    <div class="nb-notas" style="font-size:10.5px;color:${Theme.textDim};"></div>
                     <div style="display:flex;gap:4px;margin-top:8px;">
-                        <input class="nb-input-hip" type="text" placeholder="adicionar hipótese…" style="flex:1;background:#0a0a12;color:#e1e1e6;border:1px solid #1e1e2e;padding:5px 8px;border-radius:4px;font-size:10.5px;font-family:monospace;outline:none;min-width:0;box-sizing:border-box;">
-                        <button class="nb-add-hip" style="background:#13131a;color:#a855f7;border:1px solid #a855f7;cursor:pointer;padding:5px 10px;border-radius:4px;font-size:10.5px;">+ hip</button>
-                        <button class="nb-add-nota" style="background:#13131a;color:#00d4aa;border:1px solid #00d4aa;cursor:pointer;padding:5px 10px;border-radius:4px;font-size:10.5px;">+ nota</button>
+                        <input class="nb-input-hip" type="text" placeholder="adicionar hipótese…" style="flex:1;background:rgba(0,0,0,0.25);color:${Theme.text};border:1px solid ${Theme.line};padding:5px 8px;border-radius:5px;font-size:10.5px;font-family:monospace;outline:none;min-width:0;box-sizing:border-box;">
+                        <button class="nb-add-hip az-mini" style="color:${Theme.violet};border-color:${Theme.violet};">+ hip</button>
+                        <button class="nb-add-nota az-mini" style="color:${Theme.cyan};border-color:${Theme.cyan};">+ nota</button>
                     </div>
                 `;
                 const hipEl = div.querySelector('.nb-hipoteses');
                 if (hipoteses.length) {
-                    hipEl.innerHTML = '<div style="color:#a855f7;font-weight:bold;margin-bottom:3px;">Hipóteses:</div>' +
-                        hipoteses.map(h => `<div style="padding-left:8px;">• ${esc(h.texto)}${h.testada ? ' <span style="color:#00d4aa;">[testada]</span>' : ''}</div>`).join('');
+                    hipEl.innerHTML = `<div style="color:${Theme.violet};font-weight:bold;margin-bottom:3px;">Hipóteses:</div>` +
+                        hipoteses.map(h => `<div style="padding-left:8px;">• ${esc(h.texto)}${h.testada ? ` <span style="color:${Theme.ok};">[testada]</span>` : ''}</div>`).join('');
                 }
                 const notaEl = div.querySelector('.nb-notas');
                 if (notas.length) {
-                    notaEl.innerHTML = '<div style="color:#00d4aa;font-weight:bold;margin-bottom:3px;margin-top:6px;">Notas:</div>' +
+                    notaEl.innerHTML = `<div style="color:${Theme.cyan};font-weight:bold;margin-bottom:3px;margin-top:6px;">Notas:</div>` +
                         notas.map(n => `<div style="padding-left:8px;">• ${esc(n.texto)}</div>`).join('');
                 }
                 const inp = div.querySelector('.nb-input-hip');
@@ -2033,40 +2536,39 @@
             const suspeitos = Correlator.suspeitos();
             const pares = Correlator._pares || {};
             const totalPares = Object.keys(pares).length;
-
             el.querySelector('#corrCounter').textContent = totalPares + ' OUTs mapeados';
 
             let html = '';
-            html += '<div style="background:linear-gradient(135deg,rgba(239,68,68,0.08),rgba(168,85,247,0.04));border:1px solid rgba(239,68,68,0.25);border-radius:8px;padding:12px;margin-bottom:14px;">';
-            html += '<div style="color:#ffb3b3;font-weight:bold;font-size:11.5px;margin-bottom:8px;letter-spacing:0.04em;">⚠ OUTS SEM RESPOSTA CONSISTENTE</div>';
-            html += '<div style="font-size:10px;color:#6a6a7a;margin-bottom:8px;line-height:1.5;">Enviados com frequência mas raramente geram resposta do servidor. Candidatos fortes a exploit — o cliente age sem validação.</div>';
+            html += `<div style="background:linear-gradient(135deg,rgba(251,113,133,0.08),rgba(167,139,250,0.04));border:1px solid rgba(251,113,133,0.25);border-radius:10px;padding:12px;margin-bottom:14px;">`;
+            html += `<div style="color:${Theme.err};font-weight:bold;font-size:11.5px;margin-bottom:8px;letter-spacing:0.04em;">⚠ OUTS SEM RESPOSTA CONSISTENTE</div>`;
+            html += `<div style="font-size:10px;color:${Theme.textMute};margin-bottom:8px;line-height:1.5;">Enviados com frequência mas raramente geram resposta do servidor. Candidatos fortes a exploit — o cliente age sem validação.</div>`;
             if (!suspeitos.length) {
-                html += '<div style="color:#5a5a6a;font-size:10.5px;font-style:italic;">Nenhum suspeito ainda. Precisa de mais tráfego.</div>';
+                html += `<div style="color:${Theme.textMute};font-size:10.5px;font-style:italic;">Nenhum suspeito ainda. Precisa de mais tráfego.</div>`;
             } else {
                 html += '<div style="display:flex;flex-direction:column;gap:4px;">';
                 suspeitos.slice(0, 12).forEach(s => {
-                    html += `<div style="background:#0a0a12;border:1px solid #1e1e2e;border-radius:6px;padding:7px 10px;font-size:11px;display:flex;justify-content:space-between;align-items:center;gap:8px;">
-                        <span style="color:#e1e1e6;font-weight:bold;">${esc(s.outNome)} <span style="color:#6a6a7a;font-weight:normal;">(ID ${s.outId})</span></span>
-                        <span style="color:#ffb3b3;font-size:10px;">${s.enviados} env · ${s.respostas} resp · <strong>${s.taxa}%</strong></span>
+                    html += `<div style="background:rgba(0,0,0,0.25);border:1px solid ${Theme.line};border-radius:8px;padding:7px 10px;font-size:11px;display:flex;justify-content:space-between;align-items:center;gap:8px;">
+                        <span style="color:${Theme.text};font-weight:bold;">${esc(s.outNome)} <span style="color:${Theme.textMute};font-weight:normal;">(ID ${s.outId})</span></span>
+                        <span style="color:${Theme.err};font-size:10px;">${s.enviados} env · ${s.respostas} resp · <strong>${s.taxa}%</strong></span>
                     </div>`;
                 });
                 html += '</div>';
             }
             html += '</div>';
 
-            html += '<div style="background:#13131a;border:1px solid #1e1e2e;border-radius:8px;padding:12px;">';
-            html += '<div style="color:#6c63ff;font-weight:bold;font-size:11.5px;margin-bottom:8px;letter-spacing:0.04em;">🔗 RESPOSTAS CONHECIDAS</div>';
+            html += `<div style="background:rgba(255,255,255,0.02);border:1px solid ${Theme.line};border-radius:10px;padding:12px;">`;
+            html += `<div style="color:${Theme.violet};font-weight:bold;font-size:11.5px;margin-bottom:8px;letter-spacing:0.04em;">🔗 RESPOSTAS CONHECIDAS</div>`;
             const outs = Object.keys(pares).map(Number).sort((a, b) => a - b);
             if (!outs.length) {
-                html += '<div style="color:#5a5a6a;font-size:10.5px;font-style:italic;">Sem correlações ainda. Envie pacotes pelo Sender e observe.</div>';
+                html += `<div style="color:${Theme.textMute};font-size:10.5px;font-style:italic;">Sem correlações ainda. Envie pacotes pelo Sender e observe.</div>`;
             } else {
                 html += '<div style="display:flex;flex-direction:column;gap:5px;">';
                 outs.slice(0, 50).forEach(outId => {
                     const respostas = Correlator.respostasDe(outId);
                     const outNome = PacketNames.nome(outId, 'SEND') || '?';
-                    html += `<div style="background:#0a0a12;border:1px solid #1e1e2e;border-radius:6px;padding:7px 10px;font-size:11px;">
-                        <div style="color:#e1e1e6;font-weight:bold;margin-bottom:3px;">OUT.${esc(outNome)} <span style="color:#6a6a7a;font-weight:normal;">(ID ${outId})</span></div>
-                        <div style="color:#8a8a9a;font-size:10px;padding-left:8px;">
+                    html += `<div style="background:rgba(0,0,0,0.25);border:1px solid ${Theme.line};border-radius:8px;padding:7px 10px;font-size:11px;">
+                        <div style="color:${Theme.text};font-weight:bold;margin-bottom:3px;">OUT.${esc(outNome)} <span style="color:${Theme.textMute};font-weight:normal;">(ID ${outId})</span></div>
+                        <div style="color:${Theme.textDim};font-size:10px;padding-left:8px;">
                             ${respostas.slice(0, 5).map(r => `→ ${esc(r.inNome || String(r.inId))} ×${r.count}`).join('<br>')}
                         </div>
                     </div>`;
@@ -2086,7 +2588,7 @@
         // ─── Fuzz UI ───
         const fuzzLogEl = el.querySelector('#fuzzLog');
         function fuzzLog(msg, tipo) {
-            const cor = tipo === 'erro' ? '#ef4444' : tipo === 'ok' ? '#00d4aa' : tipo === 'aviso' ? '#f5b942' : tipo === 'envio' ? '#8a8a9a' : '#e1e1e6';
+            const cor = tipo === 'erro' ? Theme.err : tipo === 'ok' ? Theme.ok : tipo === 'aviso' ? Theme.warn : tipo === 'envio' ? Theme.textMute : Theme.text;
             const div = document.createElement('div');
             div.style.cssText = `color:${cor};margin-bottom:3px;padding-left:8px;border-left:2px solid ${cor}40;`;
             div.textContent = msg;
@@ -2119,10 +2621,9 @@
         const raceLogEl = el.querySelector('#raceLog');
         const raceListaEl = el.querySelector('#raceLista');
         const raceFila = [];
-
         function raceLog(msg, cor) {
             const div = document.createElement('div');
-            div.style.cssText = `color:${cor || '#e1e1e6'};margin-bottom:3px;padding-left:8px;border-left:2px solid ${(cor || '#e1e1e6')}40;`;
+            div.style.cssText = `color:${cor || Theme.text};margin-bottom:3px;padding-left:8px;border-left:2px solid ${(cor || Theme.text)}40;`;
             div.textContent = msg;
             raceLogEl.appendChild(div);
             raceLogEl.scrollTop = raceLogEl.scrollHeight;
@@ -2131,22 +2632,22 @@
             raceListaEl.innerHTML = '';
             if (!raceFila.length) {
                 const vazio = document.createElement('div');
-                vazio.style.cssText = 'color:#5a5a6a;font-size:10.5px;text-align:center;padding:12px;font-style:italic;';
+                vazio.style.cssText = `color:${Theme.textMute};font-size:10.5px;text-align:center;padding:12px;font-style:italic;`;
                 vazio.textContent = 'Fila vazia. Adicione pacotes acima.';
                 raceListaEl.appendChild(vazio);
                 return;
             }
             raceFila.forEach((p, i) => {
                 const linha = document.createElement('div');
-                linha.style.cssText = 'display:flex;justify-content:space-between;align-items:center;padding:4px 6px;background:#0a0a12;border-radius:4px;margin-bottom:3px;';
+                linha.style.cssText = 'display:flex;justify-content:space-between;align-items:center;padding:4px 6px;background:rgba(0,0,0,0.25);border-radius:5px;margin-bottom:3px;';
                 const nome = PacketNames.nome(p.id, 'SEND') || '?';
                 const span = document.createElement('span');
-                span.style.color = '#e1e1e6';
+                span.style.color = Theme.text;
                 span.textContent = `${i+1}. ${nome} (ID ${p.id})${p.hex ? ' — ' + p.hex.slice(0, 40) : ''}`;
                 linha.appendChild(span);
                 const rm = document.createElement('button');
                 rm.textContent = '✕';
-                rm.style.cssText = 'background:transparent;color:#ef4444;border:none;cursor:pointer;padding:0 4px;';
+                rm.style.cssText = `background:transparent;color:${Theme.err};border:none;cursor:pointer;padding:0 4px;`;
                 rm.addEventListener('click', () => { raceFila.splice(i, 1); raceRender(); });
                 linha.appendChild(rm);
                 raceListaEl.appendChild(linha);
@@ -2163,27 +2664,27 @@
             raceRender();
         });
         on(el.querySelector('#raceEnviar'), 'click', async () => {
-            if (!raceFila.length) { raceLog('Fila vazia.', '#ef4444'); return; }
+            if (!raceFila.length) { raceLog('Fila vazia.', Theme.err); return; }
             raceLogEl.innerHTML = '';
-            raceLog(`Enviando ${raceFila.length} pacotes no mesmo tick…`, '#6c63ff');
+            raceLog(`Enviando ${raceFila.length} pacotes no mesmo tick…`, Theme.violet);
             try {
                 const r = await RaceTester.enviarSimultaneo(raceFila);
                 r.enviados.forEach((p, i) => {
                     const nome = PacketNames.nome(p.id, 'SEND') || '?';
-                    raceLog(`➡ ${i+1}. ${nome} (ID ${p.id})`, '#00d4aa');
+                    raceLog(`➡ ${i+1}. ${nome} (ID ${p.id})`, Theme.ok);
                 });
                 const respostas = Object.entries(r.respostas);
                 if (!respostas.length) {
-                    raceLog('⚠ Nenhuma resposta do servidor. Suspeito — pode ter processado em lote ou ignorado.', '#f5b942');
+                    raceLog('⚠ Nenhuma resposta do servidor. Suspeito — pode ter processado em lote ou ignorado.', Theme.warn);
                 } else {
                     respostas.forEach(([inId, count]) => {
                         const nome = PacketNames.nome(Number(inId), 'RECV') || '?';
-                        raceLog(`⬅ ${nome} (ID ${inId}) ×${count}`, '#6c63ff');
+                        raceLog(`⬅ ${nome} (ID ${inId}) ×${count}`, Theme.violet);
                     });
-                    raceLog('✓ Teste concluído. Mais respostas que o normal pode indicar processamento duplo.', '#00d4aa');
+                    raceLog('✓ Teste concluído. Mais respostas que o normal pode indicar processamento duplo.', Theme.ok);
                 }
             } catch (e) {
-                raceLog('Erro: ' + (e.message || e), '#ef4444');
+                raceLog('Erro: ' + (e.message || e), Theme.err);
             }
         });
         on(el.querySelector('#raceLimpar'), 'click', () => {
@@ -2192,7 +2693,293 @@
         });
         raceRender();
 
-        // ─── Pesquisa: init único + wiring de emissores ───
+        // ─── Recorder UI ───
+        const recPreview = el.querySelector('#recPreview');
+        const recCounter = el.querySelector('#recCounter');
+        function recorderRender() {
+            const evs = Recorder.eventos;
+            recCounter.textContent = evs.length + ' eventos' + (Recorder.gravando ? ' · 🔴 gravando' : '');
+            if (!evs.length) {
+                recPreview.innerHTML = `<div style="color:${Theme.textMute};font-size:11px;text-align:center;padding:24px;font-style:italic;">Nenhuma gravação. Clique em ⏺ GRAVAR para começar.</div>`;
+                return;
+            }
+            const linhas = evs.slice(-300).map(ev => {
+                const nome = PacketNames.nome(ev.header, ev.dir) || '?';
+                const cor = ev.dir === 'SEND' ? Theme.cyan : Theme.violet;
+                const tRel = ev.t - Recorder._inicio;
+                return `<div style="color:${cor};padding:2px 8px;border-left:2px solid ${cor}40;margin-bottom:2px;">
+                    [+${(tRel/1000).toFixed(2)}s] ${ev.dir === 'SEND' ? '➡' : '⬅'} ${nome} (${ev.header}) · ${ev.byteLength}b · ${esc(ev.payloadHex.slice(0, 70))}${ev.payloadHex.length > 70 ? '…' : ''}
+                </div>`;
+            }).join('');
+            recPreview.innerHTML = linhas;
+            recPreview.scrollTop = recPreview.scrollHeight;
+        }
+        on(el.querySelector('#recIniciar'), 'click', () => {
+            Recorder.iniciar();
+            el.querySelector('#recIniciar').style.display = 'none';
+            el.querySelector('#recParar').style.display = 'inline-block';
+            recorderRender();
+        });
+        on(el.querySelector('#recParar'), 'click', () => {
+            Recorder.parar();
+            el.querySelector('#recIniciar').style.display = 'inline-block';
+            el.querySelector('#recParar').style.display = 'none';
+            recorderRender();
+            replayRender();
+        });
+        on(el.querySelector('#recExportar'), 'click', () => {
+            const json = Recorder.exportar();
+            const blob = new Blob([json], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'sang-rec-' + new Date().toISOString().slice(0, 19).replace(/:/g, '-') + '.json';
+            document.body.appendChild(a); a.click(); a.remove();
+            setTimeout(() => URL.revokeObjectURL(url), 2000);
+        });
+        on(el.querySelector('#recImportar'), 'click', () => {
+            const inp = document.createElement('input');
+            inp.type = 'file'; inp.accept = '.json,application/json';
+            inp.onchange = (e) => {
+                const f = e.target.files[0];
+                if (!f) return;
+                const r = new FileReader();
+                r.onload = () => {
+                    if (Recorder.importar(r.result)) { recorderRender(); replayRender(); }
+                    else alert('Arquivo inválido.');
+                };
+                r.readAsText(f);
+            };
+            inp.click();
+        });
+        on(el.querySelector('#recLimpar'), 'click', () => {
+            if (!confirm('Apagar a gravação atual?')) return;
+            Recorder.limpar();
+            recorderRender();
+            replayRender();
+        });
+        Emitter.on('recorder:changed', () => {
+            if (pesqPanes.recorder.style.display !== 'none') recorderRender();
+        });
+
+        // ─── Replay UI ───
+        const repLogEl = el.querySelector('#repLog');
+        const repCounter = el.querySelector('#repCounter');
+        function replayRender() {
+            const outs = Recorder.eventos.filter(e => e.dir === 'SEND').length;
+            repCounter.textContent = outs + ' OUTs prontos';
+        }
+        function replayLog(msg, tipo) {
+            const cor = tipo === 'erro' ? Theme.err : tipo === 'ok' ? Theme.ok : tipo === 'aviso' ? Theme.warn : tipo === 'envio' ? Theme.textMute : Theme.text;
+            const div = document.createElement('div');
+            div.style.cssText = `color:${cor};margin-bottom:3px;padding-left:8px;border-left:2px solid ${cor}40;`;
+            div.textContent = msg;
+            repLogEl.appendChild(div);
+            repLogEl.scrollTop = repLogEl.scrollHeight;
+        }
+        Emitter.on('replay:log', ({ msg, tipo }) => replayLog(msg, tipo));
+        Emitter.on('replay:done', () => {
+            el.querySelector('#repExecutar').style.display = 'inline-block';
+            el.querySelector('#repParar').style.display = 'none';
+        });
+        on(el.querySelector('#repExecutar'), 'click', async () => {
+            if (!Recorder.eventos.length) { replayLog('Nada gravado.', Theme.err); return; }
+            repLogEl.innerHTML = '';
+            const speed = Math.max(0.25, Math.min(10, Number(el.querySelector('#repSpeed').value) || 1));
+            const mutarAtivo = el.querySelector('#repMutar').checked;
+            const offset = Number(el.querySelector('#repOffset').value) || 0;
+            const byteHex = (el.querySelector('#repByte').value || '00').slice(0, 2).toUpperCase();
+            const byteVal = parseInt(byteHex, 16) || 0;
+            const mutar = mutarAtivo ? ({ payloadHex, indice }) => {
+                const arr = payloadHex ? payloadHex.split(' ') : [];
+                // payloadHex está em formato "AA BB CC" ou "AABBCC" — normaliza
+                const compact = payloadHex.replace(/\s/g, '');
+                const bytes = [];
+                for (let i = 0; i < compact.length; i += 2) bytes.push(compact.substr(i, 2));
+                while (bytes.length <= offset) bytes.push('00');
+                bytes[offset] = byteVal.toString(16).padStart(2, '0').toUpperCase();
+                return { payloadHex: bytes.join(' ') };
+            } : null;
+            el.querySelector('#repExecutar').style.display = 'none';
+            el.querySelector('#repParar').style.display = 'inline-block';
+            await Replay.executar(Recorder.eventos.slice(), { speed, mutar });
+            el.querySelector('#repExecutar').style.display = 'inline-block';
+            el.querySelector('#repParar').style.display = 'none';
+        });
+        on(el.querySelector('#repParar'), 'click', () => Replay.parar());
+        replayRender();
+
+        // ─── Diff UI ───
+        const diffRes = el.querySelector('#diffResultado');
+        let diffBaseline = null;
+        function diffRender() {
+            if (!diffBaseline) {
+                el.querySelector('#diffBaselineInfo').textContent = '';
+            } else {
+                const nome = PacketNames.nome(diffBaseline.header, diffBaseline._dir || 'SEND') || '?';
+                el.querySelector('#diffBaselineInfo').textContent = `Baseline: ${nome} (${diffBaseline.header}) — ${diffBaseline.byteLength}b`;
+            }
+            if (!diffRes.dataset.rendered) {
+                diffRes.innerHTML = `<div style="color:${Theme.textMute};text-align:center;padding:24px;font-style:italic;">Informe um ID e clique em COMPARAR para ver as diferenças entre os dois últimos pacotes desse ID.</div>`;
+            }
+        }
+        function renderDiff(diff, idA, idB) {
+            if (!diff) { diffRes.innerHTML = `<div style="color:${Theme.err};">Não foi possível comparar.</div>`; return; }
+            const nome = PacketNames.nome(idA, 'SEND') || PacketNames.nome(idA, 'RECV') || '?';
+            const linhas = diff.bytes.map(b => {
+                const bg = b.igual ? 'transparent' : 'rgba(251,113,133,0.15)';
+                const cor = b.igual ? Theme.textDim : Theme.err;
+                const va = b.a || '--';
+                const vb = b.b || '--';
+                return `<tr style="background:${bg};">
+                    <td style="padding:2px 8px;color:${Theme.textMute};font-size:10px;">${b.offset.toString(16).padStart(4,'0')}</td>
+                    <td style="padding:2px 8px;color:${cor};font-weight:${b.igual ? 'normal' : 'bold'};">${va}</td>
+                    <td style="padding:2px 8px;color:${cor};font-weight:${b.igual ? 'normal' : 'bold'};">${vb}</td>
+                    <td style="padding:2px 8px;color:${b.igual ? 'transparent' : Theme.err};font-size:10px;">${b.igual ? '' : '≠'}</td>
+                </tr>`;
+            }).join('');
+            diffRes.innerHTML = `
+                <div style="margin-bottom:10px;font-size:11.5px;">
+                    <strong style="color:${Theme.violet};">ID ${idA}</strong> · ${esc(nome)} — 
+                    <span style="color:${Theme.textMute};">${diff.diferentes} byte(s) diferente(s) de ${diff.total}</span>
+                    ${diff.igual ? `<span style="color:${Theme.ok};margin-left:8px;">✓ idênticos</span>` : ''}
+                </div>
+                <table style="width:100%;border-collapse:collapse;font-family:monospace;font-size:11px;">
+                    <thead>
+                        <tr style="border-bottom:1px solid ${Theme.line};color:${Theme.textMute};font-size:10px;text-transform:uppercase;">
+                            <th style="text-align:left;padding:4px 8px;">Offset</th>
+                            <th style="text-align:left;padding:4px 8px;">Pacote A</th>
+                            <th style="text-align:left;padding:4px 8px;">Pacote B</th>
+                            <th></th>
+                        </tr>
+                    </thead>
+                    <tbody>${linhas}</tbody>
+                </table>
+            `;
+            diffRes.dataset.rendered = '1';
+        }
+        on(el.querySelector('#diffComparar'), 'click', () => {
+            const id = Number(el.querySelector('#diffId').value);
+            if (!Number.isFinite(id)) { diffRes.innerHTML = `<div style="color:${Theme.err};">ID inválido.</div>`; return; }
+            const matches = AppState.logs.filter(l => l.packet.header === id).slice(-2).map(l => l.packet);
+            if (matches.length < 2 && !diffBaseline) {
+                diffRes.innerHTML = `<div style="color:${Theme.warn};">Preciso de pelo menos 2 pacotes com ID ${id} no log (ou fixe um baseline).</div>`;
+                return;
+            }
+            const a = diffBaseline || matches[0];
+            const b = matches[matches.length - 1];
+            const diff = PacketDiff.comparar(a, b);
+            renderDiff(diff, id, id);
+        });
+        on(el.querySelector('#diffFixarBaseline'), 'click', () => {
+            const id = Number(el.querySelector('#diffId').value);
+            if (!Number.isFinite(id)) return;
+            const m = AppState.logs.filter(l => l.packet.header === id).slice(-1)[0];
+            if (!m) { diffRes.innerHTML = `<div style="color:${Theme.warn};">Sem pacote com ID ${id}.</div>`; return; }
+            diffBaseline = m.packet;
+            diffBaseline._dir = m.dir;
+            diffRender();
+            diffRes.innerHTML = `<div style="color:${Theme.ok};">📌 Baseline fixado: ${PacketNames.nome(id, m.dir) || id} (${m.packet.byteLength}b). Clique em COMPARAR.</div>`;
+        });
+        on(el.querySelector('#diffLimparBaseline'), 'click', () => {
+            diffBaseline = null;
+            diffRes.dataset.rendered = '';
+            diffRender();
+        });
+        diffRender();
+
+        // ─── Watchers UI ───
+        const wLista = el.querySelector('#wLista');
+        const wHits = el.querySelector('#wHits');
+        function watchersRender() {
+            const regras = Watchers.listar();
+            wLista.innerHTML = '';
+            if (!regras.length) {
+                wLista.innerHTML = `<div style="color:${Theme.textMute};font-size:10.5px;text-align:center;padding:14px;font-style:italic;">Nenhuma regra. Adicione acima.</div>`;
+                return;
+            }
+            regras.forEach(r => {
+                const div = document.createElement('div');
+                div.style.cssText = 'background:rgba(0,0,0,0.25);border:1px solid ' + Theme.line + ';border-radius:8px;padding:8px 10px;margin-bottom:6px;';
+                const acoesBadges = r.acoes.map(a => {
+                    const cor = a === 'bloquear' ? Theme.err : a === 'nota' ? Theme.cyan : a === 'notify' ? Theme.warn : Theme.violet;
+                    return `<span style="background:${cor}22;color:${cor};padding:1px 6px;border-radius:4px;font-size:9px;margin-right:3px;">${a}</span>`;
+                }).join('');
+                div.innerHTML = `
+                    <div style="display:flex;justify-content:space-between;align-items:center;gap:6px;margin-bottom:5px;">
+                        <div style="display:flex;align-items:center;gap:6px;min-width:0;">
+                            <input type="checkbox" class="w-ativo" ${r.ativo ? 'checked' : ''} style="accent-color:${Theme.cyan};">
+                            <span style="color:${Theme.text};font-weight:bold;font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(r.nome)}</span>
+                        </div>
+                        <button class="w-del" style="background:transparent;color:${Theme.err};border:none;cursor:pointer;font-size:12px;">✕</button>
+                    </div>
+                    <div style="font-size:10px;color:${Theme.textMute};margin-bottom:4px;">
+                        ${r.dir}${r.headerId ? ' · ID ' + r.headerId : ''}${r.payloadContem ? ' · hex: ' + esc(r.payloadContem.slice(0,20)) : ''}${r.asciiContem ? ' · "' + esc(r.asciiContem.slice(0,20)) + '"' : ''}
+                        · ${r.disparos} disparos
+                    </div>
+                    <div>${acoesBadges}</div>
+                `;
+                div.querySelector('.w-ativo').addEventListener('change', () => { Watchers.alternar(r.id); });
+                div.querySelector('.w-del').addEventListener('click', () => { Watchers.remover(r.id); watchersRender(); });
+                wLista.appendChild(div);
+            });
+        }
+        on(el.querySelector('#wAdicionar'), 'click', () => {
+            const nome = el.querySelector('#wNome').value.trim();
+            if (!nome) return;
+            const headerIdRaw = el.querySelector('#wHeaderId').value;
+            const headerId = headerIdRaw !== '' && !isNaN(Number(headerIdRaw)) ? Number(headerIdRaw) : null;
+            Watchers.adicionar({
+                nome,
+                dir: el.querySelector('#wDir').value,
+                headerId,
+                payloadContem: el.querySelector('#wPayload').value,
+                acoes: ['log']
+            });
+            el.querySelector('#wNome').value = '';
+            el.querySelector('#wHeaderId').value = '';
+            el.querySelector('#wPayload').value = '';
+            watchersRender();
+        });
+        on(el.querySelector('#wLimpar'), 'click', () => {
+            if (!confirm('Apagar TODAS as regras de watcher?')) return;
+            Watchers.limpar();
+            watchersRender();
+        });
+        on(el.querySelector('#wAiGerar'), 'click', async () => {
+            const desc = el.querySelector('#wAiDesc').value.trim();
+            if (!desc) return;
+            if (!SangAI.disponivel()) { alert('Sang AI não configurada.'); return; }
+            if (SangAI._busy) return;
+            const btn = el.querySelector('#wAiGerar');
+            SangAI._busy = true;
+            const original = btn.textContent;
+            btn.textContent = '⏳'; btn.disabled = true;
+            try {
+                const amostras = AppState.logs.slice(-15).map(l => l.packet);
+                const cfg = await SangAI.criarRegraWatcher(desc, amostras);
+                Watchers.adicionar(cfg);
+                el.querySelector('#wAiDesc').value = '';
+                watchersRender();
+            } catch (e) {
+                alert('Erro: ' + (e.message || e));
+            } finally {
+                SangAI._busy = false;
+                btn.textContent = original; btn.disabled = false;
+            }
+        });
+        Emitter.on('watchers:changed', () => {
+            if (pesqPanes.watchers.style.display !== 'none') watchersRender();
+        });
+        Emitter.on('watchers:hit', ({ linha }) => {
+            const div = document.createElement('div');
+            div.style.cssText = `padding:3px 6px;border-left:2px solid ${Theme.warn}40;margin-bottom:3px;color:${Theme.warn};font-size:10px;`;
+            div.textContent = `[${new Date().toLocaleTimeString()}] ${linha}`;
+            wHits.insertBefore(div, wHits.firstChild);
+            while (wHits.childNodes.length > 200) wHits.removeChild(wHits.lastChild);
+        });
+
+        // ─── Pesquisa init ───
         let emissoresRegistrados = false;
         function pesquisaInit() {
             if (!emissoresRegistrados) {
@@ -2221,33 +3008,37 @@
         return { element: el, setVisible, addLog };
     })();
 
-    // ═══════════════════════════════════════════════════════════════
-    // SENDER UI
+        // ═══════════════════════════════════════════════════════════════
+    // SENDER UI — motor de envio (loop robusto, aurora glass)
     // ═══════════════════════════════════════════════════════════════
     const SenderUI = (function() {
         const el = document.createElement('div');
         el.id = 'hl-sender';
         Object.assign(el.style, {
             position: 'fixed', top: '50px', right: '10px',
-            width: '440px', background: '#0f0f16', color: '#e1e1e6',
-            border: '1px solid #1e1e2e', zIndex: '99999',
+            width: '460px',
+            background: Theme.bgPanel,
+            backdropFilter: Theme.blur, WebkitBackdropFilter: Theme.blur,
+            color: Theme.text,
+            border: '1px solid ' + Theme.line, zIndex: '99999',
             fontFamily: 'monospace', fontSize: '12px',
-            borderRadius: '10px', display: 'none', flexDirection: 'column',
-            boxShadow: '0 12px 40px rgba(0,0,0,0.6), 0 0 0 1px rgba(108,99,255,0.06)'
+            borderRadius: Theme.radius, display: 'none', flexDirection: 'column',
+            boxShadow: '0 20px 50px rgba(0,0,0,0.55), 0 2px 8px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.06)',
+            overflow: 'hidden'
         });
 
         el.innerHTML = `
             <div class="drag-header" style="
-                background:linear-gradient(180deg, #12121c 0%, #0a0a12 100%);
+                background:linear-gradient(180deg, rgba(20,20,28,0.85) 0%, rgba(9,9,14,0.92) 100%);
                 padding:11px 14px;cursor:move;
-                border-bottom:1px solid #1e1e2e;border-radius:10px 10px 0 0;
-                font-weight:bold;font-size:12px;color:#e1e1e6;user-select:none;
+                border-bottom:1px solid ${Theme.line};border-radius:${Theme.radius} ${Theme.radius} 0 0;
+                font-weight:bold;font-size:12px;color:${Theme.text};user-select:none;
                 display:flex;justify-content:space-between;align-items:center;letter-spacing:0.05em;
             ">
                 <span style="display:flex;align-items:center;gap:10px;">
-                    <span style="width:8px;height:8px;border-radius:50%;background:#6c63ff;
-                        box-shadow:0 0 8px #6c63ff,0 0 16px rgba(108,99,255,0.5);"></span>
-                    <span style="background:linear-gradient(90deg,#e1e1e6,#8a8a9a);
+                    <span style="width:8px;height:8px;border-radius:50%;background:${Theme.violet};
+                        box-shadow:0 0 8px ${Theme.violet},0 0 16px rgba(167,139,250,0.5);"></span>
+                    <span style="background:linear-gradient(100deg,${Theme.cyan} 0%,${Theme.violet} 50%,#fff 100%);
                         -webkit-background-clip:text;background-clip:text;color:transparent;">
                         SANG SENDER
                     </span>
@@ -2255,54 +3046,55 @@
                 <div id="senderHeaderBtns"></div>
             </div>
             <div id="sndBody" style="display:flex;flex-direction:column;flex:1;overflow-y:auto;min-height:0;">
-                <div style="padding:10px 12px;display:flex;gap:6px;border-bottom:1px solid #1e1e2e;background:#0a0a12;">
-                    <select id="selProfile" style="flex:1;background:#13131a;color:#e1e1e6;border:1px solid #1e1e2e;padding:7px 10px;border-radius:6px;font-size:11px;font-family:monospace;outline:none;cursor:pointer;"></select>
-                    <button id="btnNewProf" title="Novo perfil" style="background:#1e1e2e;color:#e1e1e6;border:1px solid #1e1e2e;cursor:pointer;padding:7px 12px;border-radius:6px;font-size:11px;font-family:monospace;">+ NOVO</button>
+                <div style="padding:10px 12px;display:flex;gap:6px;border-bottom:1px solid ${Theme.line};background:rgba(0,0,0,0.2);">
+                    <select id="selProfile" class="az-input-select" style="flex:1;"></select>
+                    <button id="btnNewProf" class="az-mini" style="color:${Theme.violet};border-color:${Theme.violet};">+ NOVO</button>
                 </div>
-                <div style="padding:10px 12px;background:#0a0a12;display:flex;flex-direction:column;gap:8px;border-bottom:1px solid #1e1e2e;">
+                <div style="padding:10px 12px;background:rgba(0,0,0,0.2);display:flex;flex-direction:column;gap:8px;border-bottom:1px solid ${Theme.line};">
                     <div style="display:flex;gap:6px;">
-                        <input id="sndId" type="number" placeholder="ID" style="width:70px;background:#13131a;color:#e1e1e6;border:1px solid #1e1e2e;padding:7px 10px;border-radius:6px;font-size:11px;font-family:monospace;outline:none;box-sizing:border-box;">
-                        <input id="sndHex" type="text" placeholder="Payload em HEX" style="flex:1;background:#13131a;color:#e1e1e6;border:1px solid #1e1e2e;padding:7px 10px;border-radius:6px;font-size:11px;font-family:monospace;outline:none;min-width:0;box-sizing:border-box;">
-                        <button id="btnAddSnd" style="background:#00d4aa;color:#0a0a0f;border:none;cursor:pointer;padding:7px 14px;border-radius:6px;font-weight:bold;font-size:11px;font-family:monospace;">ADD</button>
+                        <input id="sndId" type="number" placeholder="ID" style="width:70px;background:rgba(0,0,0,0.25);color:${Theme.text};border:1px solid ${Theme.line};padding:7px 10px;border-radius:6px;font-size:11px;font-family:monospace;outline:none;box-sizing:border-box;">
+                        <input id="sndHex" type="text" placeholder="Payload em HEX" style="flex:1;background:rgba(0,0,0,0.25);color:${Theme.text};border:1px solid ${Theme.line};padding:7px 10px;border-radius:6px;font-size:11px;font-family:monospace;outline:none;min-width:0;box-sizing:border-box;">
+                        <button id="btnAddSnd" class="az-grad-btn" style="padding:7px 14px;">ADD</button>
                     </div>
                     <div style="display:flex;gap:6px;">
-                        <input id="sndWaitMs" type="number" placeholder="Pausar (ms)" style="flex:1;background:#13131a;color:#e1e1e6;border:1px solid #1e1e2e;padding:7px 10px;border-radius:6px;font-size:11px;font-family:monospace;outline:none;min-width:0;box-sizing:border-box;">
-                        <button id="btnAddWait" title="Adicionar pausa" style="background:#13131a;color:#e1e1e6;border:1px solid #1e1e2e;cursor:pointer;padding:7px 12px;border-radius:6px;font-size:11px;font-family:monospace;">+ WAIT</button>
-                        <button id="btnAddJs" title="Adicionar JS manual" style="background:#13131a;color:#00d4aa;border:1px solid #00d4aa;cursor:pointer;padding:7px 12px;border-radius:6px;font-size:11px;font-family:monospace;">+ JS</button>
+                        <input id="sndWaitMs" type="number" placeholder="Pausar (ms)" style="flex:1;background:rgba(0,0,0,0.25);color:${Theme.text};border:1px solid ${Theme.line};padding:7px 10px;border-radius:6px;font-size:11px;font-family:monospace;outline:none;min-width:0;box-sizing:border-box;">
+                        <button id="btnAddWait" class="az-mini">+ WAIT</button>
+                        <button id="btnAddJs" class="az-mini" style="color:${Theme.cyan};border-color:${Theme.cyan};">+ JS</button>
                     </div>
-                    <div style="display:flex;gap:6px;padding-top:6px;border-top:1px dashed rgba(168,85,247,0.2);">
+                    <div style="display:flex;gap:6px;padding-top:6px;border-top:1px dashed rgba(167,139,250,0.2);">
                         <input id="nlJs" type="text" placeholder="✨ Descreva — ex: dançar 3x com pausa 500ms"
-                            style="flex:1;background:#0a0a12;color:#e1e1e6;border:1px solid rgba(168,85,247,0.3);padding:7px 10px;border-radius:6px;font-size:11px;font-family:monospace;outline:none;min-width:0;box-sizing:border-box;">
-                        <button id="btnNlJs" style="background:linear-gradient(135deg,#a855f7,#6c63ff);color:#fff;border:none;cursor:pointer;padding:7px 14px;border-radius:6px;font-weight:bold;font-size:11px;font-family:monospace;white-space:nowrap;transition:all 0.15s;">GERAR</button>
+                            style="flex:1;background:rgba(0,0,0,0.3);color:${Theme.text};border:1px solid rgba(167,139,250,0.3);padding:7px 10px;border-radius:6px;font-size:11px;font-family:monospace;outline:none;min-width:0;box-sizing:border-box;">
+                        <button id="nlJsBtn" class="az-grad-btn">GERAR</button>
                     </div>
-                    <div id="nlJsResultado" style="font-size:10px;color:#8a8a9a;line-height:1.5;display:none;background:#0a0a12;border:1px solid #1e1e2e;border-radius:5px;padding:6px 9px;font-family:monospace;white-space:pre-wrap;"></div>
+                    <div id="nlJsResultado" style="font-size:10px;color:${Theme.textMute};line-height:1.5;display:none;background:rgba(0,0,0,0.25);border:1px solid ${Theme.line};border-radius:6px;padding:6px 9px;font-family:monospace;white-space:pre-wrap;"></div>
                 </div>
-                <div style="padding:10px 12px;background:#0a0a12;border-bottom:1px solid #1e1e2e;">
-                    <div style="font-size:10px;color:#8a8a9a;margin-bottom:6px;letter-spacing:0.05em;">FILA DE ENVIO</div>
-                    <div id="sndList" style="max-height:220px;overflow-y:auto;border:1px solid #1e1e2e;padding:4px;min-height:70px;background:#13131a;border-radius:6px;"></div>
+                <div style="padding:10px 12px;background:rgba(0,0,0,0.2);border-bottom:1px solid ${Theme.line};">
+                    <div style="font-size:10px;color:${Theme.textMute};margin-bottom:6px;letter-spacing:0.05em;">FILA DE ENVIO</div>
+                    <div id="sndList" style="max-height:220px;overflow-y:auto;border:1px solid ${Theme.line};padding:4px;min-height:70px;background:rgba(0,0,0,0.25);border-radius:8px;"></div>
                 </div>
-                <div style="padding:10px 12px;background:#0a0a12;border-bottom:1px solid #1e1e2e;">
-                    <div style="color:#6c63ff;font-weight:bold;text-align:center;font-size:11px;margin-bottom:6px;letter-spacing:0.04em;">📥 SIMULAR RECEBIMENTO</div>
+                <div style="padding:10px 12px;background:rgba(0,0,0,0.2);border-bottom:1px solid ${Theme.line};">
+                    <div style="color:${Theme.violet};font-weight:bold;text-align:center;font-size:11px;margin-bottom:6px;letter-spacing:0.04em;">📥 SIMULAR RECEBIMENTO</div>
                     <div style="display:flex;gap:6px;">
-                        <input id="fakeId" type="number" placeholder="ID" style="width:70px;background:#13131a;color:#6c63ff;border:1px solid #6c63ff;padding:7px 10px;border-radius:6px;font-size:11px;font-family:monospace;outline:none;box-sizing:border-box;">
-                        <input id="fakeHex" type="text" placeholder="Payload em HEX" style="flex:1;background:#13131a;color:#6c63ff;border:1px solid #6c63ff;padding:7px 10px;border-radius:6px;font-size:11px;font-family:monospace;outline:none;min-width:0;box-sizing:border-box;">
-                        <button id="btnFakeRecv" style="background:#6c63ff;color:#fff;border:none;cursor:pointer;padding:7px 12px;border-radius:6px;font-weight:bold;font-size:11px;font-family:monospace;">SIM</button>
+                        <input id="fakeId" type="number" placeholder="ID" style="width:70px;background:rgba(0,0,0,0.25);color:${Theme.violet};border:1px solid ${Theme.violet};padding:7px 10px;border-radius:6px;font-size:11px;font-family:monospace;outline:none;box-sizing:border-box;">
+                        <input id="fakeHex" type="text" placeholder="Payload em HEX" style="flex:1;background:rgba(0,0,0,0.25);color:${Theme.violet};border:1px solid ${Theme.violet};padding:7px 10px;border-radius:6px;font-size:11px;font-family:monospace;outline:none;min-width:0;box-sizing:border-box;">
+                        <button id="btnFakeRecv" class="az-grad-btn">SIM</button>
                     </div>
                 </div>
-                <div style="padding:10px 12px;background:#0a0a12;display:flex;flex-direction:column;gap:8px;">
+                <div style="padding:10px 12px;background:rgba(0,0,0,0.2);display:flex;flex-direction:column;gap:8px;">
                     <div style="display:flex;gap:8px;align-items:center;">
-                        <label style="flex:1;font-size:11px;color:#8a8a9a;">Delay loop (ms)
-                            <input id="sndDelay" type="number" style="width:70px;background:#13131a;color:#e1e1e6;border:1px solid #1e1e2e;padding:5px 7px;border-radius:4px;font-size:11px;font-family:monospace;outline:none;margin-left:6px;box-sizing:border-box;">
+                        <label class="az-label" style="flex:1;">Delay loop (ms)
+                            <input id="sndDelay" type="number" class="az-input-xs" style="width:70px;">
                         </label>
-                        <label style="flex:1;font-size:11px;color:#8a8a9a;">Qtd (0 = ∞)
-                            <input id="sndQtd" type="number" style="width:50px;background:#13131a;color:#e1e1e6;border:1px solid #1e1e2e;padding:5px 7px;border-radius:4px;font-size:11px;font-family:monospace;outline:none;margin-left:6px;box-sizing:border-box;">
+                        <label class="az-label" style="flex:1;">Qtd (0 = ∞)
+                            <input id="sndQtd" type="number" class="az-input-xs" style="width:50px;">
                         </label>
                     </div>
                     <button id="btnSpamAction" style="
-                        background:linear-gradient(135deg,#00d4aa,#00a88a);color:#0a0a0f;border:none;cursor:pointer;
+                        background:linear-gradient(135deg,${Theme.ok},#059669);color:#0b0b10;border:none;cursor:pointer;
                         padding:12px;font-weight:bold;width:100%;border-radius:8px;font-size:13px;
                         font-family:monospace;transition:all 0.15s;letter-spacing:0.05em;
                     ">🚀 INICIAR SEQUÊNCIA</button>
+                    <div id="sndStatus" style="font-size:10px;color:${Theme.textMute};text-align:center;min-height:14px;font-family:monospace;"></div>
                 </div>
             </div>
         `;
@@ -2313,15 +3105,37 @@
         const closeBtn = createCloseButton(() => Toolbar.setSenderVisible(false));
         el.querySelector('#senderHeaderBtns').appendChild(closeBtn);
 
+        // ─── Estado do motor ───
         let isSpamming = false;
         let spamRunId = 0;
         const sleep = ms => new Promise(res => setTimeout(res, ms));
 
+        const statusEl = el.querySelector('#sndStatus');
+        let spamStartAt = 0;
+        let spamLoops = 0;
+        let statusTimer = null;
+
+        function updateStatus() {
+            if (!isSpamming) return;
+            const sec = ((Date.now() - spamStartAt) / 1000).toFixed(1);
+            statusEl.textContent = `🟢 ${spamLoops} loops · ${sec}s · fila ${AppState.profiles[AppState.currentProfileId].packets.length}`;
+        }
+        function startStatusTimer() {
+            stopStatusTimer();
+            spamStartAt = Date.now(); spamLoops = 0;
+            statusTimer = setInterval(updateStatus, 250);
+            updateStatus();
+        }
+        function stopStatusTimer() {
+            if (statusTimer) { clearInterval(statusTimer); statusTimer = null; }
+            statusEl.textContent = '';
+        }
+
+        // ─── Perfil ───
         function saveCurrentProfile() {
             Storage.set('profiles', AppState.profiles);
             Storage.set('current_profile', AppState.currentProfileId);
         }
-
         function renderProfiles() {
             const sel = el.querySelector('#selProfile');
             sel.innerHTML = '';
@@ -2333,68 +3147,71 @@
             }
         }
 
+        // ─── Fila ───
         function renderPackets() {
             const prof = AppState.profiles[AppState.currentProfileId];
             const list = el.querySelector('#sndList');
             list.innerHTML = '';
-            if (prof.packets.length === 0) {
+            if (!prof.packets.length) {
                 const e = document.createElement('div');
-                e.style.cssText = 'color:#5a5a6a;font-size:11px;text-align:center;padding:16px;font-style:italic;';
+                e.style.cssText = `color:${Theme.textMute};font-size:11px;text-align:center;padding:16px;font-style:italic;`;
                 e.textContent = 'Fila vazia — adicione pacotes acima.';
-                list.appendChild(e); return;
-            }
-            prof.packets.forEach((pkt, index) => {
-                const item = document.createElement('div');
-                Object.assign(item.style, {
-                    display: 'flex', alignItems: 'center', gap: '6px',
-                    background: '#0a0a12', padding: '5px 7px', marginBottom: '3px',
-                    border: '1px solid #1e1e2e', borderRadius: '5px', fontSize: '11px'
-                });
-                const icon = document.createElement('span');
-                icon.style.cssText = 'width:22px;text-align:center;flex-shrink:0;font-weight:bold;';
-                const content = document.createElement('span');
-                content.style.cssText = 'flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
-                if (pkt.isDelay) {
-                    icon.textContent = '⏱'; icon.style.color = '#8a8a9a';
-                    content.style.color = '#8a8a9a'; content.style.fontStyle = 'italic';
-                    content.textContent = `Aguardar ${pkt.ms}ms`;
-                } else if (pkt.isJs) {
-                    icon.textContent = '🧠'; icon.style.color = '#00d4aa';
-                    content.style.color = '#00d4aa'; content.style.fontStyle = 'italic';
-                    const preview = pkt.code.length > 45 ? pkt.code.substring(0, 45) + '…' : pkt.code;
-                    content.textContent = `JS: ${preview}`;
-                } else {
-                    const nome = PacketNames.nome(pkt.id, 'SEND');
-                    icon.textContent = pkt.id; icon.style.color = '#e1e1e6';
-                    content.style.color = '#8a8a9a';
-                    content.textContent = (nome ? nome + ' — ' : '') + (pkt.hex || '(vazio)');
-                }
-                item.appendChild(icon);
-                item.appendChild(content);
+                list.appendChild(e);
+            } else {
+                prof.packets.forEach((pkt, index) => {
+                    const item = document.createElement('div');
+                    Object.assign(item.style, {
+                        display: 'flex', alignItems: 'center', gap: '6px',
+                        background: 'rgba(0,0,0,0.25)', padding: '5px 7px', marginBottom: '3px',
+                        border: '1px solid ' + Theme.line, borderRadius: '6px', fontSize: '11px'
+                    });
+                    const icon = document.createElement('span');
+                    icon.style.cssText = 'width:26px;text-align:center;flex-shrink:0;font-weight:bold;';
+                    const content = document.createElement('span');
+                    content.style.cssText = 'flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+                    if (pkt.isDelay) {
+                        icon.textContent = '⏱'; icon.style.color = Theme.textMute;
+                        content.style.color = Theme.textMute; content.style.fontStyle = 'italic';
+                        content.textContent = `Aguardar ${pkt.ms}ms`;
+                    } else if (pkt.isJs) {
+                        icon.textContent = '🧠'; icon.style.color = Theme.cyan;
+                        content.style.color = Theme.cyan; content.style.fontStyle = 'italic';
+                        const preview = pkt.code.length > 45 ? pkt.code.substring(0, 45) + '…' : pkt.code;
+                        content.textContent = `JS: ${preview}`;
+                    } else {
+                        const nome = PacketNames.nome(pkt.id, 'SEND');
+                        icon.textContent = pkt.id; icon.style.color = Theme.text;
+                        content.style.color = Theme.textDim;
+                        content.textContent = (nome ? nome + ' — ' : '') + (pkt.hex || '(vazio)');
+                    }
+                    item.appendChild(icon);
+                    item.appendChild(content);
 
-                const btns = document.createElement('div');
-                btns.style.cssText = 'display:flex;gap:2px;flex-shrink:0;';
-                const mkBtn = (txt, title, cor) => {
-                    const b = document.createElement('button');
-                    b.textContent = txt; b.title = title;
-                    b.style.cssText = `background:#1e1e2e;color:${cor};border:none;cursor:pointer;padding:3px 7px;border-radius:4px;font-size:10px;`;
-                    return b;
-                };
-                const up = mkBtn('↑', 'Mover para cima', '#e1e1e6');
-                on(up, 'click', () => { if (index > 0) { [prof.packets[index - 1], prof.packets[index]] = [prof.packets[index], prof.packets[index - 1]]; saveCurrentProfile(); renderPackets(); } });
-                const down = mkBtn('↓', 'Mover para baixo', '#e1e1e6');
-                on(down, 'click', () => { if (index < prof.packets.length - 1) { [prof.packets[index + 1], prof.packets[index]] = [prof.packets[index], prof.packets[index + 1]]; saveCurrentProfile(); renderPackets(); } });
-                const del = mkBtn('✕', 'Remover', '#ef4444');
-                del.style.border = '1px solid #ef4444';
-                on(del, 'click', () => { prof.packets.splice(index, 1); saveCurrentProfile(); renderPackets(); });
-                btns.appendChild(up); btns.appendChild(down); btns.appendChild(del);
-                item.appendChild(btns);
-                list.appendChild(item);
-            });
+                    const btns = document.createElement('div');
+                    btns.style.cssText = 'display:flex;gap:2px;flex-shrink:0;';
+                    const mkBtn = (txt, title, cor) => {
+                        const b = document.createElement('button');
+                        b.textContent = txt; b.title = title;
+                        b.style.cssText = `background:rgba(255,255,255,0.05);color:${cor};border:1px solid ${Theme.line};cursor:pointer;padding:3px 7px;border-radius:4px;font-size:10px;`;
+                        return b;
+                    };
+                    const up = mkBtn('↑', 'Mover para cima', Theme.text);
+                    on(up, 'click', () => { if (index > 0) { [prof.packets[index - 1], prof.packets[index]] = [prof.packets[index], prof.packets[index - 1]]; saveCurrentProfile(); renderPackets(); } });
+                    const down = mkBtn('↓', 'Mover para baixo', Theme.text);
+                    on(down, 'click', () => { if (index < prof.packets.length - 1) { [prof.packets[index + 1], prof.packets[index]] = [prof.packets[index], prof.packets[index + 1]]; saveCurrentProfile(); renderPackets(); } });
+                    const del = mkBtn('✕', 'Remover', Theme.err);
+                    del.style.borderColor = Theme.err;
+                    on(del, 'click', () => { prof.packets.splice(index, 1); saveCurrentProfile(); renderPackets(); });
+                    btns.appendChild(up); btns.appendChild(down); btns.appendChild(del);
+                    item.appendChild(btns);
+                    list.appendChild(item);
+                });
+            }
             el.querySelector('#sndDelay').value = prof.spamInterval;
             el.querySelector('#sndQtd').value = prof.spamQtd;
         }
 
+        // ─── Adicionar itens ───
         on(el.querySelector('#btnAddSnd'), 'click', () => {
             const idVal = el.querySelector('#sndId').value;
             const hexVal = el.querySelector('#sndHex').value || '';
@@ -2420,14 +3237,15 @@
             }
         });
 
+        // ─── IA gerar JS ───
         const nlJs = el.querySelector('#nlJs');
-        const btnNlJs = el.querySelector('#btnNlJs');
+        const btnNlJs = el.querySelector('#nlJsBtn');
         const nlJsResultado = el.querySelector('#nlJsResultado');
         async function gerarJsNL() {
             const desc = nlJs.value.trim();
             if (!desc) return;
             if (!SangAI.disponivel()) {
-                nlJsResultado.style.display = 'block'; nlJsResultado.style.color = '#ef4444';
+                nlJsResultado.style.display = 'block'; nlJsResultado.style.color = Theme.err;
                 nlJsResultado.textContent = '⚠ Sang AI não configurada.';
                 return;
             }
@@ -2435,7 +3253,7 @@
             SangAI._busy = true;
             btnNlJs.disabled = true; btnNlJs.textContent = '⏳';
             nlJsResultado.style.display = 'block';
-            nlJsResultado.style.color = '#8a8a9a';
+            nlJsResultado.style.color = Theme.textMute;
             nlJsResultado.textContent = 'Sang AI gerando código…';
             try {
                 const prof = AppState.profiles[AppState.currentProfileId];
@@ -2451,7 +3269,7 @@
                     nlJs.value = ''; nlJsResultado.style.display = 'none';
                 }
             } catch (e) {
-                nlJsResultado.style.color = '#ef4444';
+                nlJsResultado.style.color = Theme.err;
                 nlJsResultado.textContent = '⚠ ' + (e.message || e);
             } finally {
                 SangAI._busy = false; btnNlJs.disabled = false; btnNlJs.textContent = 'GERAR';
@@ -2460,16 +3278,21 @@
         on(btnNlJs, 'click', gerarJsNL);
         on(nlJs, 'keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); gerarJsNL(); } });
 
+        // ─── Fake recv ───
         on(el.querySelector('#btnFakeRecv'), 'click', () => {
             if (!window.gameWS) return;
             const idVal = el.querySelector('#fakeId').value;
             const hexVal = el.querySelector('#fakeHex').value || '';
             if (idVal !== '' && !isNaN(Number(idVal))) {
-                const buffer = Utils.buildPacket(Number(idVal), hexVal);
-                window.gameWS.dispatchEvent(new MessageEvent('message', { data: buffer }));
+                try {
+                    const buffer = Utils.buildPacket(Number(idVal), hexVal);
+                    window.gameWS.dispatchEvent(new MessageEvent('message', { data: buffer }));
+                } catch (e) { console.error('[Sender] fakeRecv:', e); }
                 el.querySelector('#fakeId').value = ''; el.querySelector('#fakeHex').value = '';
             }
         });
+
+        // ─── Perfis ───
         on(el.querySelector('#btnNewProf'), 'click', () => {
             const name = prompt('Nome do novo perfil:');
             if (name && name.trim()) {
@@ -2480,65 +3303,150 @@
             }
         });
         on(el.querySelector('#selProfile'), 'change', (e) => {
+            if (isSpamming) { isSpamming = false; spamRunId++; }
             AppState.currentProfileId = e.target.value;
             saveCurrentProfile(); renderPackets();
         });
         on(el.querySelector('#sndDelay'), 'change', (e) => {
-            AppState.profiles[AppState.currentProfileId].spamInterval = Number(e.target.value) || 300;
+            AppState.profiles[AppState.currentProfileId].spamInterval = Math.max(0, Number(e.target.value) || 0);
             saveCurrentProfile();
         });
         on(el.querySelector('#sndQtd'), 'change', (e) => {
-            AppState.profiles[AppState.currentProfileId].spamQtd = Number(e.target.value) || 0;
+            AppState.profiles[AppState.currentProfileId].spamQtd = Math.max(0, Number(e.target.value) || 0);
             saveCurrentProfile();
         });
 
+        // ═══════════════════════════════════════════════════════════
+        // MOTOR DE ENVIO — robusto, cancelável, ressurge de erros
+        // ═══════════════════════════════════════════════════════════
         on(el.querySelector('#btnSpamAction'), 'click', async function() {
-            if (!window.gameWS) return;
             const btn = el.querySelector('#btnSpamAction');
             const prof = AppState.profiles[AppState.currentProfileId];
+
+            // ── Estado 1: já rodando → parar ──
             if (isSpamming) {
-                isSpamming = false; spamRunId++;
+                isSpamming = false;
+                spamRunId++;
                 btn.textContent = '🚀 INICIAR SEQUÊNCIA';
-                btn.style.background = 'linear-gradient(135deg,#00d4aa,#00a88a)';
-                btn.style.color = '#0a0a0f';
+                btn.style.background = `linear-gradient(135deg,${Theme.ok},#059669)`;
+                btn.style.color = '#0b0b10';
+                stopStatusTimer();
                 return;
             }
-            if (prof.packets.length === 0) return;
+
+            // ── Estado 2: validação ──
+            if (!window.gameWS) {
+                statusEl.style.color = Theme.err;
+                statusEl.textContent = '⚠ Sem WebSocket ativo.';
+                setTimeout(() => { statusEl.textContent = ''; statusEl.style.color = Theme.textMute; }, 2500);
+                return;
+            }
+            if (!prof.packets.length) {
+                statusEl.style.color = Theme.warn;
+                statusEl.textContent = '⚠ Fila vazia.';
+                setTimeout(() => { statusEl.textContent = ''; statusEl.style.color = Theme.textMute; }, 2000);
+                return;
+            }
+
+            // ── Estado 3: iniciar ──
             isSpamming = true;
             const myRunId = ++spamRunId;
             btn.textContent = '⏹ PARAR SEQUÊNCIA';
-            btn.style.background = 'linear-gradient(135deg,#ef4444,#b91c1c)';
+            btn.style.background = `linear-gradient(135deg,${Theme.err},#b91c1c)`;
             btn.style.color = '#fff';
-            let loops = 0;
+            startStatusTimer();
+
             const inf = (prof.spamQtd === 0);
-            const sleepFn = sleep;
-            const UtilsFn = Utils;
-            while (isSpamming && myRunId === spamRunId && (inf || loops < prof.spamQtd)) {
-                for (const item of prof.packets) {
-                    if (!isSpamming || myRunId !== spamRunId) break;
-                    if (item.isDelay) {
-                        await sleep(item.ms);
-                    } else if (item.isJs) {
+            let loops = 0;
+
+            try {
+                while (isSpamming && myRunId === spamRunId && (inf || loops < prof.spamQtd)) {
+                    // Snapshot da fila a cada loop — assim alterações externas são vistas
+                    const filaAtual = prof.packets.slice();
+
+                    for (let i = 0; i < filaAtual.length; i++) {
+                        if (!isSpamming || myRunId !== spamRunId) break;
+
+                        const item = filaAtual[i];
+
+                        // ── Delay ──
+                        if (item.isDelay) {
+                            await sleep(Math.max(0, item.ms | 0));
+                            continue;
+                        }
+
+                        // ── JS inline ──
+                        if (item.isJs) {
+                            try {
+                                const fn = new Function(
+                                    'window', 'sleep', 'Utils',
+                                    `return (async () => { ${item.code} })();`
+                                );
+                                await fn(window, sleep, Utils);
+                            } catch (e) {
+                                console.error('[Sender][JS] Erro na ação inline:', e);
+                            }
+                            continue;
+                        }
+
+                        // ── Pacote binário ──
+                        // Revalidação leve do ID (defensivo — a UI já valida, mas
+                        // o item pode ter vindo de import/IA/edição externa).
+                        const idNum = Number(item.id);
+                        if (!Number.isFinite(idNum)) {
+                            console.warn('[Sender] Item com ID inválido ignorado:', item);
+                            continue;
+                        }
+
+                        // Revalida WS a cada envio (reconexão pode ter trocado a instância)
+                        const ws = window.gameWS;
+                        if (!ws) break;
+
+                        let buffer;
                         try {
-                            const fn = new Function('window', 'sleep', 'Utils', `return (async () => { ${item.code} })();`);
-                            await fn(window, sleepFn, UtilsFn);
-                        } catch (e) { console.error('[JS_ACTION] Erro:', e); }
-                    } else {
-                        if (!window.gameWS) break;
-                        const buffer = Utils.buildPacket(item.id, item.hex);
-                        window.gameWS.send(buffer);
+                            buffer = Utils.buildPacket(idNum, item.hex || '');
+                        } catch (e) {
+                            console.error('[Sender] buildPacket falhou:', e, item);
+                            continue;
+                        }
+
+                        // O send() já é o WRAPPED (Hub instalou). Todas as regras
+                        // de bloqueio (killSwitch, watchers, PacketFilter) correm lá.
+                        try {
+                            ws.send(buffer);
+                        } catch (e) {
+                            console.error('[Sender] send falhou (WS pode ter caído):', e);
+                            // Não quebra o loop — tenta o próximo. Se o WS morreu,
+                            // a próxima iteração detecta ws vazio e sai do for.
+                        }
+                    }
+
+                    loops++;
+                    spamLoops = loops;
+
+                    if (isSpamming && myRunId === spamRunId && (inf || loops < prof.spamQtd)) {
+                        const iv = Math.max(0, prof.spamInterval | 0);
+                        if (iv > 0) await sleep(iv);
                     }
                 }
-                loops++;
-                if (isSpamming && myRunId === spamRunId && (inf || loops < prof.spamQtd)) {
-                    await sleep(prof.spamInterval);
+            } catch (e) {
+                console.error('[Sender] Erro inesperado no motor:', e);
+                statusEl.style.color = Theme.err;
+                statusEl.textContent = '⚠ Erro no motor: ' + (e.message || e);
+            } finally {
+                // Só reseta UI se ainda for esta execução (evita sobrescrever nova run)
+                if (myRunId === spamRunId) {
+                    isSpamming = false;
+                    btn.textContent = '🚀 INICIAR SEQUÊNCIA';
+                    btn.style.background = `linear-gradient(135deg,${Theme.ok},#059669)`;
+                    btn.style.color = '#0b0b10';
+                    stopStatusTimer();
+                    if (loops > 0) {
+                        statusEl.style.color = Theme.ok;
+                        statusEl.textContent = `✓ ${loops} loop(s) concluído(s).`;
+                        setTimeout(() => { if (!isSpamming) statusEl.textContent = ''; statusEl.style.color = Theme.textMute; }, 3000);
+                    }
                 }
-            }
-            if (myRunId === spamRunId) {
-                isSpamming = false;
-                btn.textContent = '🚀 INICIAR SEQUÊNCIA';
-                btn.style.background = 'linear-gradient(135deg,#00d4aa,#00a88a)';
-                btn.style.color = '#0a0a0f';
             }
         });
 
@@ -2555,8 +3463,10 @@
             el.querySelector('#sndId').value = headerId;
             el.querySelector('#sndHex').value = hexPayload;
             const addBtn = el.querySelector('#btnAddSnd');
+            const oldBg = addBtn.style.background;
             addBtn.style.background = '#fff';
-            setTimeout(() => { addBtn.style.background = '#00d4aa'; }, 200);
+            addBtn.style.color = '#0b0b10';
+            setTimeout(() => { addBtn.style.background = oldBg; addBtn.style.color = '#0b0b10'; }, 200);
         }
 
         renderProfiles();
@@ -2566,7 +3476,7 @@
         return { element: el, setVisible };
     })();
 
-    // ─── Estilos globais ───
+    // ─── Estilos globais — Aurora Glass ───
     const styleEl = document.createElement('style');
     styleEl.textContent = `
         @keyframes iaMsgIn {
@@ -2578,11 +3488,200 @@
             30% { opacity: 1; transform: translateY(-4px); }
         }
         .ia-dot {
-            width: 6px; height: 6px; border-radius: 50%; background: #a855f7;
+            width: 6px; height: 6px; border-radius: 50%; background: ${Theme.violet};
             display: inline-block; animation: iaDot 1.2s ease-in-out infinite;
         }
         .ia-dot:nth-child(2) { animation-delay: 0.15s; }
         .ia-dot:nth-child(3) { animation-delay: 0.3s; }
+
+        #hl-analyzer .az-tab,
+        #hl-analyzer .pesq-tab {
+            background: transparent;
+            color: ${Theme.textMute};
+            border: none;
+            cursor: pointer;
+            padding: 10px 16px;
+            font-size: 11px;
+            font-family: monospace;
+            letter-spacing: 0.05em;
+            position: relative;
+            transition: color 0.15s;
+            outline: none;
+            white-space: nowrap;
+        }
+        #hl-analyzer .pesq-tab {
+            padding: 8px 13px;
+            font-size: 10.5px;
+        }
+        #hl-analyzer .az-tab:hover,
+        #hl-analyzer .pesq-tab:hover {
+            color: ${Theme.text};
+        }
+
+        #hl-analyzer .az-btn {
+            flex: 1;
+            background: rgba(255,255,255,0.03);
+            color: ${Theme.text};
+            border: 1px solid ${Theme.line};
+            cursor: pointer;
+            padding: 6px 10px;
+            border-radius: 8px;
+            font-size: 11px;
+            font-family: monospace;
+            transition: all 0.15s;
+        }
+        #hl-analyzer .az-btn:hover {
+            background: rgba(255,255,255,0.06);
+            border-color: ${Theme.line2};
+        }
+
+        #hl-analyzer .az-mini {
+            background: rgba(255,255,255,0.03);
+            color: ${Theme.text};
+            border: 1px solid ${Theme.line};
+            cursor: pointer;
+            padding: 6px 12px;
+            border-radius: 6px;
+            font-size: 11px;
+            font-family: monospace;
+            transition: all 0.15s;
+            white-space: nowrap;
+        }
+        #hl-analyzer .az-mini:hover,
+        #hl-sender .az-mini:hover {
+            background: rgba(255,255,255,0.07);
+        }
+
+        #hl-analyzer .az-mini-full {
+            width: 100%;
+            background: rgba(255,255,255,0.03);
+            color: ${Theme.text};
+            border: 1px solid ${Theme.line};
+            cursor: pointer;
+            padding: 5px;
+            border-radius: 6px;
+            font-size: 10px;
+            font-family: monospace;
+            transition: all 0.15s;
+        }
+
+        #hl-analyzer .az-grad-btn,
+        #hl-sender .az-grad-btn {
+            background: ${Theme.grad};
+            color: #0b0b10;
+            border: none;
+            cursor: pointer;
+            padding: 7px 16px;
+            border-radius: 8px;
+            font-weight: bold;
+            font-size: 11px;
+            font-family: monospace;
+            white-space: nowrap;
+            transition: all 0.15s;
+            letter-spacing: 0.03em;
+        }
+        #hl-analyzer .az-grad-btn:hover,
+        #hl-sender .az-grad-btn:hover {
+            filter: brightness(1.1);
+            transform: translateY(-1px);
+        }
+        #hl-analyzer .az-grad-btn:disabled,
+        #hl-sender .az-grad-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        #hl-analyzer .az-card {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            min-width: 0;
+            background: rgba(255,255,255,0.025);
+            border: 1px solid ${Theme.line};
+            border-radius: 10px;
+            padding: 12px;
+        }
+        #hl-analyzer .az-card-title {
+            font-weight: bold;
+            margin-bottom: 6px;
+            font-size: 11px;
+            letter-spacing: 0.05em;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        #hl-analyzer .az-card-desc {
+            font-size: 10px;
+            color: ${Theme.textMute};
+            margin-bottom: 8px;
+            line-height: 1.5;
+        }
+
+        #hl-analyzer .az-label,
+        #hl-sender .az-label {
+            font-size: 10.5px;
+            color: ${Theme.textMute};
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+        }
+        #hl-analyzer .az-input-xs,
+        #hl-sender .az-input-xs {
+            width: 55px;
+            background: rgba(0,0,0,0.25);
+            color: ${Theme.text};
+            border: 1px solid ${Theme.line};
+            padding: 5px 7px;
+            border-radius: 6px;
+            font-size: 11px;
+            font-family: monospace;
+            outline: none;
+            margin-left: 4px;
+            box-sizing: border-box;
+        }
+        #hl-analyzer .az-input-flex,
+        #hl-sender .az-input-flex {
+            flex: 1;
+            background: rgba(0,0,0,0.25);
+            color: ${Theme.text};
+            border: 1px solid ${Theme.line};
+            padding: 6px 10px;
+            border-radius: 6px;
+            font-size: 11px;
+            font-family: monospace;
+            outline: none;
+            min-width: 0;
+            box-sizing: border-box;
+        }
+        #hl-analyzer .az-input-select,
+        #hl-sender .az-input-select {
+            background: rgba(0,0,0,0.25);
+            color: ${Theme.text};
+            border: 1px solid ${Theme.line};
+            padding: 6px 10px;
+            border-radius: 6px;
+            font-size: 11px;
+            font-family: monospace;
+            outline: none;
+            cursor: pointer;
+        }
+
+        #hl-analyzer .ia-quick {
+            background: rgba(255,255,255,0.03);
+            color: #c4b5fd;
+            border: 1px solid rgba(167,139,250,0.3);
+            cursor: pointer;
+            padding: 5px 10px;
+            border-radius: 6px;
+            font-size: 10px;
+            font-family: monospace;
+            transition: all 0.15s;
+        }
+        #hl-analyzer .ia-quick:hover {
+            background: rgba(167,139,250,0.12);
+            border-color: rgba(167,139,250,0.5);
+        }
 
         #hl-analyzer::-webkit-scrollbar,
         #hl-sender::-webkit-scrollbar,
@@ -2592,17 +3691,21 @@
         #hl-analyzer::-webkit-scrollbar-track,
         #hl-sender::-webkit-scrollbar-track,
         #hl-analyzer *::-webkit-scrollbar-track,
-        #hl-sender *::-webkit-scrollbar-track { background: #0a0a12; }
+        #hl-sender *::-webkit-scrollbar-track { background: rgba(0,0,0,0.2); }
 
         #hl-analyzer::-webkit-scrollbar-thumb,
         #hl-sender::-webkit-scrollbar-thumb,
         #hl-analyzer *::-webkit-scrollbar-thumb,
-        #hl-sender *::-webkit-scrollbar-thumb { background: #1e1e2e; border-radius: 3px; }
-
+        #hl-sender *::-webkit-scrollbar-thumb {
+            background: rgba(255,255,255,0.08);
+            border-radius: 3px;
+        }
         #hl-analyzer::-webkit-scrollbar-thumb:hover,
         #hl-sender::-webkit-scrollbar-thumb:hover,
         #hl-analyzer *::-webkit-scrollbar-thumb:hover,
-        #hl-sender *::-webkit-scrollbar-thumb:hover { background: #2a2a3e; }
+        #hl-sender *::-webkit-scrollbar-thumb:hover {
+            background: rgba(255,255,255,0.16);
+        }
 
         #hl-analyzer input:focus,
         #hl-sender input:focus,
@@ -2610,8 +3713,8 @@
         #hl-sender textarea:focus,
         #hl-analyzer select:focus,
         #hl-sender select:focus {
-            border-color: #6c63ff !important;
-            box-shadow: 0 0 0 2px rgba(108,99,255,0.15);
+            border-color: ${Theme.cyan} !important;
+            box-shadow: 0 0 0 3px rgba(34,211,238,0.12);
         }
         #hl-analyzer button:disabled,
         #hl-sender button:disabled { opacity: 0.5; cursor: not-allowed; }
@@ -2635,7 +3738,18 @@
         });
     });
 
-    // ─── WebSocket via Hub ───
+    // ═══════════════════════════════════════════════════════════════
+    // HOOK WEBSOCKET — pipeline de bloqueio blindado
+    // ═══════════════════════════════════════════════════════════════
+    // Regra geral (vale para OUT e IN):
+    //   1. Kill switch ligado → descarta silenciosamente sem nem processar
+    //   2. Normaliza dados para ArrayBuffer — se não der, passa direto
+    //   3. parseData — se falhar, passa direto (não é pacote nosso)
+    //   4. Watchers — se alguma regra retornar `bloquear`, marca drop
+    //   5. PacketFilter — checa ID e payload
+    //   6. Envia ou descarta
+    // TUDO em try/catch. Nenhum erro de filtro pode impedir um envio legítimo.
+    // ═══════════════════════════════════════════════════════════════
     if (!window._hubSocket) {
         console.error('[Analyzer] window._hubSocket não encontrado. Carregue via Sang Hub.');
         while (cleanup.length) { const fn = cleanup.pop(); try { fn(); } catch(e) {} }
@@ -2644,97 +3758,189 @@
 
     const _recentPackets = new Map();
     function fastBufferHash(buffer) {
-        const u8 = new Uint8Array(buffer);
-        let hash = 0;
-        const len = u8.length;
-        const step = len <= 256 ? 1 : Math.max(1, Math.floor(len / 64));
-        for (let i = 0; i < len; i += step) {
-            hash = ((hash << 5) - hash) + u8[i];
-            hash |= 0;
-        }
-        return `${len}_${hash}`;
+        try {
+            const u8 = new Uint8Array(buffer);
+            let hash = 0;
+            const len = u8.length;
+            const step = len <= 256 ? 1 : Math.max(1, Math.floor(len / 64));
+            for (let i = 0; i < len; i += step) {
+                hash = ((hash << 5) - hash) + u8[i];
+                hash |= 0;
+            }
+            return `${len}_${hash}`;
+        } catch (e) { return 'err'; }
     }
     function isDuplicate(data) {
         if (!(data instanceof ArrayBuffer)) return false;
-        const key = fastBufferHash(data);
-        const now = Date.now();
-        if (_recentPackets.has(key) && now - _recentPackets.get(key) < 50) return true;
-        _recentPackets.set(key, now);
-        if (_recentPackets.size > 200) {
-            for (const [k, t] of _recentPackets) if (now - t > 200) _recentPackets.delete(k);
-        }
-        return false;
+        try {
+            const key = fastBufferHash(data);
+            const now = Date.now();
+            if (_recentPackets.has(key) && now - _recentPackets.get(key) < 50) return true;
+            _recentPackets.set(key, now);
+            if (_recentPackets.size > 200) {
+                for (const [k, t] of _recentPackets) if (now - t > 200) _recentPackets.delete(k);
+            }
+            return false;
+        } catch (e) { return false; }
     }
+
     function handleTraffic(data, dir, isDropped) {
         if (!_alive) return;
-        if (AppState.isPaused) return;
-        if (dir === 'RECV' && isDuplicate(data)) return;
-        const packet = Utils.parseData(data);
-        if (!packet) return;
+        try {
+            if (AppState.isPaused) return;
+            if (dir === 'RECV' && isDuplicate(data)) return;
+            const packet = Utils.parseData(data);
+            if (!packet) return;
 
-        // Alimenta o correlator com tráfego real (não droppado)
-        if (!isDropped) {
-            if (dir === 'SEND') Correlator.registrarEnvio(packet);
-            else Correlator.registrarRecebimento(packet);
-        }
+            // Grava (se ativo)
+            try { Recorder.capturar(packet, dir); } catch (e) {}
 
-        if (!PacketFilter.isVisualBlocked(packet)) {
-            AnalyzerUI.addLog(packet, dir, !!isDropped);
+            // Alimenta correlator com tráfego real
+            if (!isDropped) {
+                try {
+                    if (dir === 'SEND') Correlator.registrarEnvio(packet);
+                    else Correlator.registrarRecebimento(packet);
+                } catch (e) {}
+            }
+
+            // Log visual
+            try {
+                if (!PacketFilter.isVisualBlocked(packet)) {
+                    AnalyzerUI.addLog(packet, dir, !!isDropped);
+                }
+            } catch (e) {
+                console.error('[Analyzer] isVisualBlocked error:', e);
+                AnalyzerUI.addLog(packet, dir, !!isDropped);
+            }
+        } catch (e) {
+            console.error('[Analyzer] handleTraffic error:', e);
         }
     }
+
+    // Decide se um pacote OUT deve ser bloqueado. Retorna true se SIM.
+    // Blindado: qualquer erro → retorna false (deixa passar).
+    function deveBloquear(packet, dir) {
+        try {
+            // Kill switch global
+            if (AppState.killSwitchActive && dir === 'SEND') return true;
+            // Watchers (podem pedir bloqueio)
+            try {
+                if (Watchers.avaliar(packet, dir)) return true;
+            } catch (e) { console.error('[Analyzer] Watchers error:', e); }
+            // Filtro declarativo
+            try {
+                if (dir === 'SEND' && PacketFilter.isNetworkDropped(packet)) return true;
+            } catch (e) { console.error('[Analyzer] isNetworkDropped error:', e); }
+            return false;
+        } catch (e) {
+            console.error('[Analyzer] deveBloquear fatal:', e);
+            return false;
+        }
+    }
+
     function wrapSend(ws) {
         if (!ws || ws._analyzerSendWrapped) return;
         ws._analyzerSendWrapped = true;
         const originalSend = ws.send.bind(ws);
         ws._analyzerOriginalSend = originalSend;
+
         ws.send = function(data) {
+            // Se o módulo morreu, apenas repassa
             if (!_alive) return originalSend(data);
-            if (AppState.killSwitchActive) return;
-            const packet = Utils.parseData(data);
-            if (packet && PacketFilter.isNetworkDropped(packet)) {
-                handleTraffic(data, 'SEND', true);
-                return;
+
+            try {
+                // Normaliza para ArrayBuffer. Se não for convertível,
+                // passa direto — não é pacote binário nosso.
+                const buf = Utils.normalizeToArrayBuffer(data);
+                if (!buf) return originalSend(data);
+
+                const packet = Utils.parseData(buf);
+                if (!packet) return originalSend(data);
+
+                // Decisão de bloqueio (kill switch + watchers + filtro)
+                if (deveBloquear(packet, 'SEND')) {
+                    handleTraffic(buf, 'SEND', true);
+                    return;   // ← descarta
+                }
+
+                // Log + correlação antes de enviar
+                handleTraffic(buf, 'SEND', false);
+
+                // Repassa o buffer NORMALIZADO (não o original) para evitar
+                // problemas se o wrapper tiver recebido string/typed array.
+                return originalSend(buf);
+            } catch (e) {
+                // Qualquer erro inesperado → passa direto, sem travar o cliente.
+                console.error('[Analyzer] wrapSend error (fail-open):', e);
+                try { return originalSend(data); } catch (e2) { throw e2; }
             }
-            handleTraffic(data, 'SEND', false);
-            return originalSend(data);
         };
     }
+
     async function handleInbound(event) {
         if (!_alive) return;
-        let data = event.data;
-        if (data instanceof Blob) {
-            try { data = await data.arrayBuffer(); } catch(e) { return; }
+        try {
+            let data = event.data;
+            if (data instanceof Blob) {
+                try { data = await data.arrayBuffer(); } catch(e) { return; }
+            }
+            const buf = Utils.normalizeToArrayBuffer(data);
+            if (!buf) return;
+            const modifiedData = InboundTransformer.transform(buf);
+            handleTraffic(modifiedData, 'RECV');
+        } catch (e) {
+            console.error('[Analyzer] handleInbound error:', e);
         }
-        const modifiedData = InboundTransformer.transform(data);
-        handleTraffic(modifiedData, 'RECV');
     }
 
+    // ─── Instala o wrapper no WS ativo + escuta reconexão ───
     window.gameWS = window._hubSocket.getActive();
     if (window.gameWS) wrapSend(window.gameWS);
-    window._hubSocket.onConnect((ws) => { if (!_alive) return; window.gameWS = ws; wrapSend(ws); });
-    window._hubSocket.onMessage((event, ws) => { if (!_alive) return; if (ws !== window.gameWS) return; handleInbound(event); });
 
-    // ─── API pública ───
+    window._hubSocket.onConnect((ws) => {
+        if (!_alive) return;
+        window.gameWS = ws;
+        wrapSend(ws);
+    });
+
+    window._hubSocket.onMessage((event, ws) => {
+        if (!_alive) return;
+        if (ws !== window.gameWS) return;
+        handleInbound(event);
+    });
+
+    // ─── API pública + kill ───
     function kill() {
         _alive = false;
-        try { delete window[UID]; } catch(e) {}
-        Fuzzer.parar();
-        try { Correlator._flush(); } catch(e) {}
-        Emitter.clear();
+        try { delete window[UID]; } catch (e) {}
+        try { Fuzzer.parar(); } catch (e) {}
+        try { Replay.parar(); } catch (e) {}
+        try { Correlator._flush(); } catch (e) {}
+        try { Recorder.parar(); } catch (e) {}
+        try { Emitter.clear(); } catch (e) {}
+
+        // Restaura send original, se conseguirmos
         try {
             if (window.gameWS && window.gameWS._analyzerSendWrapped) {
-                if (window.gameWS._analyzerOriginalSend) window.gameWS.send = window.gameWS._analyzerOriginalSend;
+                if (window.gameWS._analyzerOriginalSend) {
+                    window.gameWS.send = window.gameWS._analyzerOriginalSend;
+                }
                 delete window.gameWS._analyzerSendWrapped;
                 delete window.gameWS._analyzerOriginalSend;
             }
-        } catch(e) {}
-        try { Storage.set('dicionario', AppState.dicionario); } catch(e) {}
-        while (cleanup.length) { const fn = cleanup.pop(); try { fn(); } catch(e) {} }
+        } catch (e) {}
+
+        try { Storage.set('dicionario', AppState.dicionario); } catch (e) {}
+
+        while (cleanup.length) {
+            const fn = cleanup.pop();
+            try { fn(); } catch (e) {}
+        }
         try {
-            [Toolbar.element, AnalyzerUI.element, SenderUI.element].forEach(el => {
-                if (el && el.parentNode) el.parentNode.removeChild(el);
+            [Toolbar.element, AnalyzerUI.element, SenderUI.element].forEach(elem => {
+                if (elem && elem.parentNode) elem.parentNode.removeChild(elem);
             });
-        } catch(e) {}
+        } catch (e) {}
     }
 
     window[UID] = { kill };
