@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Games
 // @namespace    devchris
-// @version      9.1-module
+// @version      9.2-module
 // @description  Hub de jogos com lista puxada de um manifest no GitHub + jogos temporários locais; painel arrastável e scrollável; overlay arrastável/redimensionável (16:9); FAB arrastável após segurar o clique; detecta bloqueio de embed e cai pra nova aba. (módulo SangHub — instanceKey: _games)
 // @match        *://*/*
 // @grant        GM_registerMenuCommand
@@ -15,18 +15,25 @@
 // @connect      api.github.com
 // @noframes
 // ==/UserScript==
+// NOTA sobre @match: amplo de propósito porque este módulo normalmente não roda
+// sozinho — é injetado dinamicamente pelo Sang Hub, que já restringe onde carrega
+// seus módulos. Se for rodar este arquivo isolado via Tampermonkey, restrinja ao
+// domínio real do hotel.
 (function () {
   'use strict';
 
-  if (window.__glLoaded) return;
-  window.__glLoaded = true;
+  // Guarda de idempotência: window._games é criado sincronamente já na primeira
+  // linha e só recebe o kill() real ao fim do boot(). Isso evita janela de corrida
+  // se o script for injetado duas vezes antes do DOM estar pronto.
+  if (window._games) return;
+  const api = { kill: () => {} };
+  window._games = api;
 
-  // ---- Teardown (usado pelo kill do Hub) ----
-  const teardownListeners = [];
-  function onDoc(evento, handler) {
-    document.addEventListener(evento, handler);
-    teardownListeners.push(() => document.removeEventListener(evento, handler));
-  }
+  // Um AbortController cobre todo listener de window/document do módulo inteiro.
+  // kill() só precisa de ac.abort() pra soltar tudo de uma vez — sem lista manual.
+  const ac = new AbortController();
+  let host = null;
+  let root = null;
 
   // ======= CONFIGURAÇÃO =======
   const MANIFEST_URL = 'https://raw.githubusercontent.com/zBeyond5/GamesHUB/refs/heads/main/TMGames/manifest.json';
@@ -36,8 +43,8 @@
   const LARGURA_MIN = 280;
   const ALTURA_MIN = 200;
   const RAZAO_16_9 = 16 / 9;
-  const PAINEL_ALTURA_MAX_VH = 78; 
-  const FAB_SEGURAR_MS = 200; 
+  const PAINEL_ALTURA_MAX_VH = 78;
+  const FAB_SEGURAR_MS = 200;
 
   const PREFIXO_LOG = '[Game Launcher]';
   const GM_SINCRONO = typeof GM_getValue === 'function' && typeof GM_setValue === 'function';
@@ -50,58 +57,63 @@
     );
   }
 
-  // ================= ESTILO =================
+  // ================= FONTE =================
+  // Geist é carregada uma vez por página só; se outro módulo do hub já inseriu, não duplica.
+  function ensureFont() {
+    if (document.querySelector('link[data-sang-font]')) return;
+    const link = document.createElement('link');
+    link.rel = 'stylesheet';
+    link.href = 'https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500;600&display=swap';
+    link.setAttribute('data-sang-font', '');
+    document.head.appendChild(link);
+  }
+
+  // ================= ESTILO (aurora glass) =================
   function injetarEstilos() {
-    if (document.getElementById('gl-estilos')) return;
+    if (root.getElementById('gl-estilos')) return;
     const style = document.createElement('style');
     style.id = 'gl-estilos';
     style.textContent = `
-:root {
-  --gl-accent: #3b82f6;
-  --gl-accent-2: #60a5fa;
-  --gl-accent-glow: rgba(59, 130, 246, 0.55);
-  --gl-bg: #0a0e17;
-  --gl-bg-elevated: #101728;
-  --gl-bg-card: #141d33;
-  --gl-bg-card-hover: #182446;
-  --gl-border: #22314f;
-  --gl-border-soft: #1a2440;
-  --gl-text: #e8ecf6;
-  --gl-text-dim: #8a94ab;
-  --gl-danger: #ef4444;
-  --gl-danger-soft: rgba(239, 68, 68, 0.15);
-  --gl-success: #22c55e;
-  --gl-success-soft: rgba(34, 197, 94, 0.15);
-  --gl-warn: #f59e0b;
-  --gl-warn-soft: rgba(245, 158, 11, 0.12);
-  --gl-radius: 12px;
-  --gl-radius-sm: 8px;
-  --gl-font: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif;
+:host {
+  all: initial;
+  --hub-cyan: #22d3ee;
+  --hub-violet: #a78bfa;
+  --hub-grad: linear-gradient(120deg, var(--hub-cyan), var(--hub-violet));
+  --hub-ok: #34d399;
+  --hub-err: #fb7185;
+  --hub-warn: #f59e0b;
+  --hub-muted: #8b8fa3;
+  --hub-text: #f1f2f5;
+  --hub-radius: 20px;
+  --hub-radius-sm: 12px;
+  --hub-font: 'Geist', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
 }
-.gl-scope, .gl-scope * { box-sizing: border-box; font-family: var(--gl-font); }
-.gl-scope { color: var(--gl-text); }
+.gl-scope, .gl-scope * { box-sizing: border-box; font-family: var(--hub-font); }
+.gl-scope { color: var(--hub-text); }
 
 @keyframes gl-fade-in { from { opacity: 0; transform: translateY(4px) scale(0.98); } to { opacity: 1; transform: translateY(0) scale(1); } }
 @keyframes gl-fade-in-center { from { opacity: 0; transform: translate(-50%, -50%) scale(0.96); } to { opacity: 1; transform: translate(-50%, -50%) scale(1); } }
 @keyframes gl-pulse-ring {
-  0%   { box-shadow: 0 0 0 0 var(--gl-accent-glow), 0 4px 18px rgba(0,0,0,0.5); }
-  70%  { box-shadow: 0 0 0 10px rgba(59,130,246,0), 0 4px 18px rgba(0,0,0,0.5); }
-  100% { box-shadow: 0 0 0 0 rgba(59,130,246,0), 0 4px 18px rgba(0,0,0,0.5); }
+  0%   { box-shadow: 0 0 0 0 rgba(34,211,238,.5), 0 4px 18px rgba(0,0,0,.5); }
+  70%  { box-shadow: 0 0 0 10px rgba(34,211,238,0), 0 4px 18px rgba(0,0,0,.5); }
+  100% { box-shadow: 0 0 0 0 rgba(34,211,238,0), 0 4px 18px rgba(0,0,0,.5); }
 }
 @keyframes gl-spin { to { transform: rotate(360deg); } }
 
 .gl-fab {
   position: fixed; z-index: 999999; width: 56px; height: 56px; border-radius: 50%;
-  background: linear-gradient(145deg, var(--gl-accent), #1d4ed8);
-  border: 1px solid rgba(255,255,255,0.15);
-  color: #fff; display: flex; align-items: center; justify-content: center;
+  background: var(--hub-grad);
+  border: 1px solid rgba(255,255,255,.18);
+  color: #06080d; display: flex; align-items: center; justify-content: center;
   cursor: pointer; user-select: none;
-  animation: gl-pulse-ring 2.8s infinite;
+  box-shadow: 0 4px 18px rgba(0,0,0,.5);
   transition: transform 150ms ease, filter 150ms ease, box-shadow 150ms ease;
 }
-.gl-fab:hover { transform: scale(1.06); filter: brightness(1.1); }
+.gl-fab.gl-fab-pulsando { animation: gl-pulse-ring 2.4s ease-out 3; }
+.gl-fab:hover { transform: scale(1.06); filter: brightness(1.08); }
+.gl-fab:focus-visible { outline: none; box-shadow: 0 0 0 3px rgba(34,211,238,.5); }
 .gl-fab.gl-fab-liberado {
-  cursor: grab; box-shadow: 0 0 0 3px rgba(59,130,246,0.45), 0 4px 18px rgba(0,0,0,0.5);
+  cursor: grab; box-shadow: 0 0 0 3px rgba(34,211,238,.4), 0 4px 18px rgba(0,0,0,.5);
   animation: none;
 }
 .gl-fab.gl-fab-arrastando { cursor: grabbing; transform: scale(0.97); animation: none; }
@@ -109,140 +121,149 @@
 
 .gl-btn {
   display: inline-flex; align-items: center; justify-content: center; gap: 6px;
-  border: 1px solid var(--gl-border); border-radius: var(--gl-radius-sm);
-  background: var(--gl-bg-elevated); color: var(--gl-text);
+  border: 1px solid rgba(255,255,255,.1); border-radius: var(--hub-radius-sm);
+  background: rgba(255,255,255,.04); color: var(--hub-text);
   font-size: 12px; font-weight: 600; padding: 8px 12px; cursor: pointer;
   transition: background 150ms ease, border-color 150ms ease, transform 100ms ease, filter 150ms ease;
 }
-.gl-btn:hover { border-color: var(--gl-accent-2); filter: brightness(1.08); }
+.gl-btn:hover { border-color: rgba(34,211,238,.4); background: rgba(255,255,255,.07); }
+.gl-btn:focus-visible { outline: none; box-shadow: 0 0 0 2px rgba(34,211,238,.5); }
 .gl-btn:active { transform: scale(0.97); }
 .gl-btn:disabled { opacity: 0.5; cursor: default; transform: none; }
-.gl-btn-primary { background: linear-gradient(145deg, var(--gl-accent), #1d4ed8); border-color: transparent; color: #fff; }
-.gl-btn-danger { background: var(--gl-danger-soft); border-color: rgba(239,68,68,0.35); color: #fca5a5; }
-.gl-btn-icon { padding: 7px; border-radius: var(--gl-radius-sm); }
+.gl-btn-primary { background: var(--hub-grad); border-color: transparent; color: #06080d; font-weight: 700; }
+.gl-btn-primary:hover { filter: brightness(1.08); }
+.gl-btn-danger { background: rgba(251,113,133,.14); border-color: rgba(251,113,133,.35); color: #fda4af; }
+.gl-btn-icon { padding: 7px; border-radius: var(--hub-radius-sm); }
 .gl-btn-icon svg { width: 15px; height: 15px; }
-.gl-btn-play { background: var(--gl-success-soft); border-color: rgba(34,197,94,0.4); color: #86efac; }
+.gl-btn-play { background: rgba(52,211,153,.14); border-color: rgba(52,211,153,.4); color: #86efac; }
 
-.gl-input {
-  width: 100%; background: var(--gl-bg); color: var(--gl-text);
-  border: 1px solid var(--gl-border); border-radius: var(--gl-radius-sm);
+.gl-label { display: block; font-size: 10.5px; color: var(--hub-muted); margin-bottom: 4px; }
+.gl-input, .gl-select {
+  width: 100%; background: rgba(255,255,255,.04); color: var(--hub-text);
+  border: 1px solid rgba(255,255,255,.1); border-radius: var(--hub-radius-sm);
   padding: 9px 11px; font-size: 12.5px; outline: none;
   transition: border-color 150ms ease, box-shadow 150ms ease;
 }
-.gl-input:focus { border-color: var(--gl-accent); box-shadow: 0 0 0 3px rgba(59,130,246,0.18); }
-.gl-input::placeholder { color: var(--gl-text-dim); }
+.gl-input:focus, .gl-select:focus { border-color: var(--hub-cyan); box-shadow: 0 0 0 3px rgba(34,211,238,.15); }
+.gl-input::placeholder { color: var(--hub-muted); }
 
 .gl-backdrop {
   position: fixed; inset: 0; z-index: 2147483647;
-  background: rgba(5, 8, 15, 0.65); backdrop-filter: blur(2px);
+  background: rgba(5,8,15,.65); backdrop-filter: blur(3px);
   display: flex; align-items: center; justify-content: center;
 }
 .gl-card {
-  width: 280px; background: var(--gl-bg-elevated); border: 1px solid var(--gl-border);
-  border-radius: var(--gl-radius); padding: 18px;
-  box-shadow: 0 20px 50px rgba(0,0,0,0.55), 0 0 0 1px rgba(59,130,246,0.08);
+  width: 280px;
+  background: linear-gradient(175deg, rgba(20,20,28,.94) 0%, rgba(9,9,14,.98) 100%);
+  backdrop-filter: blur(18px) saturate(140%);
+  border: 1px solid rgba(255,255,255,.08);
+  border-radius: var(--hub-radius); padding: 18px;
+  box-shadow: 0 20px 50px rgba(0,0,0,.55), inset 0 1px 0 rgba(255,255,255,.06);
   animation: gl-fade-in 160ms ease;
 }
-.gl-card-title { font-size: 14px; font-weight: 700; letter-spacing: 0.2px; margin-bottom: 3px; display: flex; align-items: center; gap: 7px; }
-.gl-card-title svg { width: 16px; height: 16px; color: var(--gl-accent-2); }
-.gl-card-sub { font-size: 11px; color: var(--gl-text-dim); margin-bottom: 12px; line-height: 1.4; }
-.gl-card-error { color: var(--gl-danger); font-size: 11px; min-height: 14px; margin: 2px 0 8px; }
+.gl-card-title { font-size: 14px; font-weight: 700; letter-spacing: .2px; margin-bottom: 3px; display: flex; align-items: center; gap: 7px; }
+.gl-card-title svg { width: 16px; height: 16px; color: var(--hub-cyan); }
+.gl-card-sub { font-size: 11px; color: var(--hub-muted); margin-bottom: 12px; line-height: 1.4; }
+.gl-card-error { color: var(--hub-err); font-size: 11px; min-height: 14px; margin: 2px 0 8px; }
 .gl-card-row { display: flex; gap: 8px; margin-top: 4px; }
 .gl-field { margin-bottom: 8px; }
 
 .gl-panel {
   position: fixed; z-index: 2147483647;
   top: 50%; left: 50%; transform: translate(-50%, -50%);
-  width: 360px; max-height: ${PAINEL_ALTURA_MAX_VH}vh; display: flex; flex-direction: column;
-  background: var(--gl-bg-elevated); border: 1px solid var(--gl-border);
-  border-radius: var(--gl-radius); overflow: hidden;
-  box-shadow: 0 24px 60px rgba(0,0,0,0.6), 0 0 0 1px rgba(59,130,246,0.06);
+  width: 380px; max-height: ${PAINEL_ALTURA_MAX_VH}vh; display: flex; flex-direction: column;
+  background: linear-gradient(175deg, rgba(20,20,28,.92) 0%, rgba(9,9,14,.97) 100%);
+  backdrop-filter: blur(18px) saturate(140%);
+  border: 1px solid rgba(255,255,255,.08);
+  border-radius: var(--hub-radius); overflow: hidden;
+  box-shadow: 0 24px 60px rgba(0,0,0,.6), inset 0 1px 0 rgba(255,255,255,.06);
   animation: gl-fade-in-center 180ms ease;
 }
 .gl-panel.gl-no-transform { transform: none; }
 .gl-panel-header {
   display: flex; justify-content: space-between; align-items: center;
-  padding: 13px 14px; background: var(--gl-bg-card);
-  border-bottom: 1px solid var(--gl-border-soft); flex-shrink: 0;
+  padding: 13px 14px; background: rgba(255,255,255,.02);
+  border-bottom: 1px solid rgba(255,255,255,.06); flex-shrink: 0;
   cursor: move; user-select: none;
 }
-.gl-panel-title { font-size: 13.5px; font-weight: 700; letter-spacing: 0.3px; display: flex; align-items: center; gap: 8px; pointer-events: none; }
-.gl-panel-title svg { width: 17px; height: 17px; color: var(--gl-accent-2); }
+.gl-panel-title {
+  font-size: 13.5px; font-weight: 600; letter-spacing: .2px; display: flex; align-items: center; gap: 8px; pointer-events: none;
+  background: var(--hub-grad); -webkit-background-clip: text; background-clip: text; color: transparent;
+}
+.gl-panel-title svg { color: var(--hub-cyan); }
 .gl-panel-actions { display: flex; gap: 6px; }
 .gl-spin { animation: gl-spin 800ms linear infinite; }
 
 .gl-banner {
   display: flex; align-items: flex-start; gap: 8px;
-  padding: 9px 14px; font-size: 11px; color: #fcd34d; background: var(--gl-warn-soft);
-  border-bottom: 1px solid var(--gl-border-soft); flex-shrink: 0;
+  padding: 9px 14px; font-size: 11px; color: #fcd34d; background: rgba(245,158,11,.1);
+  border-bottom: 1px solid rgba(255,255,255,.06); flex-shrink: 0;
 }
-.gl-banner svg { width: 14px; height: 14px; flex-shrink: 0; margin-top: 1px; color: var(--gl-warn); }
+.gl-banner svg { width: 14px; height: 14px; flex-shrink: 0; margin-top: 1px; color: var(--hub-warn); }
 
 .gl-list { overflow-y: auto; overflow-x: hidden; flex: 1; min-height: 0; padding: 10px; display: flex; flex-direction: column; gap: 7px; }
-.gl-list::-webkit-scrollbar { width: 8px; }
-.gl-list::-webkit-scrollbar-thumb { background: var(--gl-border); border-radius: 8px; }
+.gl-list::-webkit-scrollbar { width: 4px; }
+.gl-list::-webkit-scrollbar-thumb { background: rgba(255,255,255,.15); border-radius: 2px; }
 
-.gl-empty { color: var(--gl-text-dim); font-size: 12px; padding: 30px 10px; text-align: center; line-height: 1.5; }
+.gl-empty { color: var(--hub-muted); font-size: 12px; padding: 30px 10px; text-align: center; line-height: 1.5; }
 
 .gl-game-card {
-  display: flex; align-items: center; gap: 10px; padding: 9px; border-radius: var(--gl-radius-sm);
-  background: var(--gl-bg-card); border: 1px solid transparent;
+  display: flex; align-items: center; gap: 10px; padding: 9px; border-radius: var(--hub-radius-sm);
+  background: rgba(255,255,255,.03); border: 1px solid transparent;
   transition: background 150ms ease, border-color 150ms ease, transform 100ms ease;
 }
-.gl-game-card:hover { border-color: var(--gl-border); transform: translateY(-1px); }
+.gl-game-card:hover { background: rgba(255,255,255,.06); border-color: rgba(255,255,255,.08); transform: translateY(-1px); }
 .gl-thumb {
   width: 50px; height: 50px; flex-shrink: 0; border-radius: 10px;
-  background: var(--gl-bg); display: flex; align-items: center; justify-content: center;
-  overflow: hidden; color: var(--gl-accent-2); border: 1px solid var(--gl-border-soft);
+  background: rgba(255,255,255,.04); display: flex; align-items: center; justify-content: center;
+  overflow: hidden; color: var(--hub-cyan); border: 1px solid rgba(255,255,255,.06);
   padding: 5px;
 }
 .gl-thumb img { max-width: 100%; max-height: 100%; width: auto; height: auto; object-fit: contain; display: block; }
 .gl-thumb svg { width: 20px; height: 20px; }
-.gl-filtro-bar { display: flex; gap: 8px; align-items: center; padding: 9px 12px; border-bottom: 1px solid var(--gl-border-soft); background: var(--gl-bg-elevated); flex-shrink: 0; }
-.gl-select {
-  flex: 1; background: var(--gl-bg); color: var(--gl-text); border: 1px solid var(--gl-border);
-  border-radius: var(--gl-radius-sm); padding: 7px 9px; font-size: 12px; outline: none;
-}
-.gl-select:focus { border-color: var(--gl-accent); }
+.gl-filtro-bar { display: flex; gap: 8px; align-items: center; padding: 9px 12px; border-bottom: 1px solid rgba(255,255,255,.06); background: rgba(255,255,255,.015); flex-shrink: 0; }
 .gl-hover-info {
   position: fixed; z-index: 2147483647; max-width: 220px;
-  background: var(--gl-bg-elevated); border: 1px solid var(--gl-border); border-radius: var(--gl-radius-sm);
-  padding: 10px 12px; font-size: 11.5px; line-height: 1.6; color: var(--gl-text);
-  box-shadow: 0 16px 40px rgba(0,0,0,0.55); pointer-events: none;
+  background: linear-gradient(175deg, rgba(20,20,28,.95) 0%, rgba(9,9,14,.98) 100%);
+  backdrop-filter: blur(14px) saturate(140%);
+  border: 1px solid rgba(255,255,255,.08); border-radius: var(--hub-radius-sm);
+  padding: 10px 12px; font-size: 11.5px; line-height: 1.6; color: var(--hub-text);
+  box-shadow: 0 16px 40px rgba(0,0,0,.55); pointer-events: none;
 }
 .gl-hover-info-title { font-weight: 700; font-size: 12.5px; margin-bottom: 5px; }
-.gl-hover-info-row { display: flex; justify-content: space-between; gap: 12px; color: var(--gl-text-dim); }
-.gl-hover-info-row span:last-child { color: var(--gl-text); text-align: right; }
+.gl-hover-info-row { display: flex; justify-content: space-between; gap: 12px; color: var(--hub-muted); }
+.gl-hover-info-row span:last-child { color: var(--hub-text); text-align: right; }
 .gl-game-info { flex: 1; min-width: 0; }
 .gl-game-name { font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .gl-game-meta { display: flex; align-items: center; gap: 6px; margin-top: 3px; flex-wrap: wrap; }
 .gl-badge {
-  font-size: 9.5px; font-weight: 700; letter-spacing: 0.3px; text-transform: uppercase;
+  font-size: 9.5px; font-weight: 700; letter-spacing: .3px; text-transform: uppercase;
   padding: 2px 6px; border-radius: 5px; display: inline-flex; align-items: center; gap: 3px;
 }
-.gl-badge-ok { background: var(--gl-success-soft); color: #86efac; }
-.gl-badge-bloqueado { background: var(--gl-danger-soft); color: #fca5a5; }
-.gl-badge-neutro { background: rgba(148,163,184,0.15); color: #cbd5e1; }
-.gl-tag { font-size: 9.5px; color: var(--gl-text-dim); }
+.gl-badge-ok { background: rgba(52,211,153,.14); color: var(--hub-ok); }
+.gl-badge-bloqueado { background: rgba(251,113,133,.14); color: var(--hub-err); }
+.gl-badge-neutro { background: rgba(255,255,255,.08); color: var(--hub-muted); }
+.gl-tag { font-size: 9.5px; color: var(--hub-muted); }
 .gl-game-actions { display: flex; gap: 6px; flex-shrink: 0; }
 
-.gl-panel-footer { border-top: 1px solid var(--gl-border-soft); padding: 11px 12px; background: var(--gl-bg-card); flex-shrink: 0; }
+.gl-panel-footer { border-top: 1px solid rgba(255,255,255,.06); padding: 11px 12px; background: rgba(255,255,255,.015); flex-shrink: 0; }
 
 .gl-overlay {
   position: fixed; z-index: 2147483647;
-  background: var(--gl-bg); display: flex; flex-direction: column;
-  border: 1px solid var(--gl-border); border-radius: var(--gl-radius); overflow: hidden;
-  box-shadow: 0 24px 60px rgba(0,0,0,0.6), 0 0 0 1px rgba(59,130,246,0.06);
+  background: #07090f; display: flex; flex-direction: column;
+  border: 1px solid rgba(255,255,255,.08); border-radius: var(--hub-radius); overflow: hidden;
+  box-shadow: 0 24px 60px rgba(0,0,0,.6), inset 0 1px 0 rgba(255,255,255,.05);
   transition: left 180ms ease, top 180ms ease, width 180ms ease, height 180ms ease, border-radius 180ms ease;
 }
 .gl-overlay.gl-no-transition { transition: none; }
 .gl-overlay-bar {
   display: flex; justify-content: space-between; align-items: center;
-  background: var(--gl-bg-card); padding: 7px 8px 7px 12px;
-  cursor: move; user-select: none; flex-shrink: 0; border-bottom: 1px solid var(--gl-border-soft);
+  background: rgba(255,255,255,.03); backdrop-filter: blur(18px) saturate(140%);
+  padding: 7px 8px 7px 12px;
+  cursor: move; user-select: none; flex-shrink: 0; border-bottom: 1px solid rgba(255,255,255,.06);
 }
-.gl-overlay-title { font-size: 12px; font-weight: 600; color: var(--gl-text-dim); pointer-events: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: flex; align-items: center; gap: 6px; }
-.gl-overlay-title svg { width: 13px; height: 13px; color: var(--gl-accent-2); flex-shrink: 0; }
+.gl-overlay-title { font-size: 12px; font-weight: 600; color: var(--hub-muted); pointer-events: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: flex; align-items: center; gap: 6px; }
+.gl-overlay-title svg { width: 13px; height: 13px; color: var(--hub-cyan); flex-shrink: 0; }
 .gl-overlay-controls { display: flex; gap: 4px; flex-shrink: 0; }
 .gl-overlay-body { flex: 1; position: relative; min-height: 0; overflow: hidden; }
 .gl-overlay-body iframe { width: 100%; height: 100%; border: none; display: block; }
@@ -252,18 +273,20 @@
 }
 .gl-resize-handle::after {
   content: ''; position: absolute; right: 4px; bottom: 4px; width: 9px; height: 9px;
-  background: linear-gradient(135deg, transparent 50%, var(--gl-border) 50%);
+  background: linear-gradient(135deg, transparent 50%, rgba(255,255,255,.2) 50%);
   border-radius: 0 0 3px 0; transition: background 150ms ease;
 }
-.gl-resize-handle:hover::after { background: linear-gradient(135deg, transparent 50%, var(--gl-accent) 50%); }
+.gl-resize-handle:hover::after { background: linear-gradient(135deg, transparent 50%, var(--hub-cyan) 50%); }
 .gl-dica {
   position: absolute; top: 44px; right: 8px; z-index: 20; max-width: 220px;
-  background: var(--gl-bg-elevated); color: var(--gl-text); font-size: 11.5px; line-height: 1.4;
-  padding: 9px 11px; border-radius: var(--gl-radius-sm); border: 1px solid var(--gl-border);
-  box-shadow: 0 8px 24px rgba(0,0,0,0.5); animation: gl-fade-in 150ms ease;
+  background: linear-gradient(175deg, rgba(20,20,28,.95) 0%, rgba(9,9,14,.98) 100%);
+  backdrop-filter: blur(14px) saturate(140%);
+  color: var(--hub-text); font-size: 11.5px; line-height: 1.4;
+  padding: 9px 11px; border-radius: var(--hub-radius-sm); border: 1px solid rgba(255,255,255,.08);
+  box-shadow: 0 8px 24px rgba(0,0,0,.5); animation: gl-fade-in 150ms ease;
 }
     `;
-    document.head.appendChild(style);
+    root.appendChild(style);
   }
 
   // ================= ÍCONES =================
@@ -426,6 +449,7 @@
     const json = JSON.stringify(exportado, null, 2);
     const blob = new Blob([json], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
+    // Fica fora do shadow de propósito: precisa estar no light DOM pra disparar o download nativo do navegador.
     const a = document.createElement('a');
     a.href = url;
     a.download = 'manifest.json';
@@ -555,15 +579,20 @@
 
   // ---------- Modal simples pra adicionar um jogo temporário ----------
   function abrirModalJogoTemporario(aoConfirmar) {
-    if (document.getElementById('gl-temp-modal')) return;
+    if (root.getElementById('gl-temp-modal')) return;
     injetarEstilos();
 
     const fundo = document.createElement('div');
     fundo.id = 'gl-temp-modal';
     fundo.className = 'gl-scope gl-backdrop';
+    fundo.dataset.hub = '1';
+    fundo.setAttribute('data-sang-ui', '');
 
     const card = document.createElement('div');
     card.className = 'gl-card';
+    card.setAttribute('role', 'dialog');
+    card.setAttribute('aria-modal', 'true');
+    card.setAttribute('aria-label', 'Adicionar jogo temporário');
 
     const titulo = document.createElement('div');
     titulo.className = 'gl-card-title';
@@ -573,36 +602,43 @@
     legenda.className = 'gl-card-sub';
     legenda.textContent = 'Fica salvo só neste dispositivo, separado da lista do manifest.';
 
-    const campoNome = document.createElement('div');
-    campoNome.className = 'gl-field';
+    function campoComLabel(labelTexto, inputEl, idSufixo) {
+      const campo = document.createElement('div');
+      campo.className = 'gl-field';
+      const label = document.createElement('label');
+      label.className = 'gl-label';
+      label.textContent = labelTexto;
+      const id = 'gl-campo-' + idSufixo;
+      label.htmlFor = id;
+      inputEl.id = id;
+      campo.appendChild(label);
+      campo.appendChild(inputEl);
+      return campo;
+    }
+
     const inputNome = document.createElement('input');
     inputNome.className = 'gl-input';
     inputNome.placeholder = 'Nome do jogo';
-    campoNome.appendChild(inputNome);
+    const campoNome = campoComLabel('Nome', inputNome, 'nome');
 
-    const campoUrl = document.createElement('div');
-    campoUrl.className = 'gl-field';
     const inputUrl = document.createElement('input');
     inputUrl.className = 'gl-input';
     inputUrl.placeholder = 'https://...';
-    campoUrl.appendChild(inputUrl);
+    const campoUrl = campoComLabel('URL', inputUrl, 'url');
 
-    const campoImagem = document.createElement('div');
-    campoImagem.className = 'gl-field';
     const inputImagem = document.createElement('input');
     inputImagem.className = 'gl-input';
     inputImagem.placeholder = 'URL da imagem (opcional)';
-    campoImagem.appendChild(inputImagem);
+    const campoImagem = campoComLabel('Imagem (opcional)', inputImagem, 'imagem');
 
-    const campoGenero = document.createElement('div');
-    campoGenero.className = 'gl-field';
     const inputGenero = document.createElement('input');
     inputGenero.className = 'gl-input';
-    inputGenero.placeholder = 'Gênero (opcional) — ex: Corrida, RPG';
-    campoGenero.appendChild(inputGenero);
+    inputGenero.placeholder = 'ex: Corrida, RPG';
+    const campoGenero = campoComLabel('Gênero (opcional)', inputGenero, 'genero');
 
     const erro = document.createElement('div');
     erro.className = 'gl-card-error';
+    erro.setAttribute('role', 'alert');
 
     const linhaBotoes = document.createElement('div');
     linhaBotoes.className = 'gl-card-row';
@@ -628,7 +664,7 @@
     linhaBotoes.appendChild(cancelarBtn);
     card.appendChild(linhaBotoes);
     fundo.appendChild(card);
-    document.body.appendChild(fundo);
+    root.appendChild(fundo);
     inputNome.focus();
 
     function fechar() {
@@ -639,7 +675,7 @@
       if (e.key === 'Escape') fechar();
       if (e.key === 'Enter') confirmarBtn.click();
     }
-    onDoc('keydown', aoTeclar);
+    document.addEventListener('keydown', aoTeclar, { signal: ac.signal });
     cancelarBtn.addEventListener('click', fechar);
     fundo.addEventListener('mousedown', (e) => { if (e.target === fundo) fechar(); });
 
@@ -671,12 +707,14 @@
 
   // ---------- Painel de lista de jogos (arrastável, scrollável) ----------
   async function abrirPainelJogos() {
-    if (document.getElementById('gl-painel')) return;
+    if (root.getElementById('gl-painel')) return;
     injetarEstilos();
 
     const painel = document.createElement('div');
     painel.id = 'gl-painel';
     painel.className = 'gl-scope gl-panel';
+    painel.dataset.hub = '1';
+    painel.setAttribute('data-sang-ui', '');
 
     const posSalva = await carregarPosicaoPainel();
     if (posSalva && typeof posSalva.left === 'number' && typeof posSalva.top === 'number') {
@@ -700,6 +738,7 @@
     const atualizarBtn = document.createElement('button');
     atualizarBtn.className = 'gl-btn gl-btn-icon';
     atualizarBtn.title = 'Atualizar lista do manifest';
+    atualizarBtn.setAttribute('aria-label', 'Atualizar lista do manifest');
     atualizarBtn.innerHTML = icone('atualizar', 15);
     atualizarBtn.addEventListener('mousedown', (e) => e.stopPropagation());
     atualizarBtn.addEventListener('click', async () => {
@@ -714,6 +753,7 @@
     const baixarBtn = document.createElement('button');
     baixarBtn.className = 'gl-btn gl-btn-icon';
     baixarBtn.title = 'Baixar manifest.json (jogos do manifest + temporários)';
+    baixarBtn.setAttribute('aria-label', 'Baixar manifest.json');
     baixarBtn.innerHTML = icone('baixar', 15);
     baixarBtn.addEventListener('mousedown', (e) => e.stopPropagation());
     baixarBtn.addEventListener('click', () => exportarManifestArquivo());
@@ -721,6 +761,7 @@
     const fecharBtn = document.createElement('button');
     fecharBtn.className = 'gl-btn gl-btn-icon gl-btn-danger';
     fecharBtn.title = 'Fechar';
+    fecharBtn.setAttribute('aria-label', 'Fechar painel de jogos');
     fecharBtn.innerHTML = icone('fechar', 15);
     fecharBtn.addEventListener('mousedown', (e) => e.stopPropagation());
     fecharBtn.addEventListener('click', fecharPainel);
@@ -739,6 +780,7 @@
     barraFiltro.className = 'gl-filtro-bar';
     const seletorGenero = document.createElement('select');
     seletorGenero.className = 'gl-select';
+    seletorGenero.setAttribute('aria-label', 'Filtrar por gênero');
     seletorGenero.addEventListener('mousedown', (e) => e.stopPropagation());
     seletorGenero.addEventListener('change', () => {
       generoSelecionado = seletorGenero.value;
@@ -770,8 +812,8 @@
     painel.appendChild(barraFiltro);
     painel.appendChild(lista);
     painel.appendChild(rodape);
-    document.body.appendChild(painel);
-    onDoc('keydown', aoTeclarEscPainel);
+    root.appendChild(painel);
+    document.addEventListener('keydown', aoTeclarEscPainel, { signal: ac.signal });
 
     // ---- arrastar o painel pela barra de cabeçalho ----
     let arrastandoPainel = false, offPX = 0, offPY = 0;
@@ -800,8 +842,8 @@
       arrastandoPainel = false;
       salvarPosicaoPainel({ left: parseInt(painel.style.left, 10), top: parseInt(painel.style.top, 10) });
     }
-    window.addEventListener('mousemove', aoMoverPainel);
-    window.addEventListener('mouseup', aoSoltarPainel);
+    window.addEventListener('mousemove', aoMoverPainel, { signal: ac.signal });
+    window.addEventListener('mouseup', aoSoltarPainel, { signal: ac.signal });
 
     function aoTeclarEscPainel(e) {
       if (e.key === 'Escape') fecharPainel();
@@ -851,7 +893,7 @@
       linhaInfo('Vezes jogado', String(estat.vezesJogado || 0));
       linhaInfo('Última vez', estat.ultimaSessaoEm ? formatarRelativo(estat.ultimaSessaoEm) : 'nunca');
 
-      document.body.appendChild(tip);
+      root.appendChild(tip);
       const rectCard = card.getBoundingClientRect();
       const rectTip = tip.getBoundingClientRect();
       let left = rectCard.right + 10;
@@ -944,6 +986,7 @@
       const jogarBtn = document.createElement('button');
       jogarBtn.className = 'gl-btn gl-btn-icon gl-btn-play';
       jogarBtn.title = 'Jogar';
+      jogarBtn.setAttribute('aria-label', 'Jogar ' + jogo.nome);
       jogarBtn.innerHTML = icone('play', 14);
       jogarBtn.addEventListener('click', () => {
         fecharPainel();
@@ -968,6 +1011,7 @@
         const removerBtn = document.createElement('button');
         removerBtn.className = 'gl-btn gl-btn-icon gl-btn-danger';
         removerBtn.title = 'Remover';
+        removerBtn.setAttribute('aria-label', 'Remover ' + jogo.nome);
         removerBtn.innerHTML = icone('lixeira', 14);
         removerBtn.addEventListener('click', async () => {
           const temporarios = (await carregarJogosTemporarios()).filter((j) => j.id !== jogo.id);
@@ -1015,11 +1059,12 @@
 
       if (manifest.erro) {
         avisoManifest.style.display = 'flex';
-        avisoManifest.innerHTML = icone('alerta', 14) + '<span>' + (
-          manifest.atualizadoEm
-            ? `Não deu pra atualizar o manifest agora (usando cache de ${new Date(manifest.atualizadoEm).toLocaleString()}).`
-            : `Não deu pra carregar o manifest: ${manifest.erro}`
-        ) + '</span>';
+        avisoManifest.innerHTML = icone('alerta', 14);
+        const avisoTexto = document.createElement('span');
+        avisoTexto.textContent = manifest.atualizadoEm
+          ? `Não deu pra atualizar o manifest agora (usando cache de ${new Date(manifest.atualizadoEm).toLocaleString()}).`
+          : `Não deu pra carregar o manifest: ${manifest.erro}`;
+        avisoManifest.appendChild(avisoTexto);
       } else {
         avisoManifest.style.display = 'none';
       }
@@ -1043,7 +1088,7 @@
 
   // ---------- Janela flutuante do jogo ----------
   async function abrirJogo(jogo, aoMudarStatus) {
-    if (document.getElementById('gl-overlay')) return;
+    if (root.getElementById('gl-overlay')) return;
     injetarEstilos();
 
     const cfg = await carregarConfigJanela();
@@ -1055,6 +1100,8 @@
     const overlay = document.createElement('div');
     overlay.id = 'gl-overlay';
     overlay.className = 'gl-scope gl-overlay gl-no-transition';
+    overlay.dataset.hub = '1';
+    overlay.setAttribute('data-sang-ui', '');
     overlay.style.left = xInicial + 'px';
     overlay.style.top = yInicial + 'px';
     overlay.style.width = larguraInicial + 'px';
@@ -1071,7 +1118,11 @@
 
     const status = document.createElement('span');
     status.className = 'gl-overlay-title';
-    status.innerHTML = `${icone('gamepad', 13)} <span>${jogo.nome} — Carregando...</span>`;
+    status.innerHTML = icone('gamepad', 13);
+    // jogo.nome pode vir do manifest remoto ou de entrada do usuário — nunca via innerHTML.
+    const statusTexto = document.createElement('span');
+    statusTexto.textContent = `${jogo.nome} — Carregando...`;
+    status.appendChild(statusTexto);
 
     const controles = document.createElement('div');
     controles.className = 'gl-overlay-controls';
@@ -1080,6 +1131,7 @@
       const b = document.createElement('button');
       b.className = 'gl-btn gl-btn-icon' + (extraClasse ? ' ' + extraClasse : '');
       b.title = titulo;
+      b.setAttribute('aria-label', titulo);
       b.innerHTML = icone(nomeIcone, 14);
       return b;
     }
@@ -1113,7 +1165,7 @@
 
     overlay.appendChild(barra);
     overlay.appendChild(corpo);
-    document.body.appendChild(overlay);
+    root.appendChild(overlay);
 
     const capa = document.createElement('div');
     capa.style.cssText = 'position: absolute; inset: 0; z-index: 5; display: none;';
@@ -1122,7 +1174,7 @@
     let carregou = false;
     iframe.addEventListener('load', () => {
       carregou = true;
-      status.innerHTML = `${icone('gamepad', 13)} <span>${jogo.nome}</span>`;
+      statusTexto.textContent = jogo.nome;
       if (aoMudarStatus) aoMudarStatus('ok');
     });
 
@@ -1149,12 +1201,14 @@
       salvarConfigJanela(estadoAtual());
       overlay.remove();
       document.removeEventListener('keydown', aoTeclarEsc);
+      window.removeEventListener('mousemove', aoMoverOverlay);
+      window.removeEventListener('mouseup', aoSoltarOverlay);
     }
 
     function aoTeclarEsc(e) {
       if (e.key === 'Escape') fecharJogo();
     }
-    onDoc('keydown', aoTeclarEsc);
+    document.addEventListener('keydown', aoTeclarEsc, { signal: ac.signal });
 
     fecharBtn.addEventListener('click', fecharJogo);
     voltarBtn.addEventListener('click', () => {
@@ -1206,10 +1260,12 @@
         overlay.style.height = barra.offsetHeight + 'px';
         minimizarBtn.innerHTML = icone('maximizar', 14);
         minimizarBtn.title = 'Restaurar';
+        minimizarBtn.setAttribute('aria-label', 'Restaurar');
       } else {
         overlay.style.height = alturaAntesMinimizar + 'px';
         minimizarBtn.innerHTML = icone('minimizar', 14);
         minimizarBtn.title = 'Minimizar';
+        minimizarBtn.setAttribute('aria-label', 'Minimizar');
       }
     });
 
@@ -1226,6 +1282,7 @@
         overlay.style.borderRadius = '0';
         maximizarBtn.innerHTML = icone('restaurar', 14);
         maximizarBtn.title = 'Restaurar';
+        maximizarBtn.setAttribute('aria-label', 'Restaurar');
       } else if (estadoAntesMaximizar) {
         overlay.style.left = estadoAntesMaximizar.x;
         overlay.style.top = estadoAntesMaximizar.y;
@@ -1234,6 +1291,7 @@
         overlay.style.borderRadius = '';
         maximizarBtn.innerHTML = icone('maximizar', 14);
         maximizarBtn.title = 'Maximizar';
+        maximizarBtn.setAttribute('aria-label', 'Maximizar');
       }
     }
     maximizarBtn.addEventListener('click', () => {
@@ -1267,7 +1325,7 @@
       e.stopPropagation();
     });
 
-    window.addEventListener('mousemove', (e) => {
+    function aoMoverOverlay(e) {
       if (arrastando) {
         let novoX = e.clientX - offX;
         let novoY = e.clientY - offY;
@@ -1309,9 +1367,9 @@
         overlay.style.height = novaH + 'px';
         if (!minimizado) alturaAntesMinimizar = novaH;
       }
-    });
+    }
 
-    window.addEventListener('mouseup', () => {
+    function aoSoltarOverlay() {
       if (arrastando || redimensionando) {
         salvarConfigJanela(estadoAtual());
       }
@@ -1319,19 +1377,25 @@
       redimensionando = false;
       overlay.classList.remove('gl-no-transition');
       capa.style.display = 'none';
-    });
+    }
+
+    window.addEventListener('mousemove', aoMoverOverlay, { signal: ac.signal });
+    window.addEventListener('mouseup', aoSoltarOverlay, { signal: ac.signal });
   }
 
   // ---------- Botão flutuante (FAB) — clique normal abre o painel;
   // segurar o clique por FAB_SEGURAR_MS libera o modo arrastável ----------
   async function criarBotaoFlutuante() {
-    if (document.getElementById('gl-fab')) return;
+    if (root.getElementById('gl-fab')) return;
     injetarEstilos();
 
     const btn = document.createElement('button');
     btn.id = 'gl-fab';
     btn.className = 'gl-scope gl-fab';
     btn.title = 'Jogos (segure para arrastar)';
+    btn.setAttribute('aria-label', 'Abrir lista de jogos (segure para arrastar)');
+    btn.dataset.hub = '1';
+    btn.setAttribute('data-sang-ui', '');
     btn.innerHTML = icone('gamepad', 26);
 
     const posSalva = await carregarPosicaoFab();
@@ -1343,7 +1407,11 @@
       btn.style.right = '20px';
     }
 
-    document.body.appendChild(btn);
+    root.appendChild(btn);
+
+    // Pulso chama atenção só nas primeiras vezes — não fica animando pra sempre.
+    btn.classList.add('gl-fab-pulsando');
+    btn.addEventListener('animationend', () => btn.classList.remove('gl-fab-pulsando'), { signal: ac.signal, once: true });
 
     let timerSegurar = null;
     let dragLiberado = false;
@@ -1378,7 +1446,7 @@
       e.preventDefault();
     });
 
-    window.addEventListener('mousemove', (e) => {
+    function aoMoverFab(e) {
       if (!dragLiberado) return;
       if (!arrastando) {
         arrastando = true;
@@ -1397,15 +1465,18 @@
       novoY = Math.max(4, Math.min(novoY, window.innerHeight - btn.offsetHeight - 4));
       btn.style.left = novoX + 'px';
       btn.style.top = novoY + 'px';
-    });
+    }
 
-    window.addEventListener('mouseup', () => {
+    function aoSoltarFab() {
       const foiDrag = dragLiberado && moveuDurante;
       if (foiDrag) {
         salvarPosicaoFab({ left: parseInt(btn.style.left, 10), top: parseInt(btn.style.top, 10) });
       }
       resetarEstado();
-    });
+    }
+
+    window.addEventListener('mousemove', aoMoverFab, { signal: ac.signal });
+    window.addEventListener('mouseup', aoSoltarFab, { signal: ac.signal });
 
     btn.addEventListener('click', () => {
       if (dragLiberado && moveuDurante) return; // foi um drag, não um clique
@@ -1419,26 +1490,54 @@
     GM_registerMenuCommand('Atualizar manifest agora', () => carregarJogosManifest(true));
   }
 
-  injetarEstilos();
-  criarBotaoFlutuante();
-  // Busca o manifest assim que a página carrega
-  carregarJogosManifest(false);
-
   // ---- Kill (chamado pelo Hub via instanceKey) ----
   function kill() {
-    teardownListeners.forEach((fn) => {
-      try { fn(); } catch (e) {}
-    });
-    teardownListeners.length = 0;
-
-    document.getElementById('gl-fab')?.remove();
-    document.getElementById('gl-painel')?.remove();
-    document.getElementById('gl-overlay')?.remove();
-    document.getElementById('gl-temp-modal')?.remove();
-    document.getElementById('gl-estilos')?.remove();
-
-    window.__glLoaded = false;
+    const steps = [
+      ['abort', () => ac.abort()],
+      ['dom', () => host?.remove()],
+      ['global', () => { delete window._games; }],
+    ];
+    for (const [name, step] of steps) {
+      try { step(); } catch (e) { console.warn('[games] kill step ' + name + ' falhou:', e); }
+    }
   }
 
-  window._games = { kill };
+  function boot() {
+    ensureFont();
+
+    host = document.createElement('div');
+    host.id = '_games_host';
+    host.style.cssText = 'all:initial;position:fixed;top:0;left:0;z-index:2147483000;';
+    document.body.appendChild(host);
+    window._hubUI?.markProtected?.(host);
+    root = host.attachShadow({ mode: 'open' });
+
+    // Impede que digitação nos campos do módulo (modal de jogo temporário) vaze
+    // como hotkey pro cliente do jogo por trás. Escape continua passando: é o que
+    // fecha painel/overlay/modal via os listeners em document.
+    host.addEventListener('keydown', (e) => {
+      const tag = (e.target && e.target.tagName) || '';
+      if ((tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') && e.key !== 'Escape') {
+        e.stopPropagation();
+      }
+    }, { signal: ac.signal });
+    ['keyup', 'keypress', 'input', 'beforeinput'].forEach((t) =>
+      host.addEventListener(t, (e) => e.stopPropagation(), { signal: ac.signal })
+    );
+
+    injetarEstilos();
+    criarBotaoFlutuante();
+    // Busca o manifest assim que a página carrega
+    carregarJogosManifest(false);
+
+    api.kill = kill;
+  }
+
+  if (document.body) {
+    boot();
+  } else {
+    new MutationObserver((_, obs) => {
+      if (document.body) { obs.disconnect(); boot(); }
+    }).observe(document.documentElement, { childList: true });
+  }
 })();
