@@ -1,4 +1,4 @@
-// modules/iptv.js (Smart TV shell v2)
+// modules/iptv.js (Smart TV shell v4 — soft + anime stream)
 (function() {
     'use strict';
     const UID = '_iptv';
@@ -9,7 +9,9 @@
     const CHANNELS_API_URL = 'https://iptv-org.github.io/api/channels.json';
     const STREAMS_API_URL = 'https://iptv-org.github.io/api/streams.json';
     const CATEGORIES_API_URL = 'https://iptv-org.github.io/api/categories.json';
-    const JIKAN_TOP_ANIME_URL = 'https://api.jikan.moe/v4/top/anime?limit=24';
+    const CONSUMET_ANIME_SEARCH = 'https://api.consumet.org/anime/gogoanime/';
+    const CONSUMET_ANIME_INFO = 'https://api.consumet.org/anime/gogoanime/info/';
+    const CONSUMET_ANIME_WATCH = 'https://api.consumet.org/anime/gogoanime/watch/';
     const PAIS = 'BR';
     const PLAYLIST_URL = `https://iptv-org.github.io/iptv/countries/${PAIS.toLowerCase()}.m3u`;
     const FREE_TV_URL = 'https://raw.githubusercontent.com/Free-TV/IPTV/master/playlist.m3u8';
@@ -19,19 +21,56 @@
     const CONECTAR_TIMEOUT_MS = 9000;
     const MAX_TENTATIVAS_RECUPERACAO = 1;
     const CLOCK_TICK_MS = 1000;
+    const EMBED_DETECT_MS = 4000;
 
     const ASPECT_RATIO = 16 / 9;
     const HEADER_HEIGHT = 56;
-    const CONTROLBAR_HEIGHT = 76;
+    const CONTROLBAR_HEIGHT = 72;
     const BORDER_TOTAL = 2;
     const MIN_VIDEO_W = 360;
     const MAX_VIDEO_W = 2400;
-    const MIN_HOME_W = 620;
-    const MAX_HOME_W = 1700;
-    const MIN_HOME_H = 420;
-    const MAX_HOME_H = 1050;
+    const FIXED_W = 1000;
+    const FIXED_H = 640;
+    const MIN_APP_W = 480;
+    const MIN_APP_H = 320;
+    const MAX_APP_W = 2400;
+    const MAX_APP_H = 1400;
 
-    // ---------- Storage ----------
+    // ================= SVG ICONS =================
+    function svg(name, size) {
+        size = size || 20;
+        const paths = {
+            home: '<path d="M3 11.2 12 3l9 8.2V20a1.5 1.5 0 0 1-1.5 1.5H14.5V15h-5v6.5H4.5A1.5 1.5 0 0 1 3 20v-8.8Z"/>',
+            search: '<circle cx="11" cy="11" r="7"/><path d="m20.5 20.5-3.8-3.8"/>',
+            library: '<path d="M4 4.5h4.5V20H4zM9.75 4.5h4.5V20h-4.5zM15.5 5.2l4.2 1.4L16.6 20l-4.2-1.4z"/>',
+            apps: '<rect x="3.5" y="3.5" width="7" height="7" rx="2"/><rect x="13.5" y="3.5" width="7" height="7" rx="2"/><rect x="3.5" y="13.5" width="7" height="7" rx="2"/><rect x="13.5" y="13.5" width="7" height="7" rx="2"/>',
+            download: '<path d="M12 4v12"/><path d="m7 11 5 5 5-5"/><path d="M5 20h14"/>',
+            settings: '<circle cx="12" cy="12" r="3.2"/><path d="M19.2 14.6a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1.03 1.56V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.55 1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.7 1.7 0 0 0 .34-1.87 1.7 1.7 0 0 0-1.56-1.03H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.55-1.1 1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.7 1.7 0 0 0 1.87.34H9a1.7 1.7 0 0 0 1.03-1.56V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1.03 1.56 1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.7 1.7 0 0 0-.34 1.87V9a1.7 1.7 0 0 0 1.56 1.03H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.7 1.57Z"/>',
+            chevronLeft: '<path d="m15 18-6-6 6-6"/>',
+            chevronRight: '<path d="m9 18 6-6-6-6"/>',
+            bell: '<path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10 21a2 2 0 0 0 4 0"/>',
+            user: '<circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-7 8-7s8 3 8 7"/>',
+            minimize: '<path d="M5 12h14"/>',
+            close: '<path d="M18 6 6 18M6 6l12 12"/>',
+            hideHdr: '<path d="M6 9 12 15l6-6"/>',
+            showHdr: '<path d="m6 15 6-6 6 6"/>',
+            external: '<path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M21 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5"/>',
+            play: '<path d="M7 4.5v15l13-7.5z" fill="currentColor" stroke="none"/>',
+            star: '<path d="m12 3 2.7 5.7 6.3.9-4.6 4.4 1.1 6.2L12 17.3 6.5 20.2l1.1-6.2L3 9.6l6.3-.9L12 3z"/>',
+            starFill: '<path d="m12 3 2.7 5.7 6.3.9-4.6 4.4 1.1 6.2L12 17.3 6.5 20.2l1.1-6.2L3 9.6l6.3-.9L12 3z" fill="currentColor"/>',
+            back: '<path d="m14 6-6 6 6 6"/>',
+            film: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 4v16M17 4v16M3 9h4M3 15h4M17 9h4M17 15h4"/>',
+            sparkle: '<path d="m12 3 1.9 5.6L19 10l-5.1 1.4L12 17l-1.9-5.6L5 10l5.1-1.4z"/>',
+            list: '<path d="M8 6h13M8 12h13M8 18h13"/><circle cx="3.5" cy="6" r="1.2"/><circle cx="3.5" cy="12" r="1.2"/><circle cx="3.5" cy="18" r="1.2"/>',
+            episode: '<rect x="4" y="5" width="16" height="14" rx="2"/><path d="M9 9h6M9 13h6M9 17h3"/>',
+        };
+        const isFillOnly = name === 'play' || name === 'starFill';
+        const fillAttr = isFillOnly ? 'fill="currentColor" stroke="none"' : 'fill="none" stroke="currentColor"';
+        const strokeAttr = isFillOnly ? '' : 'stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"';
+        return `<svg viewBox="0 0 24 24" width="${size}" height="${size}" ${fillAttr} ${strokeAttr}>${paths[name] || ''}</svg>`;
+    }
+
+    // ================= STORAGE =================
     function lerCache(chave, padrao) {
         try {
             const raw = localStorage.getItem(CACHE_PREFIX + chave);
@@ -42,12 +81,10 @@
         try { localStorage.setItem(CACHE_PREFIX + chave, JSON.stringify(valor)); } catch (e) {}
     }
 
-    // ---------- Estado ----------
     const estado = {
         favoritos: null, falhas: null, links: null,
         _dirty: false, _timeout: null, _carregado: false,
     };
-
     function _garantirEstadoCarregado() {
         if (estado._carregado) return;
         const favs = lerCache('favoritos', []);
@@ -58,7 +95,6 @@
         estado.links = (l && typeof l === 'object') ? l : {};
         estado._carregado = true;
     }
-
     function persistirAgora() {
         if (!estado._carregado || !estado._dirty) return;
         if (estado._timeout) { clearTimeout(estado._timeout); estado._timeout = null; }
@@ -67,23 +103,18 @@
         salvarCache('links-funcionais', estado.links);
         estado._dirty = false;
     }
-
     function persistirDebounced() {
         if (!estado._carregado) return;
         estado._dirty = true;
         if (estado._timeout) return;
         estado._timeout = setTimeout(persistirAgora, 500);
     }
-
-    function obterFavoritos() { _garantirEstadoCarregado(); return estado.favoritos; }
     function toggleFavorito(id) {
         _garantirEstadoCarregado();
         if (estado.favoritos.has(id)) { estado.favoritos.delete(id); persistirDebounced(); return false; }
         estado.favoritos.add(id); persistirDebounced(); return true;
     }
     function ehFavorito(id) { _garantirEstadoCarregado(); return estado.favoritos.has(id); }
-
-    function obterFalhas() { _garantirEstadoCarregado(); return estado.falhas; }
     function _tsDe(em) { return typeof em === 'number' ? em : Date.parse(em); }
     function obterStatusFalha(id) {
         _garantirEstadoCarregado();
@@ -107,8 +138,6 @@
         if (diffMin < 60) return 'há ' + diffMin + ' min';
         return 'há ' + Math.floor(diffMin / 60) + 'h';
     }
-
-    function obterLinksFuncionais() { _garantirEstadoCarregado(); return estado.links; }
     function salvarLinkFuncional(id, url) {
         _garantirEstadoCarregado();
         if (estado.links[id] === url) return;
@@ -117,7 +146,6 @@
     }
 
     let abortController = null;
-
     function loadHlsJs() {
         return new Promise((resolve, reject) => {
             if (window.Hls) return resolve(window.Hls);
@@ -128,37 +156,27 @@
             document.head.appendChild(s);
         });
     }
-
     function escapeHtml(str) {
         return String(str ?? '').replace(/[&<>"']/g, c => ({
             '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
         }[c]));
     }
-
     function normalizarNome(nome) {
-        return (nome || '')
-            .toLowerCase()
-            .normalize('NFD')
-            .replace(/[\u0300-\u036f]/g, '')
-            .replace(/[^a-z0-9]/g, '');
+        return (nome || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]/g, '');
     }
-
     const _avatarCache = new Map();
     function logoPlaceholder(nome) {
         const letra = (String(nome || '?').trim().charAt(0) || '?').toUpperCase();
         if (_avatarCache.has(letra)) return _avatarCache.get(letra);
-        const svg =
-            '<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64">' +
-            '<rect width="64" height="64" rx="12" fill="#1b1f26"/>' +
-            '<text x="50%" y="53%" font-family="Quicksand,sans-serif" font-size="28" ' +
-            'font-weight="700" fill="#22d3ee" text-anchor="middle" dominant-baseline="middle">' +
-            escapeHtml(letra) +
-            '</text></svg>';
-        const uri = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
+        const s = '<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64">' +
+            '<rect width="64" height="64" rx="14" fill="#1a1c25"/>' +
+            '<text x="50%" y="54%" font-family="Quicksand,sans-serif" font-size="26" font-weight="600" ' +
+            'fill="#67e8f9" text-anchor="middle" dominant-baseline="middle">' +
+            escapeHtml(letra) + '</text></svg>';
+        const uri = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(s);
         _avatarCache.set(letra, uri);
         return uri;
     }
-
     function parseM3U(text) {
         const lines = text.split('\n');
         const canais = [];
@@ -175,26 +193,22 @@
                     tvgId: idMatch ? idMatch[1] : '',
                 };
             } else if (line && !line.startsWith('#') && atual) {
-                atual.url = line;
-                canais.push(atual);
-                atual = null;
+                atual.url = line; canais.push(atual); atual = null;
             }
         }
         return canais;
     }
-
     async function buscarJson(url) {
         const res = await fetch(url, { signal: abortController ? abortController.signal : undefined });
-        if (!res.ok) throw new Error('HTTP ' + res.status + ' (' + url + ')');
+        if (!res.ok) throw new Error('HTTP ' + res.status);
         return res.json();
     }
     async function buscarTexto(url) {
         const res = await fetch(url, { signal: abortController ? abortController.signal : undefined });
-        if (!res.ok) throw new Error('HTTP ' + res.status + ' (' + url + ')');
+        if (!res.ok) throw new Error('HTTP ' + res.status);
         return res.text();
     }
 
-    // ---------- Carga de canais ----------
     async function carregarDados() {
         const [resCh, resSt, resM3u, resFreeTv, resCat] = await Promise.allSettled([
             buscarJson(CHANNELS_API_URL),
@@ -203,27 +217,21 @@
             buscarTexto(FREE_TV_URL),
             buscarJson(CATEGORIES_API_URL),
         ]);
-
         if (resCh.status !== 'fulfilled' || resSt.status !== 'fulfilled') {
             throw new Error('Falha ao carregar dados principais do iptv-org');
         }
         const channels = resCh.value;
         const streams = resSt.value;
-
         const nomeCategoria = new Map();
         if (resCat.status === 'fulfilled' && Array.isArray(resCat.value)) {
-            resCat.value.forEach(c => {
-                if (c && c.id) nomeCategoria.set(c.id, c.name || c.id);
-            });
+            resCat.value.forEach(c => { if (c && c.id) nomeCategoria.set(c.id, c.name || c.id); });
         }
-
         const logoPorId = new Map();
         if (resM3u.status === 'fulfilled') {
             parseM3U(resM3u.value).forEach(c => {
                 if (c.tvgId && c.logo && !logoPorId.has(c.tvgId)) logoPorId.set(c.tvgId, c.logo);
             });
         }
-
         const freeTvPorNome = new Map();
         if (resFreeTv.status === 'fulfilled') {
             parseM3U(resFreeTv.value).forEach(c => {
@@ -231,7 +239,6 @@
                 if (chave && !freeTvPorNome.has(chave)) freeTvPorNome.set(chave, c);
             });
         }
-
         const urlsPorCanal = new Map();
         for (const s of streams) {
             if (!s.channel || !s.url) continue;
@@ -239,64 +246,43 @@
             const lista = urlsPorCanal.get(s.channel);
             if (!lista.includes(s.url)) lista.push(s.url);
         }
-
-        const linksFuncionais = estado.links;
         const lista = [];
         for (const c of channels) {
             if (c.closed || c.is_nsfw) continue;
             const paises = Array.isArray(c.country) ? c.country : [c.country];
-            const ehBR = paises.some(p => (p || '').toUpperCase() === PAIS);
-            if (!ehBR) continue;
-
+            if (!paises.some(p => (p || '').toUpperCase() === PAIS)) continue;
             const candidatos = (urlsPorCanal.get(c.id) || []).slice();
             const matchFreeTv = freeTvPorNome.get(normalizarNome(c.name));
-            if (matchFreeTv && matchFreeTv.url && !candidatos.includes(matchFreeTv.url)) {
-                candidatos.push(matchFreeTv.url);
-            }
+            if (matchFreeTv && matchFreeTv.url && !candidatos.includes(matchFreeTv.url)) candidatos.push(matchFreeTv.url);
             if (!candidatos.length) continue;
-
-            const linkSalvo = linksFuncionais[c.id];
+            const linkSalvo = estado.links[c.id];
             if (linkSalvo && candidatos.includes(linkSalvo) && candidatos[0] !== linkSalvo) {
-                candidatos.splice(candidatos.indexOf(linkSalvo), 1);
-                candidatos.unshift(linkSalvo);
+                candidatos.splice(candidatos.indexOf(linkSalvo), 1); candidatos.unshift(linkSalvo);
             }
-
             const cats = (Array.isArray(c.categories) ? c.categories : [])
-                .map(id => nomeCategoria.get(id) || id)
-                .filter(Boolean);
-
+                .map(id => nomeCategoria.get(id) || id).filter(Boolean);
             lista.push({
-                id: c.id,
-                name: c.name,
+                id: c.id, name: c.name,
                 logo: logoPorId.get(c.id) || c.logo || (matchFreeTv && matchFreeTv.logo) || '',
-                country: c.country || '',
-                categorias: cats,
-                categoriaPrincipal: cats[0] || '',
-                urls: candidatos,
+                country: c.country || '', categorias: cats,
+                categoriaPrincipal: cats[0] || '', urls: candidatos,
             });
         }
-
         lista.sort((a, b) => a.name.localeCompare(b.name, 'pt-BR'));
-        const catsDisponiveis = new Set();
-        lista.forEach(c => c.categorias.forEach(cat => catsDisponiveis.add(cat)));
-
-        return {
-            canais: lista,
-            categorias: Array.from(catsDisponiveis).sort((a, b) => a.localeCompare(b, 'pt-BR'))
-        };
+        const catsDisp = new Set();
+        lista.forEach(c => c.categorias.forEach(cat => catsDisp.add(cat)));
+        return { canais: lista, categorias: Array.from(catsDisp).sort((a, b) => a.localeCompare(b, 'pt-BR')) };
     }
 
-    // ---------- INIT ----------
+    // ================= INIT =================
     function init() {
         if (window._iptv) return;
-
         _garantirEstadoCarregado();
         abortController = new AbortController();
 
         if (!document.querySelector('link[data-iptv-font]')) {
             const fl = document.createElement('link');
-            fl.rel = 'stylesheet';
-            fl.href = FONT_URL;
+            fl.rel = 'stylesheet'; fl.href = FONT_URL;
             fl.setAttribute('data-iptv-font', '1');
             document.head.appendChild(fl);
         }
@@ -305,683 +291,595 @@
         style.setAttribute('data-iptv', '1');
         style.textContent = `
         @keyframes iptvSpin { to { transform: rotate(360deg); } }
-        @keyframes iptvHdrShimmer {
-            0% { background-position: 0% 50%; }
-            100% { background-position: 200% 50%; }
-        }
-        @keyframes iptvTitleShine { to { background-position: -200% center; } }
-        @keyframes iptvHeroIn {
-            from { opacity: 0; transform: translateY(14px) scale(.98); }
+        @keyframes iptvFadeIn {
+            from { opacity: 0; transform: translateY(6px); }
             to { opacity: 1; transform: none; }
         }
-        @keyframes iptvAppIn {
-            from { opacity: 0; transform: translateY(8px); }
+        @keyframes iptvTileIn {
+            from { opacity: 0; transform: translateY(4px) scale(.985); }
             to { opacity: 1; transform: none; }
-        }
-        @keyframes iptvFocusPulse {
-            0%, 100% { box-shadow: 0 0 0 2px rgba(255,255,255,.85), 0 0 40px rgba(34,211,238,.16), 0 20px 50px rgba(0,0,0,.6); }
-            50% { box-shadow: 0 0 0 3px rgba(255,255,255,.95), 0 0 60px rgba(34,211,238,.3), 0 20px 50px rgba(0,0,0,.6); }
-        }
-        @keyframes iptvBreathe {
-            0%, 100% { opacity: .4; transform: scale(1); }
-            50% { opacity: 1; transform: scale(1.15); }
         }
 
         #${UID} {
-            --hub-cyan: #22d3ee;
-            --hub-violet: #a78bfa;
-            --hub-grad: linear-gradient(120deg, var(--hub-cyan), var(--hub-violet));
-            --hub-ok: #34d399;
-            --hub-err: #fb7185;
-            --hub-muted: #8b8fa3;
+            --ok: #7dd3a0;
+            --err: #f28b96;
+            --cyan: #67e8f9;
+            --violet: #c4b5fd;
+            --grad: linear-gradient(115deg, #67e8f9 0%, #c4b5fd 100%);
 
-            --tv-bg: #08090D;
-            --tv-bg-elevated: #0F1116;
-            --tv-bg-card: #14171F;
-            --tv-bg-card-hover: #1B1F2A;
-            --tv-border: rgba(255,255,255,.07);
-            --tv-border-soft: rgba(255,255,255,.04);
-            --tv-text: #F1F2F8;
-            --tv-text-dim: #A0A6B8;
-            --tv-text-faint: #5B6373;
-            --tv-accent: var(--hub-cyan);
-            --tv-accent-bright: #67e8f9;
-            --tv-accent-soft: rgba(34,211,238,.14);
-            --tv-danger: var(--hub-err);
-            --tv-danger-soft: rgba(251,113,133,.15);
-            --tv-star: #fbbf24;
+            --bg: #0a0b0f;
+            --bg-1: #101219;
+            --bg-2: #16181f;
+            --bg-3: #1c1f28;
+            --line: rgba(255,255,255,.055);
+            --line-2: rgba(255,255,255,.09);
+            --text: #eef0f5;
+            --text-dim: #a2a8ba;
+            --text-faint: #6f7584;
 
             position: fixed;
             top: 60px; left: 60px;
-            width: 1000px; height: 640px;
+            width: ${FIXED_W}px; height: ${FIXED_H}px;
             box-sizing: border-box;
             font-family: 'Quicksand', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
             font-weight: 500;
-            background: var(--tv-bg);
-            color: var(--tv-text);
-            border: 1px solid var(--tv-border);
-            border-radius: 22px;
+            background: var(--bg);
+            color: var(--text);
+            border: 1px solid var(--line);
+            border-radius: 20px;
             overflow: hidden;
             z-index: 2147483000;
             display: flex;
             flex-direction: column;
             box-shadow:
-                0 30px 80px rgba(0,0,0,.7),
-                0 0 0 1px rgba(34,211,238,.08),
-                0 0 40px rgba(34,211,238,.06);
-            animation: iptvHeroIn .4s cubic-bezier(.16,1,.3,1);
+                0 1px 2px rgba(0,0,0,.35),
+                0 20px 60px -20px rgba(0,0,0,.65),
+                0 0 0 1px rgba(255,255,255,.02);
+            animation: iptvFadeIn .32s cubic-bezier(.22,1,.36,1);
+            transition: width .24s cubic-bezier(.22,1,.36,1), height .24s cubic-bezier(.22,1,.36,1);
         }
+        #${UID}.anim-off { transition: none; }
 
         /* ─── Header ─── */
-        #${UID} .iptv-hdr {
+        #${UID} .hdr {
             height: ${HEADER_HEIGHT}px;
             box-sizing: border-box;
             flex-shrink: 0;
             display: flex;
             align-items: center;
             justify-content: space-between;
-            padding: 0 18px;
+            padding: 0 16px 0 18px;
             cursor: grab;
             user-select: none;
-            background: rgba(0,0,0,.18);
-            border-bottom: 1px solid var(--tv-border);
+            background: rgba(255,255,255,.015);
+            border-bottom: 1px solid var(--line);
             position: relative;
             overflow: hidden;
-            transition: height .22s cubic-bezier(.4,0,.2,1), opacity .18s ease, border-bottom-width .22s;
+            transition: height .22s cubic-bezier(.22,1,.36,1), opacity .18s ease, border-bottom-width .22s;
         }
-        #${UID} .iptv-hdr::before {
-            content: '';
-            position: absolute;
-            top: 0; left: 0; right: 0;
-            height: 2px;
-            background: var(--hub-grad);
-            background-size: 200% 100%;
-            animation: iptvHdrShimmer 4s linear infinite;
-            box-shadow: 0 0 12px rgba(34,211,238,.4);
-        }
-        #${UID}.header-hidden .iptv-hdr {
+        #${UID}.hdr-hidden .hdr {
             height: 0;
             opacity: 0;
             border-bottom-width: 0;
+            padding-top: 0; padding-bottom: 0;
         }
-        #${UID} .iptv-hdr:active { cursor: grabbing; }
+        #${UID} .hdr:active { cursor: grabbing; }
 
-        #${UID} .iptv-hdr-left {
-            display: flex;
-            align-items: center;
-            gap: 14px;
-            min-width: 0;
-        }
-        #${UID} .iptv-clock {
+        #${UID} .hdr-left { display: flex; align-items: center; gap: 14px; min-width: 0; }
+        #${UID} .clock {
             font-family: 'Fredoka', 'Quicksand', sans-serif;
-            font-size: 17px;
+            font-size: 16px;
             font-weight: 500;
-            letter-spacing: .02em;
-            color: var(--tv-text);
+            letter-spacing: .01em;
+            color: var(--text);
             font-variant-numeric: tabular-nums;
-            text-shadow: 0 0 20px rgba(34,211,238,.15);
         }
-        #${UID} .iptv-clock-sep {
-            width: 1px;
-            height: 18px;
-            background: rgba(255,255,255,.1);
+        #${UID} .clock-sep { width: 1px; height: 16px; background: var(--line-2); }
+        #${UID} .brand { display: flex; align-items: center; gap: 9px; }
+        #${UID} .brand-dot {
+            width: 26px; height: 26px;
+            border-radius: 8px;
+            background: linear-gradient(135deg, rgba(103,232,249,.22), rgba(196,181,253,.22));
+            display: grid; place-items: center;
+            color: var(--cyan);
         }
-
-        #${UID} .iptv-brand {
-            display: flex;
-            align-items: center;
-            gap: 10px;
-        }
-        #${UID} .iptv-logo {
-            width: 30px; height: 30px;
-            border-radius: 9px;
-            background: var(--tv-bg-card);
-            border: 1px solid rgba(255,255,255,.08);
-            display: grid;
-            place-items: center;
-            font-size: 14px;
-            color: var(--hub-cyan);
-            box-shadow: 0 0 14px rgba(34,211,238,.18);
-        }
-        #${UID} .iptv-title {
+        #${UID} .brand-title {
             font-family: 'Fredoka', 'Quicksand', sans-serif;
-            font-weight: 600;
-            font-size: 15px;
-            letter-spacing: .12em;
+            font-weight: 500;
+            font-size: 14.5px;
+            letter-spacing: .14em;
             text-transform: uppercase;
-            background: linear-gradient(100deg, var(--hub-cyan) 0%, var(--hub-violet) 35%, #fff 50%, var(--hub-violet) 65%, var(--hub-cyan) 100%);
-            background-size: 220% auto;
-            -webkit-background-clip: text;
-            background-clip: text;
-            color: transparent;
-            animation: iptvTitleShine 3.2s linear infinite;
+            color: var(--text);
         }
-        #${UID} .iptv-chip-br {
-            font-family: 'Quicksand', sans-serif;
-            font-size: 10px;
+        #${UID} .brand-tag {
+            font-size: 9.5px;
             font-weight: 700;
-            letter-spacing: .12em;
-            color: var(--hub-cyan);
-            background: var(--tv-accent-soft);
-            border-radius: 6px;
-            padding: 3px 8px;
+            letter-spacing: .14em;
+            color: var(--cyan);
+            background: rgba(103,232,249,.09);
+            border: 1px solid rgba(103,232,249,.18);
+            border-radius: 5px;
+            padding: 2px 7px;
         }
 
-        #${UID} .iptv-actions { display: flex; gap: 6px; align-items: center; }
-        #${UID} .iptv-btn {
-            width: 34px; height: 34px;
-            border-radius: 10px;
-            background: rgba(255,255,255,.04);
-            border: 1px solid rgba(255,255,255,.07);
-            color: #c7cad6;
-            display: flex; align-items: center; justify-content: center;
+        #${UID} .hdr-actions { display: flex; gap: 4px; align-items: center; }
+        #${UID} .hdr-btn {
+            width: 32px; height: 32px;
+            border-radius: 9px;
+            background: transparent;
+            border: 1px solid transparent;
+            color: var(--text-dim);
+            display: grid; place-items: center;
             cursor: pointer;
-            font-size: 14px;
-            transition: all .18s cubic-bezier(.16,1,.3,1);
+            transition: background .16s ease, color .16s ease, border-color .16s ease;
             flex-shrink: 0;
         }
-        #${UID} .iptv-btn:hover {
-            color: #0b0b10;
-            background: var(--hub-grad);
-            border-color: transparent;
-            box-shadow: 0 0 14px rgba(34,211,238,.35);
-            transform: translateY(-1px);
+        #${UID} .hdr-btn:hover {
+            background: rgba(255,255,255,.05);
+            color: var(--text);
+            border-color: var(--line);
         }
-        #${UID} .iptv-btn:active { transform: translateY(0) scale(.94); }
-        #${UID} .iptv-btn:focus-visible { outline: 2px solid var(--hub-cyan); outline-offset: 2px; }
+        #${UID} .hdr-btn:active { transform: scale(.95); }
+        #${UID} .hdr-btn:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
+        #${UID} .hdr-btn.primary { color: var(--cyan); }
+        #${UID} .hdr-btn.danger:hover { color: var(--err); }
 
-        #${UID} .iptv-unhide {
+        #${UID} .hdr-sep { width: 1px; height: 18px; background: var(--line-2); margin: 0 4px; }
+
+        #${UID} .unhide {
             position: absolute;
-            top: 10px; right: 10px; z-index: 15;
-            width: 32px; height: 32px;
-            border-radius: 10px;
-            background: rgba(20,24,32,.85);
-            border: 1px solid var(--tv-border);
-            color: var(--tv-text-dim);
+            top: 10px; right: 12px; z-index: 15;
+            width: 30px; height: 30px;
+            border-radius: 8px;
+            background: rgba(22,24,31,.85);
+            border: 1px solid var(--line-2);
+            color: var(--text-dim);
             display: none;
-            align-items: center;
-            justify-content: center;
-            font-size: 13px;
+            align-items: center; justify-content: center;
             cursor: pointer;
             opacity: 0;
-            transition: opacity .2s, background .15s, color .15s;
+            backdrop-filter: blur(10px);
+            transition: opacity .18s, background .16s, color .16s;
         }
-        #${UID}.header-hidden .iptv-unhide { display: flex; }
-        #${UID}:hover .iptv-unhide { opacity: 1; }
-        #${UID} .iptv-unhide:hover { background: var(--hub-cyan); color: #0b0b10; }
+        #${UID}.hdr-hidden .unhide { display: flex; }
+        #${UID}:hover .unhide { opacity: 1; }
+        #${UID} .unhide:hover { background: var(--cyan); color: #0b0b10; border-color: transparent; }
 
-        /* ─── Layout com sidebar ─── */
-        #${UID} .iptv-body {
-            flex: 1;
-            min-height: 0;
+        /* ─── Body ─── */
+        #${UID} .body {
+            flex: 1; min-height: 0;
+            display: flex; flex-direction: row;
             position: relative;
-            display: flex;
-            flex-direction: row;
         }
 
-        #${UID} .iptv-sidebar {
-            width: 76px;
-            flex-shrink: 0;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            padding: 18px 0 14px;
-            gap: 6px;
-            background: rgba(0,0,0,.28);
-            border-right: 1px solid var(--tv-border);
+        /* ─── Sidebar ─── */
+        #${UID} .sb {
+            width: 68px; flex-shrink: 0;
+            display: flex; flex-direction: column; align-items: center;
+            padding: 14px 0 14px;
+            gap: 4px;
+            background: rgba(0,0,0,.18);
+            border-right: 1px solid var(--line);
             z-index: 5;
+            overflow: hidden;
+            transition: width .22s cubic-bezier(.22,1,.36,1), padding .22s;
         }
-        #${UID} .iptv-sidebar-btn {
-            width: 46px; height: 46px;
+        #${UID}.sb-hidden .sb { width: 0; padding-left: 0; padding-right: 0; border-right-width: 0; }
+
+        #${UID} .sb-btn {
+            width: 42px; height: 42px;
             border: 0;
-            border-radius: 14px;
+            border-radius: 12px;
             background: transparent;
-            color: var(--tv-text-faint);
-            display: grid;
-            place-items: center;
-            font-size: 19px;
+            color: var(--text-faint);
+            display: grid; place-items: center;
             cursor: pointer;
-            transition: all .18s cubic-bezier(.16,1,.3,1);
+            transition: background .16s, color .16s;
             position: relative;
+            flex-shrink: 0;
         }
-        #${UID} .iptv-sidebar-btn:hover {
-            background: rgba(255,255,255,.06);
-            color: var(--tv-text);
+        #${UID} .sb-btn:hover { background: rgba(255,255,255,.045); color: var(--text); }
+        #${UID} .sb-btn.active {
+            background: rgba(103,232,249,.1);
+            color: var(--cyan);
         }
-        #${UID} .iptv-sidebar-btn.active {
-            background: var(--tv-accent-soft);
-            color: var(--hub-cyan);
-            box-shadow: inset 0 0 0 1px rgba(34,211,238,.25);
-        }
-        #${UID} .iptv-sidebar-btn.active::before {
+        #${UID} .sb-btn.active::before {
             content: '';
             position: absolute;
-            left: -8px;
-            top: 50%;
-            transform: translateY(-50%);
-            width: 3px;
-            height: 22px;
-            background: var(--hub-grad);
-            border-radius: 3px;
-            box-shadow: 0 0 12px rgba(34,211,238,.6);
+            left: -14px; top: 50%; transform: translateY(-50%);
+            width: 3px; height: 18px;
+            background: var(--cyan);
+            border-radius: 0 3px 3px 0;
         }
-        #${UID} .iptv-sidebar-spacer { flex: 1; }
+        #${UID} .sb-btn:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
+        #${UID} .sb-spacer { flex: 1; }
+        #${UID} .sb-toggle {
+            width: 34px; height: 34px;
+            border: 0; border-radius: 10px;
+            background: transparent;
+            color: var(--text-faint);
+            display: grid; place-items: center;
+            cursor: pointer;
+            transition: background .16s, color .16s;
+            flex-shrink: 0;
+        }
+        #${UID} .sb-toggle:hover { background: rgba(255,255,255,.05); color: var(--text); }
 
-        #${UID} .iptv-main {
-            flex: 1;
-            min-width: 0;
-            min-height: 0;
-            display: flex;
-            flex-direction: column;
+        #${UID} .sb-expand {
+            position: absolute;
+            left: 10px; top: 10px; z-index: 12;
+            width: 32px; height: 32px;
+            border-radius: 9px;
+            background: rgba(22,24,31,.85);
+            border: 1px solid var(--line-2);
+            color: var(--text-dim);
+            display: none; align-items: center; justify-content: center;
+            cursor: pointer;
+            backdrop-filter: blur(10px);
+            transition: background .16s, color .16s;
+        }
+        #${UID}.sb-hidden .sb-expand { display: flex; }
+        #${UID} .sb-expand:hover { background: var(--cyan); color: #0b0b10; border-color: transparent; }
+
+        /* ─── Main ─── */
+        #${UID} .main {
+            flex: 1; min-width: 0; min-height: 0;
+            display: flex; flex-direction: column;
             position: relative;
         }
 
-        #${UID} .smart-home,
-        #${UID} .smart-app-container,
-        #${UID} .tv-home,
-        #${UID} .tv-player { display: none; }
-        #${UID}.vista-smart .smart-home { display: flex; }
-        #${UID}.vista-app .smart-app-container { display: flex; }
-        #${UID}.vista-home .tv-home { display: flex; }
-        #${UID}.vista-player .tv-player { display: flex; }
+        #${UID} .view { display: none; }
+        #${UID}.v-smart .v-smart-el { display: flex; }
+        #${UID}.v-app .v-app-el { display: flex; }
+        #${UID}.v-home .v-home-el { display: flex; }
+        #${UID}.v-player .v-player-el { display: flex; }
 
         /* ─── Smart home ─── */
-        #${UID} .smart-home {
-            flex: 1;
-            min-height: 0;
+        #${UID} .smart {
+            flex: 1; min-height: 0;
             flex-direction: column;
-            padding: 20px 24px 20px;
+            padding: 20px 26px 22px;
             gap: 20px;
             overflow-y: auto;
             overflow-x: hidden;
         }
-        #${UID} .smart-home::-webkit-scrollbar { width: 6px; }
-        #${UID} .smart-home::-webkit-scrollbar-thumb {
-            background: var(--tv-border);
-            border-radius: 3px;
-        }
-        #${UID} .smart-home::-webkit-scrollbar-thumb:hover { background: var(--hub-cyan); }
+        #${UID} .smart::-webkit-scrollbar { width: 5px; }
+        #${UID} .smart::-webkit-scrollbar-thumb { background: rgba(255,255,255,.08); border-radius: 3px; }
 
-        /* Hero */
-        #${UID} .smart-hero {
+        #${UID} .hero {
             position: relative;
-            height: 260px;
+            height: 240px;
             flex-shrink: 0;
-            border-radius: 22px;
+            border-radius: 20px;
             overflow: hidden;
-            background: #0a0e1f;
-            padding: 32px 36px;
-            display: flex;
-            align-items: flex-end;
-            border: 1px solid rgba(255,255,255,.07);
-            box-shadow:
-                0 24px 60px rgba(0,0,0,.55),
-                inset 0 1px 0 rgba(255,255,255,.06);
-            animation: iptvHeroIn .5s cubic-bezier(.16,1,.3,1);
-        }
-        #${UID} .smart-hero-bg {
-            position: absolute;
-            inset: 0;
+            padding: 30px 34px;
+            display: flex; align-items: flex-end;
+            border: 1px solid var(--line);
+            box-shadow: 0 12px 40px -18px rgba(0,0,0,.7);
             background:
-                radial-gradient(60% 90% at 12% 15%, rgba(34,211,238,.22) 0%, transparent 55%),
-                radial-gradient(70% 100% at 88% 85%, rgba(167,139,250,.28) 0%, transparent 55%),
-                linear-gradient(135deg, #0d1220 0%, #191a3a 50%, #241235 100%);
+                radial-gradient(80% 100% at 12% 10%, rgba(103,232,249,.12), transparent 55%),
+                radial-gradient(80% 100% at 88% 90%, rgba(196,181,253,.14), transparent 55%),
+                linear-gradient(135deg, #0d0f1a 0%, #15162a 60%, #1a1530 100%);
+            animation: iptvFadeIn .45s cubic-bezier(.22,1,.36,1);
         }
-        #${UID} .smart-hero-bg::before {
+        #${UID} .hero::before {
             content: '';
-            position: absolute;
-            inset: 0;
+            position: absolute; inset: 0;
             background-image:
-                linear-gradient(rgba(255,255,255,.03) 1px, transparent 1px),
-                linear-gradient(90deg, rgba(255,255,255,.03) 1px, transparent 1px);
-            background-size: 34px 34px;
-            -webkit-mask-image: radial-gradient(ellipse at 25% 60%, #000 0%, transparent 70%);
-            mask-image: radial-gradient(ellipse at 25% 60%, #000 0%, transparent 70%);
+                linear-gradient(rgba(255,255,255,.02) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(255,255,255,.02) 1px, transparent 1px);
+            background-size: 36px 36px;
+            -webkit-mask-image: radial-gradient(ellipse at 30% 70%, #000 0%, transparent 65%);
+            mask-image: radial-gradient(ellipse at 30% 70%, #000 0%, transparent 65%);
         }
-        #${UID} .smart-hero-bg::after {
+        #${UID} .hero::after {
             content: '';
-            position: absolute;
-            inset: 0;
-            background: linear-gradient(0deg, rgba(8,9,13,.94) 0%, transparent 55%);
+            position: absolute; inset: 0;
+            background: linear-gradient(0deg, rgba(10,11,15,.85) 0%, transparent 60%);
         }
-        #${UID} .smart-hero-art {
-            position: absolute;
-            right: -60px;
-            top: -20px;
-            width: 460px;
-            height: 320px;
-            opacity: .55;
-            filter: drop-shadow(0 20px 60px rgba(0,0,0,.6));
-            pointer-events: none;
+        #${UID} .hero-body { position: relative; z-index: 1; max-width: 540px; display: flex; flex-direction: column; gap: 8px; }
+        #${UID} .hero-eyebrow {
+            font-size: 11px; font-weight: 600;
+            letter-spacing: .18em; text-transform: uppercase;
+            color: rgba(196,181,253,.9);
         }
-        #${UID} .smart-hero-content {
-            position: relative;
-            z-index: 1;
-            max-width: 520px;
-            display: flex;
-            flex-direction: column;
-            gap: 8px;
-        }
-        #${UID} .smart-hero-eyebrow {
-            font-family: 'Quicksand', sans-serif;
-            font-size: 12px;
-            font-weight: 700;
-            letter-spacing: .14em;
-            text-transform: uppercase;
-            color: var(--hub-cyan);
-            text-shadow: 0 0 12px rgba(34,211,238,.5);
-        }
-        #${UID} .smart-hero-title {
+        #${UID} .hero-title {
             margin: 0;
             font-family: 'Fredoka', 'Quicksand', sans-serif;
-            font-size: 42px;
-            font-weight: 600;
-            letter-spacing: -.02em;
-            line-height: 1.02;
+            font-size: 36px; font-weight: 500;
+            letter-spacing: -.02em; line-height: 1.05;
             color: #fff;
-            text-shadow: 0 4px 18px rgba(0,0,0,.6);
         }
-        #${UID} .smart-hero-title small {
+        #${UID} .hero-title small {
             display: block;
             font-family: 'Quicksand', sans-serif;
-            font-size: 14px;
-            font-weight: 500;
-            letter-spacing: 0;
+            font-size: 12px; font-weight: 600;
+            letter-spacing: .16em; text-transform: uppercase;
             color: rgba(255,255,255,.55);
-            margin-bottom: 6px;
-            text-transform: uppercase;
-            letter-spacing: .18em;
+            margin-bottom: 8px;
         }
-        #${UID} .smart-hero-desc {
-            margin: 2px 0 6px;
-            font-family: 'Quicksand', sans-serif;
-            font-size: 14px;
-            font-weight: 500;
-            color: rgba(255,255,255,.78);
-            line-height: 1.55;
-            max-width: 460px;
-            text-shadow: 0 2px 8px rgba(0,0,0,.5);
+        #${UID} .hero-desc {
+            margin: 0 0 6px;
+            font-size: 13.5px; font-weight: 500;
+            color: rgba(255,255,255,.72);
+            line-height: 1.55; max-width: 460px;
         }
-        #${UID} .smart-hero-cta {
+        #${UID} .hero-cta {
             all: unset;
-            margin-top: 4px;
-            display: inline-flex;
-            align-items: center;
-            gap: 10px;
-            padding: 11px 22px;
+            margin-top: 6px;
+            display: inline-flex; align-items: center; gap: 10px;
+            padding: 11px 20px;
             border-radius: 12px;
-            background: #fff;
+            background: rgba(255,255,255,.96);
             color: #0b0b10;
             font-family: 'Quicksand', sans-serif;
-            font-size: 13.5px;
-            font-weight: 700;
-            letter-spacing: .02em;
+            font-size: 13px; font-weight: 700;
             cursor: pointer;
             width: fit-content;
-            box-shadow: 0 8px 22px rgba(255,255,255,.18), inset 0 1px 0 rgba(255,255,255,.35);
-            transition: transform .18s cubic-bezier(.16,1,.3,1), box-shadow .18s;
+            box-shadow: 0 8px 24px -8px rgba(255,255,255,.35);
+            transition: transform .18s cubic-bezier(.22,1,.36,1), box-shadow .18s;
         }
-        #${UID} .smart-hero-cta:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 12px 30px rgba(255,255,255,.28), inset 0 1px 0 rgba(255,255,255,.45);
-        }
-        #${UID} .smart-hero-cta:focus-visible {
-            outline: 2px solid var(--hub-cyan);
-            outline-offset: 3px;
-        }
-        #${UID} .smart-hero-cta-icon {
-            font-size: 10px;
-            line-height: 1;
-        }
+        #${UID} .hero-cta:hover { transform: translateY(-2px); box-shadow: 0 14px 32px -10px rgba(255,255,255,.45); }
+        #${UID} .hero-cta:focus-visible { outline: 2px solid var(--cyan); outline-offset: 3px; }
+        #${UID} .hero-cta svg { width: 12px; height: 12px; }
 
-        /* Section */
-        #${UID} .smart-section {
-            display: flex;
-            flex-direction: column;
-            gap: 14px;
-        }
-        #${UID} .smart-section-title {
+        #${UID} .sect { display: flex; flex-direction: column; gap: 12px; }
+        #${UID} .sect-title {
             font-family: 'Fredoka', 'Quicksand', sans-serif;
-            font-size: 17px;
-            font-weight: 500;
-            letter-spacing: .01em;
-            color: var(--tv-text);
-            display: flex;
-            align-items: center;
-            gap: 10px;
+            font-size: 16px; font-weight: 500;
+            color: var(--text);
+            display: flex; align-items: center; gap: 10px;
         }
-        #${UID} .smart-section-title::after {
-            content: '';
-            flex: 1;
-            height: 1px;
-            background: linear-gradient(90deg, rgba(255,255,255,.08), transparent);
+        #${UID} .sect-title::after {
+            content: ''; flex: 1; height: 1px;
+            background: linear-gradient(90deg, var(--line-2), transparent);
         }
 
-        /* App row */
-        #${UID} .smart-row {
-            display: flex;
-            gap: 16px;
+        /* ─── Apps row (scroll on hover) ─── */
+        #${UID} .apps-row {
+            display: flex; gap: 14px;
             overflow-x: auto;
-            padding: 4px 2px 14px;
+            overflow-y: hidden;
+            padding: 4px 2px 12px;
             scroll-behavior: smooth;
-            scrollbar-width: none;
+            scrollbar-width: none; /* Firefox */
+            -ms-overflow-style: none; /* IE/Edge */
         }
-        #${UID} .smart-row::-webkit-scrollbar { display: none; }
+        #${UID} .apps-row::-webkit-scrollbar { display: none; } /* Chrome/Safari */
+        #${UID} .apps-row:hover {
+            overflow-x: auto;
+            scrollbar-width: thin;
+            scrollbar-color: rgba(103,232,249,.35) transparent;
+        }
+        #${UID} .apps-row:hover::-webkit-scrollbar {
+            display: block;
+            height: 6px;
+        }
+        #${UID} .apps-row:hover::-webkit-scrollbar-track { background: transparent; }
+        #${UID} .apps-row:hover::-webkit-scrollbar-thumb {
+            background: rgba(103,232,249,.35);
+            border-radius: 3px;
+        }
+        #${UID} .apps-row:hover::-webkit-scrollbar-thumb:hover { background: rgba(103,232,249,.6); }
 
-        /* App card (brand) */
-        #${UID} .smart-app {
+        /* App cards */
+        #${UID} .app-card {
             all: unset;
             flex-shrink: 0;
-            width: 190px;
-            height: 118px;
+            width: 168px; height: 108px;
             box-sizing: border-box;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
+            display: flex; flex-direction: column;
+            align-items: center; justify-content: center;
             gap: 8px;
-            padding: 16px;
+            padding: 14px;
             border-radius: 16px;
             cursor: pointer;
             position: relative;
             overflow: hidden;
-            background: var(--app-bg, linear-gradient(135deg, #1c1f28, #0e1017));
-            border: 1px solid rgba(255,255,255,.08);
+            background: var(--card-bg, linear-gradient(135deg, #1b1d26 0%, #0f1117 100%));
+            border: 1px solid var(--line);
             box-shadow:
-                0 10px 26px rgba(0,0,0,.4),
+                0 1px 2px rgba(0,0,0,.25),
+                0 8px 20px -12px rgba(0,0,0,.5),
+                inset 0 1px 0 rgba(255,255,255,.04);
+            transition: transform .22s cubic-bezier(.22,1,.36,1), border-color .22s, box-shadow .22s;
+            animation: iptvTileIn .3s cubic-bezier(.22,1,.36,1) backwards;
+        }
+        #${UID} .app-card::before {
+            content: '';
+            position: absolute; inset: 0;
+            background: radial-gradient(120% 120% at 50% -10%, rgba(255,255,255,.1), transparent 60%);
+            opacity: .55; pointer-events: none;
+        }
+        #${UID} .app-card:hover {
+            transform: translateY(-4px);
+            border-color: var(--line-2);
+            box-shadow:
+                0 1px 2px rgba(0,0,0,.25),
+                0 20px 40px -16px rgba(0,0,0,.65),
                 inset 0 1px 0 rgba(255,255,255,.06);
-            transition:
-                transform .22s cubic-bezier(.16,1,.3,1),
-                border-color .22s,
-                box-shadow .22s;
-            animation: iptvAppIn .35s cubic-bezier(.16,1,.3,1) backwards;
         }
-        #${UID} .smart-app::before {
-            content: '';
-            position: absolute;
-            inset: 0;
-            background: radial-gradient(80% 100% at 50% 0%, rgba(255,255,255,.14), transparent 60%);
-            opacity: .5;
-            pointer-events: none;
-        }
-        #${UID} .smart-app::after {
-            content: '';
-            position: absolute;
-            top: 0; left: 12%; right: 12%;
-            height: 1px;
-            background: linear-gradient(90deg, transparent, rgba(255,255,255,.5), transparent);
-            opacity: .5;
-        }
-        #${UID} .smart-app:hover {
-            transform: translateY(-5px);
-            border-color: rgba(255,255,255,.22);
-            box-shadow:
-                0 20px 40px rgba(0,0,0,.5),
-                inset 0 1px 0 rgba(255,255,255,.1);
-        }
-        #${UID} .smart-app:focus-visible,
-        #${UID} .smart-app.focused {
+        #${UID} .app-card:focus-visible,
+        #${UID} .app-card.focused {
             outline: none;
-            transform: scale(1.05) translateY(-2px);
-            border-color: rgba(255,255,255,.85);
+            transform: translateY(-3px) scale(1.02);
+            border-color: rgba(255,255,255,.55);
             box-shadow:
-                0 0 0 2px rgba(255,255,255,.9),
-                0 0 50px rgba(34,211,238,.25),
-                0 20px 50px rgba(0,0,0,.6);
-            animation: iptvFocusPulse 2.4s ease-in-out infinite;
+                0 0 0 2px rgba(255,255,255,.55),
+                0 0 40px -6px rgba(103,232,249,.35),
+                0 18px 40px -14px rgba(0,0,0,.7);
         }
-        #${UID} .smart-app-icon {
-            font-size: 30px;
-            line-height: 1;
-            position: relative;
-            z-index: 1;
-            filter: drop-shadow(0 6px 16px rgba(0,0,0,.6));
-            transition: transform .22s cubic-bezier(.16,1,.3,1);
+        #${UID} .app-icon {
+            display: grid; place-items: center;
+            width: 42px; height: 42px;
+            border-radius: 12px;
+            background: rgba(255,255,255,.07);
+            color: #fff;
+            position: relative; z-index: 1;
+            transition: transform .22s cubic-bezier(.22,1,.36,1);
         }
-        #${UID} .smart-app:focus-visible .smart-app-icon,
-        #${UID} .smart-app.focused .smart-app-icon { transform: scale(1.1); }
-        #${UID} .smart-app-name {
+        #${UID} .app-icon svg { width: 22px; height: 22px; }
+        #${UID} .app-card:focus-visible .app-icon,
+        #${UID} .app-card.focused .app-icon { transform: scale(1.08); }
+        #${UID} .app-name {
             font-family: 'Fredoka', 'Quicksand', sans-serif;
-            font-size: 15px;
-            font-weight: 600;
+            font-size: 14px; font-weight: 500;
             letter-spacing: .01em;
             color: #fff;
-            position: relative;
-            z-index: 1;
+            position: relative; z-index: 1;
             text-align: center;
-            text-shadow: 0 2px 8px rgba(0,0,0,.55);
+            text-shadow: 0 2px 8px rgba(0,0,0,.4);
         }
-        #${UID} .smart-app-tag {
-            position: absolute;
-            bottom: 8px; right: 10px;
-            font-family: 'Quicksand', sans-serif;
-            font-size: 9px;
-            font-weight: 800;
-            letter-spacing: .1em;
-            color: rgba(255,255,255,.55);
-            text-transform: uppercase;
+        #${UID} .app-tag {
+            position: absolute; bottom: 7px; right: 9px;
+            font-size: 8.5px; font-weight: 800;
+            letter-spacing: .12em; text-transform: uppercase;
+            color: rgba(255,255,255,.5);
             z-index: 1;
         }
 
-        /* ─── App containers ─── */
-        #${UID} .smart-app-container {
-            flex: 1;
-            min-height: 0;
-            flex-direction: column;
+        /* ─── App container (iframe) ─── */
+        #${UID} .app-shell {
+            flex: 1; min-height: 0;
+            display: flex; flex-direction: column;
+            background: #05060a;
             position: relative;
-            overflow: hidden;
-            background: #000;
         }
-
-        /* Splash para apps externos */
-        #${UID} .app-splash {
-            flex: 1;
-            display: flex;
+        #${UID} .app-bar {
+            height: 42px; flex-shrink: 0;
+            display: flex; align-items: center; justify-content: space-between;
+            padding: 0 14px;
+            background: rgba(255,255,255,.02);
+            border-bottom: 1px solid var(--line);
+        }
+        #${UID} .app-bar-left { display: flex; align-items: center; gap: 10px; min-width: 0; }
+        #${UID} .app-bar-title {
+            font-family: 'Fredoka', 'Quicksand', sans-serif;
+            font-size: 13px; font-weight: 500;
+            letter-spacing: .01em;
+            color: var(--text);
+            white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+        }
+        #${UID} .app-bar-dot {
+            width: 8px; height: 8px; border-radius: 50%;
+            background: var(--ok);
+            box-shadow: 0 0 8px rgba(125,211,160,.7);
+        }
+        #${UID} .app-bar-dot.warn { background: var(--err); box-shadow: 0 0 8px rgba(242,139,150,.7); }
+        #${UID} .app-bar-sub {
+            font-size: 11px; color: var(--text-faint);
+            white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+        }
+        #${UID} .app-bar-actions { display: flex; gap: 4px; flex-shrink: 0; }
+        #${UID} .app-frame-wrap {
+            flex: 1; min-height: 0;
+            position: relative;
+            background: #05060a;
+        }
+        #${UID} .app-frame-wrap iframe {
+            width: 100%; height: 100%;
+            border: 0; display: block;
+            background: #05060a;
+        }
+        #${UID} .app-blocked {
+            position: absolute; inset: 0;
+            display: none;
             flex-direction: column;
-            align-items: center;
-            justify-content: center;
-            gap: 18px;
+            align-items: center; justify-content: center;
+            gap: 14px;
             padding: 40px;
             text-align: center;
-            background: radial-gradient(80% 100% at 50% 0%, var(--splash-glow, rgba(34,211,238,.2)), transparent 60%), #06080d;
+            background: radial-gradient(60% 80% at 50% 30%, rgba(103,232,249,.08), transparent 60%), #08090d;
         }
-        #${UID} .app-splash-icon {
-            font-size: 72px;
-            line-height: 1;
-            filter: drop-shadow(0 12px 30px rgba(0,0,0,.6));
+        #${UID} .app-blocked.show { display: flex; }
+        #${UID} .app-blocked-icon {
+            width: 56px; height: 56px;
+            border-radius: 16px;
+            background: rgba(242,139,150,.12);
+            border: 1px solid rgba(242,139,150,.3);
+            display: grid; place-items: center;
+            color: var(--err);
         }
-        #${UID} .app-splash-title {
+        #${UID} .app-blocked-title {
             font-family: 'Fredoka', 'Quicksand', sans-serif;
-            font-size: 28px;
-            font-weight: 600;
+            font-size: 20px; font-weight: 500;
             color: #fff;
-            letter-spacing: -.01em;
         }
-        #${UID} .app-splash-desc {
-            font-family: 'Quicksand', sans-serif;
-            font-size: 14px;
-            color: rgba(255,255,255,.7);
-            max-width: 420px;
-            line-height: 1.55;
+        #${UID} .app-blocked-desc {
+            font-size: 13.5px; color: var(--text-dim);
+            max-width: 400px; line-height: 1.55;
         }
-        #${UID} .app-splash-btn {
+        #${UID} .app-blocked-btn {
             all: unset;
-            padding: 12px 26px;
+            margin-top: 6px;
+            padding: 11px 22px;
             border-radius: 12px;
-            background: var(--hub-grad);
+            background: var(--grad);
             color: #0b0b10;
             font-family: 'Quicksand', sans-serif;
-            font-size: 14px;
-            font-weight: 700;
+            font-size: 13px; font-weight: 700;
             cursor: pointer;
-            box-shadow: 0 10px 26px rgba(34,211,238,.35);
+            box-shadow: 0 10px 26px -10px rgba(103,232,249,.45);
             transition: transform .18s;
         }
-        #${UID} .app-splash-btn:hover { transform: translateY(-2px); }
-        #${UID} .app-splash-btn:focus-visible { outline: 2px solid #fff; outline-offset: 3px; }
+        #${UID} .app-blocked-btn:hover { transform: translateY(-2px); }
+        #${UID} .app-blocked-btn:focus-visible { outline: 2px solid #fff; outline-offset: 3px; }
 
-        /* ─── Anime grid ─── */
+        /* ─── Anime ─── */
         #${UID} .anime-wrap {
-            flex: 1;
-            min-height: 0;
+            flex: 1; min-height: 0;
             overflow-y: auto;
-            padding: 22px 26px;
-            background: radial-gradient(60% 80% at 50% 0%, rgba(167,139,250,.12), transparent 60%), #06080d;
+            padding: 20px 22px 24px;
+            background: radial-gradient(60% 70% at 50% 0%, rgba(196,181,253,.08), transparent 60%), #08090d;
         }
-        #${UID} .anime-wrap::-webkit-scrollbar { width: 6px; }
-        #${UID} .anime-wrap::-webkit-scrollbar-thumb { background: var(--tv-border); border-radius: 3px; }
+        #${UID} .anime-wrap::-webkit-scrollbar { width: 5px; }
+        #${UID} .anime-wrap::-webkit-scrollbar-thumb { background: rgba(255,255,255,.08); border-radius: 3px; }
         #${UID} .anime-head {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            margin-bottom: 18px;
-            gap: 16px;
+            display: flex; align-items: baseline; justify-content: space-between;
+            margin-bottom: 16px; gap: 12px;
         }
-        #${UID} .anime-title {
+        #${UID} .anime-head h2 {
+            margin: 0;
             font-family: 'Fredoka', 'Quicksand', sans-serif;
-            font-size: 24px;
-            font-weight: 600;
-            color: #fff;
-            letter-spacing: -.01em;
+            font-size: 20px; font-weight: 500;
+            color: #fff; letter-spacing: -.005em;
         }
-        #${UID} .anime-title small {
+        #${UID} .anime-head small {
             display: block;
             font-family: 'Quicksand', sans-serif;
-            font-size: 11px;
-            font-weight: 700;
-            letter-spacing: .16em;
-            color: var(--hub-violet);
-            text-transform: uppercase;
+            font-size: 10px; font-weight: 700;
+            letter-spacing: .18em; text-transform: uppercase;
+            color: var(--violet);
             margin-bottom: 4px;
         }
+        #${UID} .anime-head-sub { font-size: 12px; color: var(--text-faint); }
         #${UID} .anime-grid {
             display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+            grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
             gap: 14px;
         }
         #${UID} .anime-card {
             all: unset;
-            display: flex;
-            flex-direction: column;
+            display: flex; flex-direction: column;
             gap: 8px;
             cursor: pointer;
             border-radius: 12px;
             overflow: hidden;
-            background: rgba(255,255,255,.03);
-            border: 1px solid rgba(255,255,255,.06);
-            transition: transform .2s cubic-bezier(.16,1,.3,1), border-color .2s, background .2s;
+            background: rgba(255,255,255,.025);
+            border: 1px solid var(--line);
+            transition: transform .2s cubic-bezier(.22,1,.36,1), border-color .2s, background .2s;
             position: relative;
         }
         #${UID} .anime-card:hover {
-            transform: translateY(-4px);
-            border-color: rgba(167,139,250,.4);
-            background: rgba(255,255,255,.06);
+            transform: translateY(-3px);
+            border-color: rgba(196,181,253,.4);
+            background: rgba(255,255,255,.045);
         }
         #${UID} .anime-card:focus-visible,
         #${UID} .anime-card.focused {
             outline: none;
-            border-color: var(--hub-violet);
-            box-shadow: 0 0 0 2px rgba(167,139,250,.55), 0 12px 30px rgba(0,0,0,.5);
+            border-color: var(--violet);
+            box-shadow: 0 0 0 2px rgba(196,181,253,.5), 0 12px 28px -12px rgba(0,0,0,.6);
         }
         #${UID} .anime-poster {
             aspect-ratio: 2 / 3;
@@ -990,487 +888,390 @@
             display: block;
             background: #10131a;
         }
+        #${UID} .anime-info { padding: 0 10px 12px; }
         #${UID} .anime-name {
-            padding: 0 10px 4px;
-            font-family: 'Quicksand', sans-serif;
-            font-size: 12px;
-            font-weight: 700;
-            color: var(--tv-text);
+            font-size: 11.5px; font-weight: 600;
+            color: var(--text);
             line-height: 1.3;
-            overflow: hidden;
-            text-overflow: ellipsis;
-            display: -webkit-box;
-            -webkit-line-clamp: 2;
-            -webkit-box-orient: vertical;
+            overflow: hidden; text-overflow: ellipsis;
+            display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
         }
         #${UID} .anime-meta {
-            padding: 0 10px 12px;
-            font-family: 'Quicksand', sans-serif;
-            font-size: 10.5px;
-            font-weight: 500;
-            color: var(--tv-text-faint);
+            margin-top: 4px;
+            font-size: 10px; font-weight: 500;
+            color: var(--text-faint);
         }
         #${UID} .anime-state {
             grid-column: 1 / -1;
             text-align: center;
             padding: 60px 20px;
-            font-family: 'Quicksand', sans-serif;
-            font-size: 14px;
-            color: var(--tv-text-faint);
+            font-size: 13.5px; color: var(--text-faint);
+        }
+        #${UID} .anime-episodes {
+            display: flex; flex-direction: column; gap: 6px;
+            padding: 16px 20px;
+            background: #0a0b0f;
+            border-top: 1px solid var(--line);
+            max-height: 220px;
+            overflow-y: auto;
+        }
+        #${UID} .anime-episode {
+            all: unset;
+            display: flex; align-items: center; gap: 10px;
+            padding: 8px 12px;
+            border-radius: 8px;
+            background: rgba(255,255,255,.025);
+            border: 1px solid var(--line);
+            cursor: pointer;
+            font-size: 12.5px; font-weight: 600;
+            color: var(--text);
+            transition: background .16s, border-color .16s;
+        }
+        #${UID} .anime-episode:hover {
+            background: rgba(103,232,249,.08);
+            border-color: rgba(103,232,249,.3);
+        }
+        #${UID} .anime-episode .ep-num {
+            font-family: 'Fredoka', 'Quicksand', sans-serif;
+            color: var(--cyan);
+            min-width: 40px;
+        }
+        #${UID} .anime-player {
+            width: 100%; height: 100%;
+            background: #000;
         }
 
         /* ─── TV home ─── */
-        #${UID} .tv-home {
-            flex: 1;
-            min-height: 0;
-            flex-direction: column;
-        }
+        #${UID} .tv-home { flex: 1; min-height: 0; flex-direction: column; }
         #${UID} .tv-toolbar {
             flex-shrink: 0;
-            padding: 18px 24px 12px;
-            display: flex;
-            flex-direction: column;
-            gap: 12px;
+            padding: 16px 22px 10px;
+            display: flex; flex-direction: column; gap: 10px;
         }
         #${UID} .tv-search input {
             width: 100%;
-            background: var(--tv-bg-card);
-            border: 1px solid var(--tv-border);
-            border-radius: 12px;
-            padding: 12px 16px;
-            color: var(--tv-text);
+            background: rgba(255,255,255,.03);
+            border: 1px solid var(--line);
+            border-radius: 11px;
+            padding: 11px 14px;
+            color: var(--text);
             font-family: 'Quicksand', sans-serif;
-            font-size: 14px;
-            font-weight: 500;
-            outline: none;
-            box-sizing: border-box;
-            transition: border-color .18s, box-shadow .18s;
+            font-size: 13.5px; font-weight: 500;
+            outline: none; box-sizing: border-box;
+            transition: border-color .18s, box-shadow .18s, background .18s;
         }
-        #${UID} .tv-search input::placeholder { color: var(--tv-text-faint); }
+        #${UID} .tv-search input::placeholder { color: var(--text-faint); }
         #${UID} .tv-search input:focus {
-            border-color: var(--hub-cyan);
-            box-shadow: 0 0 0 3px var(--tv-accent-soft);
+            border-color: rgba(103,232,249,.45);
+            background: rgba(255,255,255,.045);
+            box-shadow: 0 0 0 3px rgba(103,232,249,.1);
         }
-
         #${UID} .tv-chips {
-            display: flex;
-            gap: 8px;
-            overflow-x: auto;
-            padding-bottom: 2px;
+            display: flex; gap: 7px;
+            overflow-x: auto; padding-bottom: 2px;
             scrollbar-width: none;
         }
         #${UID} .tv-chips::-webkit-scrollbar { display: none; }
         #${UID} .tv-chip {
             flex-shrink: 0;
             font-family: 'Quicksand', sans-serif;
-            font-size: 12px;
-            font-weight: 700;
-            letter-spacing: .02em;
-            padding: 7px 16px;
+            font-size: 11.5px; font-weight: 600;
+            padding: 6px 14px;
             border-radius: 99px;
-            cursor: pointer;
-            white-space: nowrap;
-            background: var(--tv-bg-card);
-            border: 1px solid var(--tv-border);
-            color: var(--tv-text-dim);
-            transition: all .18s;
+            cursor: pointer; white-space: nowrap;
+            background: rgba(255,255,255,.03);
+            border: 1px solid var(--line);
+            color: var(--text-dim);
+            transition: all .16s;
         }
         #${UID} .tv-chip:hover {
-            border-color: var(--hub-cyan);
-            color: var(--tv-text);
-            background: var(--tv-bg-card-hover);
+            border-color: rgba(103,232,249,.35);
+            color: var(--text);
+            background: rgba(255,255,255,.05);
         }
         #${UID} .tv-chip.active {
-            background: var(--hub-grad);
+            background: var(--grad);
             color: #0b0b10;
             border-color: transparent;
-            box-shadow: 0 4px 14px rgba(34,211,238,.3);
+            box-shadow: 0 4px 14px -6px rgba(103,232,249,.5);
         }
         #${UID} .tv-chip:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
         #${UID} .tv-chip.fav-chip {
-            border-color: rgba(251,191,36,.35);
-            color: var(--tv-star);
+            border-color: rgba(251,191,36,.3);
+            color: #fbbf24;
         }
         #${UID} .tv-chip.fav-chip.active {
-            background: var(--tv-star);
+            background: #fbbf24;
             color: #1a1410;
             border-color: transparent;
         }
-
         #${UID} .tv-grid {
-            flex: 1;
-            min-height: 0;
+            flex: 1; min-height: 0;
             overflow-y: auto;
-            padding: 8px 24px 24px;
+            padding: 6px 22px 22px;
             display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
-            gap: 16px;
+            grid-template-columns: repeat(auto-fill, minmax(148px, 1fr));
+            gap: 14px;
             align-content: start;
         }
-        #${UID} .tv-grid::-webkit-scrollbar { width: 6px; }
-        #${UID} .tv-grid::-webkit-scrollbar-thumb {
-            background: var(--tv-border);
-            border-radius: 3px;
-        }
-        #${UID} .tv-grid::-webkit-scrollbar-thumb:hover { background: var(--hub-cyan); }
+        #${UID} .tv-grid::-webkit-scrollbar { width: 5px; }
+        #${UID} .tv-grid::-webkit-scrollbar-thumb { background: rgba(255,255,255,.08); border-radius: 3px; }
 
         #${UID} .tv-tile {
             position: relative;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            gap: 10px;
-            padding: 18px 12px 14px;
+            display: flex; flex-direction: column;
+            align-items: center; gap: 10px;
+            padding: 16px 10px 12px;
             border-radius: 14px;
             cursor: pointer;
-            background: var(--tv-bg-card);
-            border: 1px solid var(--tv-border-soft);
-            transition:
-                transform .2s cubic-bezier(.16,1,.3,1),
-                background .2s,
-                border-color .2s,
-                box-shadow .2s;
+            background: rgba(255,255,255,.025);
+            border: 1px solid var(--line);
+            transition: transform .2s cubic-bezier(.22,1,.36,1), background .2s, border-color .2s, box-shadow .2s;
         }
         #${UID} .tv-tile:hover {
-            transform: translateY(-4px);
-            background: var(--tv-bg-card-hover);
-            border-color: rgba(255,255,255,.12);
+            transform: translateY(-3px);
+            background: rgba(255,255,255,.045);
+            border-color: var(--line-2);
         }
         #${UID} .tv-tile:focus-visible,
         #${UID} .tv-tile.focused {
             outline: none;
-            transform: translateY(-4px) scale(1.04);
-            background: var(--tv-bg-card-hover);
-            border-color: var(--hub-cyan);
-            box-shadow:
-                0 0 0 2px rgba(34,211,238,.7),
-                0 12px 32px rgba(0,0,0,.5),
-                0 0 30px rgba(34,211,238,.2);
+            transform: translateY(-3px) scale(1.03);
+            background: rgba(255,255,255,.05);
+            border-color: rgba(103,232,249,.5);
+            box-shadow: 0 0 0 2px rgba(103,232,249,.4), 0 12px 30px -14px rgba(0,0,0,.6);
         }
         #${UID} .tv-tile.tv-tile-off { opacity: .35; }
         #${UID} .tv-tile-logo {
-            width: 64px; height: 64px;
-            border-radius: 12px;
-            overflow: hidden;
-            background: var(--tv-bg-elevated);
-            display: flex;
-            align-items: center;
-            justify-content: center;
+            width: 60px; height: 60px;
+            border-radius: 12px; overflow: hidden;
+            background: rgba(255,255,255,.03);
+            display: flex; align-items: center; justify-content: center;
             flex-shrink: 0;
         }
-        #${UID} .tv-tile-logo img {
-            width: 100%; height: 100%;
-            object-fit: contain;
-        }
+        #${UID} .tv-tile-logo img { width: 100%; height: 100%; object-fit: contain; }
         #${UID} .tv-tile-name {
             font-family: 'Quicksand', sans-serif;
-            font-size: 13px;
-            font-weight: 700;
-            text-align: center;
-            line-height: 1.3;
+            font-size: 12.5px; font-weight: 600;
+            text-align: center; line-height: 1.3;
             max-width: 100%;
-            overflow: hidden;
-            text-overflow: ellipsis;
-            display: -webkit-box;
-            -webkit-line-clamp: 2;
-            -webkit-box-orient: vertical;
-            color: var(--tv-text);
+            overflow: hidden; text-overflow: ellipsis;
+            display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+            color: var(--text);
         }
         #${UID} .tv-tile-meta {
-            font-family: 'Quicksand', sans-serif;
-            font-size: 10.5px;
-            font-weight: 500;
-            color: var(--tv-text-faint);
+            font-size: 10px; font-weight: 500;
+            color: var(--text-faint);
             text-align: center;
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
+            white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
             max-width: 100%;
         }
         #${UID} .tv-tile-badge {
             position: absolute;
-            bottom: 8px; left: 50%;
-            transform: translateX(-50%);
-            font-family: 'Quicksand', sans-serif;
-            font-size: 8.5px;
-            font-weight: 800;
-            letter-spacing: .06em;
-            color: #ff8f8f;
-            background: var(--tv-danger-soft);
-            border: 1px solid rgba(251,113,133,.35);
+            bottom: 8px; left: 50%; transform: translateX(-50%);
+            font-size: 8px; font-weight: 800;
+            letter-spacing: .08em;
+            color: var(--err);
+            background: rgba(242,139,150,.12);
+            border: 1px solid rgba(242,139,150,.3);
             border-radius: 5px;
             padding: 2px 6px;
         }
-
         #${UID} .tv-star {
             position: absolute;
             top: 8px; right: 8px;
-            width: 26px; height: 26px;
+            width: 24px; height: 24px;
             border-radius: 50%;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 13px;
-            background: rgba(10,12,16,.6);
+            display: flex; align-items: center; justify-content: center;
+            background: rgba(0,0,0,.4);
             border: 0;
-            color: var(--tv-text-faint);
+            color: var(--text-faint);
             cursor: pointer;
             transition: color .15s, transform .15s, background .15s;
         }
-        #${UID} .tv-star:hover {
-            transform: scale(1.15);
-            background: rgba(10,12,16,.85);
-        }
-        #${UID} .tv-star.faved { color: var(--tv-star); }
-        #${UID} .tv-star:focus-visible {
-            outline: 2px solid #fff;
-            outline-offset: 2px;
-        }
+        #${UID} .tv-star:hover { transform: scale(1.12); background: rgba(0,0,0,.6); color: var(--text); }
+        #${UID} .tv-star.faved { color: #fbbf24; }
+        #${UID} .tv-star:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
 
-        #${UID} .tv-loading,
-        #${UID} .tv-empty {
+        #${UID} .tv-loading, #${UID} .tv-empty {
             grid-column: 1 / -1;
             padding: 60px 20px;
             text-align: center;
-            color: var(--tv-text-faint);
-            font-family: 'Quicksand', sans-serif;
-            font-size: 14px;
-            font-weight: 500;
+            color: var(--text-faint);
+            font-size: 13.5px;
         }
         #${UID} .tv-spin {
-            width: 22px; height: 22px;
-            border: 2px solid rgba(34,211,238,.2);
-            border-top-color: var(--hub-cyan);
+            width: 20px; height: 20px;
+            border: 2px solid rgba(103,232,249,.2);
+            border-top-color: var(--cyan);
             border-radius: 50%;
-            margin: 0 auto 14px;
+            margin: 0 auto 12px;
             animation: iptvSpin .7s linear infinite;
         }
 
         /* ─── Player ─── */
-        #${UID} .tv-player {
-            flex: 1;
-            min-height: 0;
-            flex-direction: column;
-        }
+        #${UID} .tv-player { flex: 1; min-height: 0; flex-direction: column; }
         #${UID} .tv-video-wrap {
-            flex: 1;
-            min-height: 0;
+            flex: 1; min-height: 0;
             position: relative;
             background: #000;
-            display: flex;
-            align-items: center;
-            justify-content: center;
+            display: flex; align-items: center; justify-content: center;
             overflow: hidden;
         }
-        #${UID} .tv-video-wrap video {
-            width: 100%; height: 100%;
-            object-fit: contain;
-            display: block;
-        }
+        #${UID} .tv-video-wrap video { width: 100%; height: 100%; object-fit: contain; display: block; }
         #${UID} .tv-placeholder {
-            color: var(--tv-text-faint);
-            font-family: 'Quicksand', sans-serif;
-            font-size: 14px;
-            font-weight: 500;
+            color: var(--text-faint);
+            font-size: 13.5px;
             text-align: center;
             padding: 24px;
-            line-height: 1.5;
+            line-height: 1.55;
         }
-
         #${UID} .tv-controlbar {
             height: ${CONTROLBAR_HEIGHT}px;
             flex-shrink: 0;
             box-sizing: border-box;
-            display: flex;
-            align-items: center;
-            gap: 16px;
-            padding: 0 24px;
-            background: linear-gradient(0deg, rgba(15,18,25,.98), rgba(8,9,13,.95));
-            border-top: 1px solid var(--tv-border);
-            position: relative;
-        }
-        #${UID} .tv-controlbar::before {
-            content: '';
-            position: absolute;
-            top: -1px; left: 15%; right: 15%;
-            height: 1px;
-            background: radial-gradient(ellipse at center, rgba(34,211,238,.5), transparent 70%);
+            display: flex; align-items: center;
+            gap: 14px; padding: 0 22px;
+            background: rgba(255,255,255,.015);
+            border-top: 1px solid var(--line);
         }
         #${UID} .tv-back {
             flex-shrink: 0;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            padding: 10px 18px;
-            border-radius: 12px;
-            background: var(--tv-bg-card);
-            border: 1px solid var(--tv-border);
-            color: var(--tv-text);
+            display: flex; align-items: center; gap: 8px;
+            padding: 9px 16px;
+            border-radius: 11px;
+            background: rgba(255,255,255,.04);
+            border: 1px solid var(--line);
+            color: var(--text);
             font-family: 'Quicksand', sans-serif;
-            font-size: 13px;
-            font-weight: 700;
+            font-size: 12.5px; font-weight: 600;
             cursor: pointer;
-            transition: all .18s cubic-bezier(.16,1,.3,1);
+            transition: background .16s, border-color .16s, color .16s, transform .16s;
         }
         #${UID} .tv-back:hover {
-            background: var(--hub-grad);
-            border-color: transparent;
-            color: #0b0b10;
-            box-shadow: 0 6px 20px rgba(34,211,238,.3);
+            background: rgba(103,232,249,.1);
+            border-color: rgba(103,232,249,.35);
+            color: var(--cyan);
             transform: translateY(-1px);
         }
-        #${UID} .tv-back:focus-visible {
-            outline: 2px solid #fff;
-            outline-offset: 2px;
-        }
-        #${UID} .tv-now {
-            flex: 1;
-            min-width: 0;
-            display: flex;
-            align-items: center;
-            gap: 14px;
-        }
+        #${UID} .tv-back:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
+        #${UID} .tv-now { flex: 1; min-width: 0; display: flex; align-items: center; gap: 12px; }
         #${UID} .tv-now-logo {
-            width: 44px; height: 44px;
+            width: 42px; height: 42px;
             border-radius: 10px;
             flex-shrink: 0;
-            background: var(--tv-bg-card);
+            background: rgba(255,255,255,.03);
             object-fit: contain;
-            border: 1px solid var(--tv-border-soft);
+            border: 1px solid var(--line);
         }
-        #${UID} .tv-now-text {
-            min-width: 0;
-            display: flex;
-            flex-direction: column;
-            gap: 2px;
-        }
+        #${UID} .tv-now-text { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
         #${UID} .tv-now-name {
             font-family: 'Quicksand', sans-serif;
-            font-size: 15px;
-            font-weight: 700;
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
-            color: var(--tv-text);
+            font-size: 14px; font-weight: 600;
+            white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+            color: var(--text);
         }
         #${UID} .tv-now-meta {
-            font-family: 'Quicksand', sans-serif;
-            font-size: 11.5px;
-            font-weight: 500;
-            color: var(--tv-text-dim);
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
+            font-size: 11px; font-weight: 500;
+            color: var(--text-dim);
+            white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
         }
         #${UID} .tv-controlbar .tv-star {
             position: static;
             flex-shrink: 0;
-            background: var(--tv-bg-card);
-            border: 1px solid var(--tv-border);
-            width: 44px; height: 44px;
-            border-radius: 12px;
-            font-size: 16px;
+            background: rgba(255,255,255,.04);
+            border: 1px solid var(--line);
+            width: 42px; height: 42px;
+            border-radius: 11px;
         }
-        #${UID} .tv-controlbar .tv-star:hover {
-            background: var(--tv-bg-card-hover);
-            transform: scale(1.05);
-        }
+        #${UID} .tv-controlbar .tv-star:hover { background: rgba(255,255,255,.07); transform: scale(1.04); }
 
-        /* ─── Resize ─── */
-        #${UID} .iptv-resize {
+        /* Resize handle (only in app view) */
+        #${UID} .resize {
             position: absolute;
             right: 4px; bottom: 4px;
             width: 18px; height: 18px;
             cursor: nwse-resize;
             z-index: 20;
-            opacity: .25;
+            opacity: .22;
+            display: none;
             transition: opacity .18s;
-            background: linear-gradient(135deg,
-                transparent 46%,
-                var(--hub-cyan) 46%, var(--hub-cyan) 50%,
-                transparent 50%, transparent 60%,
-                var(--hub-cyan) 60%, var(--hub-cyan) 64%,
-                transparent 64%, transparent 74%,
-                var(--hub-cyan) 74%, var(--hub-cyan) 78%,
-                transparent 78%);
-            border-radius: 0 0 20px 0;
         }
-        #${UID} .iptv-resize:hover { opacity: 1; }
+        #${UID}.can-resize .resize { display: block; }
+        #${UID} .resize:hover { opacity: .9; }
+        #${UID} .resize::before,
+        #${UID} .resize::after {
+            content: '';
+            position: absolute;
+            right: 0; bottom: 0;
+            background: var(--cyan);
+            border-radius: 2px;
+        }
+        #${UID} .resize::before { width: 10px; height: 1.5px; bottom: 4px; right: 1px; }
+        #${UID} .resize::after { width: 1.5px; height: 10px; bottom: 1px; right: 4px; }
         `;
         document.head.appendChild(style);
 
         const win = document.createElement('div');
         win.id = UID;
-        win.className = 'vista-smart';
+        win.className = 'v-smart';
         win.setAttribute('data-sang-ui', '');
         win.setAttribute('data-hub', '1');
         win.innerHTML = `
-            <div class="iptv-hdr" id="${UID}hdr">
-                <div class="iptv-hdr-left">
-                    <span class="iptv-clock" id="${UID}clock">--:--</span>
-                    <span class="iptv-clock-sep" aria-hidden="true"></span>
-                    <div class="iptv-brand">
-                        <span class="iptv-logo">▣</span>
-                        <span class="iptv-title">IPTV</span>
-                        <span class="iptv-chip-br">BR</span>
+            <div class="hdr" id="${UID}hdr">
+                <div class="hdr-left">
+                    <span class="clock" id="${UID}clock">--:--</span>
+                    <span class="clock-sep" aria-hidden="true"></span>
+                    <div class="brand">
+                        <span class="brand-dot">${svg('sparkle', 14)}</span>
+                        <span class="brand-title">Mídia</span>
+                        <span class="brand-tag">BR</span>
                     </div>
                 </div>
-                <div class="iptv-actions">
-                    <div class="iptv-btn" id="${UID}actSearch" title="Buscar">⌕</div>
-                    <div class="iptv-btn" id="${UID}actBell" title="Notificações">◔</div>
-                    <div class="iptv-btn" id="${UID}actUser" title="Perfil">◐</div>
-                    <div class="iptv-btn" id="${UID}home" title="Início">⌂</div>
-                    <div class="iptv-btn" id="${UID}hdrToggle" title="Ocultar cabeçalho">▭</div>
-                    <div class="iptv-btn" id="${UID}min" title="Minimizar">−</div>
-                    <div class="iptv-btn" id="${UID}cls" title="Fechar">✕</div>
+                <div class="hdr-actions">
+                    <button class="hdr-btn" id="${UID}actSearch" title="Buscar">${svg('search', 16)}</button>
+                    <button class="hdr-btn" id="${UID}actBell" title="Notificações">${svg('bell', 16)}</button>
+                    <button class="hdr-btn" id="${UID}actUser" title="Perfil">${svg('user', 16)}</button>
+                    <span class="hdr-sep"></span>
+                    <button class="hdr-btn" id="${UID}actExternal" title="Abrir app em nova aba" style="display:none">${svg('external', 16)}</button>
+                    <button class="hdr-btn primary" id="${UID}actHome" title="Início">${svg('home', 16)}</button>
+                    <button class="hdr-btn" id="${UID}actHdr" title="Ocultar cabeçalho">${svg('hideHdr', 16)}</button>
+                    <button class="hdr-btn" id="${UID}actMin" title="Minimizar">${svg('minimize', 16)}</button>
+                    <button class="hdr-btn danger" id="${UID}actClose" title="Fechar">${svg('close', 16)}</button>
                 </div>
             </div>
-            <div class="iptv-body">
-                <aside class="iptv-sidebar">
-                    <button class="iptv-sidebar-btn active" data-nav="home" title="Início">⌂</button>
-                    <button class="iptv-sidebar-btn" data-nav="search" title="Buscar">⌕</button>
-                    <button class="iptv-sidebar-btn" data-nav="library" title="Biblioteca">▤</button>
-                    <button class="iptv-sidebar-btn" data-nav="apps" title="Apps">▦</button>
-                    <div class="iptv-sidebar-spacer"></div>
-                    <button class="iptv-sidebar-btn" data-nav="downloads" title="Downloads">⤓</button>
-                    <button class="iptv-sidebar-btn" data-nav="settings" title="Configurações">⚙</button>
+            <div class="body">
+                <aside class="sb" id="${UID}sb">
+                    <button class="sb-btn active" data-nav="home" title="Início">${svg('home', 18)}</button>
+                    <button class="sb-btn" data-nav="library" title="TV Aberta">${svg('library', 18)}</button>
+                    <button class="sb-btn" data-nav="apps" title="Apps">${svg('apps', 18)}</button>
+                    <button class="sb-btn" data-nav="search" title="Buscar">${svg('search', 18)}</button>
+                    <div class="sb-spacer"></div>
+                    <button class="sb-btn" data-nav="downloads" title="Downloads">${svg('download', 18)}</button>
+                    <button class="sb-btn" data-nav="settings" title="Ajustes">${svg('settings', 18)}</button>
+                    <button class="sb-toggle" id="${UID}sbToggle" title="Ocultar barra">${svg('chevronLeft', 16)}</button>
                 </aside>
-                <div class="iptv-main">
-                    <div class="smart-home" id="${UID}smart">
-                        <div class="smart-hero">
-                            <div class="smart-hero-bg" aria-hidden="true"></div>
-                            <svg class="smart-hero-art" viewBox="0 0 400 300" aria-hidden="true">
-                                <defs>
-                                    <linearGradient id="${UID}heroArt" x1="0" y1="0" x2="1" y2="1">
-                                        <stop offset="0%" stop-color="#22d3ee" stop-opacity=".6"/>
-                                        <stop offset="100%" stop-color="#a78bfa" stop-opacity=".15"/>
-                                    </linearGradient>
-                                </defs>
-                                <rect x="40" y="40" width="320" height="220" rx="16" fill="url(#${UID}heroArt)" opacity=".25"/>
-                                <rect x="60" y="60" width="280" height="180" rx="12" fill="none" stroke="url(#${UID}heroArt)" stroke-width="1.5" opacity=".55"/>
-                                <circle cx="200" cy="150" r="36" fill="none" stroke="url(#${UID}heroArt)" stroke-width="1.5" opacity=".7"/>
-                                <path d="M188 138 L188 162 L208 150 Z" fill="url(#${UID}heroArt)" opacity=".8"/>
-                            </svg>
-                            <div class="smart-hero-content">
-                                <span class="smart-hero-eyebrow" id="${UID}greet">Bom dia</span>
-                                <h1 class="smart-hero-title">
-                                    <small>Sua central de mídia</small>
-                                    Bem-vindo ao IPTV
-                                </h1>
-                                <p class="smart-hero-desc">Canais abertos brasileiros ao vivo, streaming e anime — tudo em um só lugar. Escolha um app abaixo para começar.</p>
-                                <button class="smart-hero-cta" type="button" data-app="tv">
-                                    <span class="smart-hero-cta-icon" aria-hidden="true">▶</span>
-                                    <span>Assistir agora</span>
+                <button class="sb-expand" id="${UID}sbExpand" title="Mostrar barra">${svg('chevronRight', 16)}</button>
+                <div class="main">
+                    <div class="view v-smart-el smart" id="${UID}smart">
+                        <div class="hero">
+                            <div class="hero-body">
+                                <span class="hero-eyebrow" id="${UID}greet">Bom dia</span>
+                                <h1 class="hero-title"><small>Sua central de mídia</small>Bem-vindo</h1>
+                                <p class="hero-desc">Canais abertos brasileiros, streaming, anime — tudo em um lugar só. Escolha um app abaixo para começar.</p>
+                                <button class="hero-cta" type="button" data-app="tv">
+                                    ${svg('play', 12)}
+                                    <span>Assistir TV Aberta</span>
                                 </button>
                             </div>
                         </div>
-                        <div class="smart-section">
-                            <div class="smart-section-title">Seus apps</div>
-                            <div class="smart-row" id="${UID}apps"></div>
+                        <div class="sect">
+                            <div class="sect-title">Seus apps</div>
+                            <div class="apps-row" id="${UID}apps"></div>
                         </div>
                     </div>
-                    <div class="smart-app-container" id="${UID}appContainer"></div>
-                    <div class="tv-home">
+                    <div class="view v-app-el app-shell" id="${UID}appShell" style="display:none"></div>
+                    <div class="view v-home-el tv-home">
                         <div class="tv-toolbar">
                             <div class="tv-search"><input type="text" id="${UID}search" placeholder="Buscar canal…" /></div>
                             <div class="tv-chips" id="${UID}filters"></div>
@@ -1479,12 +1280,12 @@
                             <div class="tv-loading"><div class="tv-spin"></div>Carregando canais…</div>
                         </div>
                     </div>
-                    <div class="tv-player">
+                    <div class="view v-player-el tv-player">
                         <div class="tv-video-wrap" id="${UID}video-wrap">
-                            <div class="tv-placeholder">▶ Selecione um canal</div>
+                            <div class="tv-placeholder">${svg('play', 26)}<div style="margin-top:10px">Selecione um canal</div></div>
                         </div>
                         <div class="tv-controlbar">
-                            <button class="tv-back" id="${UID}back">← Canais</button>
+                            <button class="tv-back" id="${UID}back">${svg('back', 16)}<span>Canais</span></button>
                             <div class="tv-now">
                                 <img class="tv-now-logo" id="${UID}nowLogo" alt="" />
                                 <div class="tv-now-text">
@@ -1492,16 +1293,15 @@
                                     <div class="tv-now-meta" id="${UID}nowMeta"></div>
                                 </div>
                             </div>
-                            <button class="tv-star" id="${UID}nowStar" title="Favoritar">☆</button>
+                            <button class="tv-star" id="${UID}nowStar" title="Favoritar">${svg('star', 16)}</button>
                         </div>
                     </div>
                 </div>
             </div>
-            <div class="iptv-unhide" id="${UID}unhide" title="Mostrar cabeçalho">▭</div>
-            <div class="iptv-resize" id="${UID}resize"></div>
+            <button class="unhide" id="${UID}unhide" title="Mostrar cabeçalho">${svg('showHdr', 14)}</button>
+            <div class="resize" id="${UID}resize" title="Redimensionar"></div>
         `;
         document.body.appendChild(win);
-
         window._hubUI?.markProtected?.(win);
 
         const gridEl = win.querySelector('#' + UID + 'grid');
@@ -1513,20 +1313,17 @@
         const backBtn = win.querySelector('#' + UID + 'back');
         const appsRowEl = win.querySelector('#' + UID + 'apps');
         const greetEl = win.querySelector('#' + UID + 'greet');
-        const appContainer = win.querySelector('#' + UID + 'appContainer');
+        const appShell = win.querySelector('#' + UID + 'appShell');
         const clockEl = win.querySelector('#' + UID + 'clock');
+        const sbEl = win.querySelector('#' + UID + 'sb');
 
-        // ─── Relógio ───
-        let clockTimer = null;
-        let clockUltimo = '';
+        // Clock
+        let clockTimer = null; let clockUltimo = '';
         function atualizarRelogio() {
             if (!clockEl) return;
             const d = new Date();
             const txt = String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
-            if (txt !== clockUltimo) {
-                clockEl.textContent = txt;
-                clockUltimo = txt;
-            }
+            if (txt !== clockUltimo) { clockEl.textContent = txt; clockUltimo = txt; }
         }
         atualizarRelogio();
         clockTimer = setInterval(atualizarRelogio, CLOCK_TICK_MS);
@@ -1541,165 +1338,383 @@
         let termoBusca = '';
         let vista = 'smart';
         let layoutTimeout = null;
+        let sidebarHidden = false;
 
-        const state = { winW: 1000, winHHome: 640 };
+        const state = { winW: FIXED_W, winHApp: FIXED_H };
 
         // ---------- Apps registry ----------
         const apps = new Map();
         let appAtualId = null;
         let appCleanup = null;
+        let appUrlAtual = null;
         let focoEl = null;
 
-        // TV Aberta (builtin)
-        apps.set('tv', {
-            id: 'tv',
-            name: 'TV Aberta',
-            icon: '📺',
-            bg: 'linear-gradient(135deg, #0e7490, #164e63)',
-            tag: 'BR',
-            isBuiltin: true,
-        });
-
-        // Streaming apps (mount = splash com CTA)
-        function registrarAppExterno(cfg) {
-            apps.set(cfg.id, {
-                id: cfg.id,
-                name: cfg.name,
-                icon: cfg.icon,
-                bg: cfg.bg,
-                tag: cfg.tag,
-                glow: cfg.glow,
-                desc: cfg.desc,
-                url: cfg.url,
+        // Helper: mount iframe com detecção de bloqueio
+        function mountIframeApp({ id, name, url, icon, tag, cardBg }) {
+            apps.set(id, {
+                id, name, icon, tag, cardBg, url,
                 mount(container) {
                     container.innerHTML = '';
-                    const splash = document.createElement('div');
-                    splash.className = 'app-splash';
-                    splash.style.setProperty('--splash-glow', cfg.glow || 'rgba(34,211,238,.2)');
+                    const bar = document.createElement('div');
+                    bar.className = 'app-bar';
+                    bar.innerHTML = `
+                        <div class="app-bar-left">
+                            <span class="app-bar-dot" id="${UID}appDot"></span>
+                            <span class="app-bar-title">${escapeHtml(name)}</span>
+                            <span class="app-bar-sub" id="${UID}appSub">tentando incorporar…</span>
+                        </div>
+                        <div class="app-bar-actions">
+                            <button class="hdr-btn" id="${UID}appReload" title="Recarregar">${svg('chevronRight', 16)}</button>
+                            <button class="hdr-btn" id="${UID}appOpen" title="Abrir em nova aba">${svg('external', 16)}</button>
+                        </div>
+                    `;
+                    const wrap = document.createElement('div');
+                    wrap.className = 'app-frame-wrap';
+                    const iframe = document.createElement('iframe');
+                    iframe.setAttribute('allow', 'autoplay; fullscreen; encrypted-media; picture-in-picture');
+                    iframe.setAttribute('referrerpolicy', 'no-referrer');
+                    iframe.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-forms allow-popups allow-presentation');
+                    const blocked = document.createElement('div');
+                    blocked.className = 'app-blocked';
+                    blocked.innerHTML = `
+                        <div class="app-blocked-icon">${svg('external', 22)}</div>
+                        <div class="app-blocked-title">${escapeHtml(name)} bloqueia incorporação</div>
+                        <div class="app-blocked-desc">Este serviço impede ser mostrado dentro de outros sites por questões de segurança. Abra em uma nova aba para usar normalmente.</div>
+                        <button class="app-blocked-btn" id="${UID}appBlockedOpen">Abrir em nova aba</button>
+                    `;
+                    wrap.appendChild(iframe);
+                    wrap.appendChild(blocked);
+                    container.appendChild(bar);
+                    container.appendChild(wrap);
+                    appUrlAtual = url;
 
-                    const icon = document.createElement('div');
-                    icon.className = 'app-splash-icon';
-                    icon.textContent = cfg.icon;
+                    // Estado do iframe
+                    let carregou = false;
+                    iframe.addEventListener('load', () => {
+                        carregou = true;
+                        const dot = win.querySelector('#' + UID + 'appDot');
+                        const sub = win.querySelector('#' + UID + 'appSub');
+                        if (dot) dot.classList.remove('warn');
+                        if (sub) sub.textContent = 'conectado';
+                    });
+                    iframe.src = url;
 
-                    const title = document.createElement('div');
-                    title.className = 'app-splash-title';
-                    title.textContent = cfg.name;
+                    // Detecta bloqueio
+                    const t = setTimeout(() => {
+                        if (!carregou) {
+                            blocked.classList.add('show');
+                            const dot = win.querySelector('#' + UID + 'appDot');
+                            const sub = win.querySelector('#' + UID + 'appSub');
+                            if (dot) dot.classList.add('warn');
+                            if (sub) sub.textContent = 'bloqueado pelo site';
+                        }
+                    }, EMBED_DETECT_MS);
 
-                    const desc = document.createElement('div');
-                    desc.className = 'app-splash-desc';
-                    desc.textContent = cfg.desc || 'Abre o site em nova aba (embeds costumam ser bloqueados).';
+                    // Handlers
+                    win.querySelector('#' + UID + 'appOpen').onclick = () => window.open(url, '_blank', 'noopener');
+                    win.querySelector('#' + UID + 'appBlockedOpen').onclick = () => window.open(url, '_blank', 'noopener');
+                    win.querySelector('#' + UID + 'appReload').onclick = () => {
+                        carregou = false;
+                        iframe.src = 'about:blank';
+                        setTimeout(() => { iframe.src = url; }, 30);
+                        blocked.classList.remove('show');
+                    };
 
-                    const btn = document.createElement('button');
-                    btn.className = 'app-splash-btn';
-                    btn.type = 'button';
-                    btn.textContent = 'Abrir ' + cfg.name;
-                    btn.addEventListener('click', () => window.open(cfg.url, '_blank', 'noopener'));
-
-                    splash.appendChild(icon);
-                    splash.appendChild(title);
-                    splash.appendChild(desc);
-                    splash.appendChild(btn);
-                    container.appendChild(splash);
-
-                    return () => { /* nada a limpar */ };
+                    return () => {
+                        clearTimeout(t);
+                        iframe.src = 'about:blank';
+                    };
                 }
             });
         }
 
-        registrarAppExterno({
-            id: 'netflix',
-            name: 'Netflix',
-            icon: '🎬',
-            bg: 'linear-gradient(135deg, #E50914, #7f0209)',
-            glow: 'rgba(229,9,20,.35)',
-            tag: 'ASSINATURA',
-            desc: 'Filmes, séries e originais. Abre em nova aba.',
-            url: 'https://www.netflix.com/browse',
-        });
-        registrarAppExterno({
-            id: 'prime',
-            name: 'Prime Video',
-            icon: '📼',
-            bg: 'linear-gradient(135deg, #00A8E1, #005f80)',
-            glow: 'rgba(0,168,225,.35)',
-            tag: 'ASSINATURA',
-            desc: 'Originais Amazon, filmes e séries. Abre em nova aba.',
-            url: 'https://www.primevideo.com/',
-        });
-        registrarAppExterno({
-            id: 'youtube',
-            name: 'YouTube',
-            icon: '▶',
-            bg: 'linear-gradient(135deg, #FF0000, #7f0000)',
-            glow: 'rgba(255,0,0,.35)',
-            tag: 'GRÁTIS',
-            desc: 'Vídeos, clipes e lives. Abre em nova aba.',
-            url: 'https://www.youtube.com/',
-        });
-        registrarAppExterno({
-            id: 'disney',
-            name: 'Disney+',
-            icon: '🏰',
-            bg: 'linear-gradient(135deg, #0C1445, #1a237e)',
-            glow: 'rgba(26,35,126,.45)',
-            tag: 'ASSINATURA',
-            desc: 'Disney, Pixar, Marvel, Star Wars. Abre em nova aba.',
-            url: 'https://www.disneyplus.com/',
-        });
-        registrarAppExterno({
-            id: 'voot',
-            name: 'Voot',
-            icon: '🎭',
-            bg: 'linear-gradient(135deg, #7C3AED, #4c1d95)',
-            glow: 'rgba(124,58,237,.4)',
-            tag: 'GRÁTIS',
-            desc: 'Conteúdo indiano e reality shows. Abre em nova aba.',
-            url: 'https://www.voot.com/',
+        // TV Aberta (builtin)
+        apps.set('tv', {
+            id: 'tv', name: 'TV Aberta', icon: 'library', tag: 'BR',
+            cardBg: 'linear-gradient(135deg, #0c4a6e 0%, #082f49 100%)',
+            isBuiltin: true,
         });
 
-        // Anime (app com grid de pôsteres via Jikan)
-        apps.set('anime', {
-            id: 'anime',
-            name: 'Anime',
-            icon: '🎌',
-            bg: 'linear-gradient(135deg, #F47521, #B54708)',
-            glow: 'rgba(244,117,33,.4)',
-            tag: 'NOVO',
+        // YouTube (embed real funciona)
+        apps.set('youtube', {
+            id: 'youtube', name: 'YouTube', icon: 'play', tag: 'GRÁTIS',
+            cardBg: 'linear-gradient(135deg, #b91c1c 0%, #7f1d1d 100%)',
+            url: 'https://www.youtube.com/embed/?listType=search&list=lofi+radio',
             mount(container) {
                 container.innerHTML = '';
+                const bar = document.createElement('div');
+                bar.className = 'app-bar';
+                bar.innerHTML = `
+                    <div class="app-bar-left">
+                        <span class="app-bar-dot"></span>
+                        <span class="app-bar-title">YouTube</span>
+                        <span class="app-bar-sub">embed</span>
+                    </div>
+                    <div class="app-bar-actions">
+                        <button class="hdr-btn" id="${UID}ytOpen" title="Abrir em nova aba">${svg('external', 16)}</button>
+                    </div>
+                `;
                 const wrap = document.createElement('div');
-                wrap.className = 'anime-wrap';
+                wrap.className = 'app-frame-wrap';
+                const iframe = document.createElement('iframe');
+                iframe.setAttribute('allow', 'autoplay; fullscreen; encrypted-media; picture-in-picture');
+                iframe.setAttribute('referrerpolicy', 'strict-origin-when-cross-origin');
+                iframe.src = 'https://www.youtube.com/embed/?listType=search&list=lofi+radio';
+                wrap.appendChild(iframe);
+                container.appendChild(bar);
+                container.appendChild(wrap);
+                appUrlAtual = 'https://www.youtube.com/';
+                win.querySelector('#' + UID + 'ytOpen').onclick = () => window.open('https://www.youtube.com/', '_blank', 'noopener');
+                return () => { iframe.src = 'about:blank'; };
+            }
+        });
 
-                const head = document.createElement('div');
-                head.className = 'anime-head';
-                const h = document.createElement('div');
-                h.className = 'anime-title';
-                h.innerHTML = '<small>Anime</small>Top do momento';
-                head.appendChild(h);
-                wrap.appendChild(head);
+        // Streaming apps (splash + tentativa de embed)
+        function registrarAppExterno({ id, name, url, icon, tag, cardBg }) {
+            apps.set(id, {
+                id, name, icon, tag, cardBg, url,
+                mount(container) {
+                    container.innerHTML = '';
+                    const bar = document.createElement('div');
+                    bar.className = 'app-bar';
+                    bar.innerHTML = `
+                        <div class="app-bar-left">
+                            <span class="app-bar-dot" id="${UID}xDot"></span>
+                            <span class="app-bar-title">${escapeHtml(name)}</span>
+                            <span class="app-bar-sub" id="${UID}xSub">tentando incorporar…</span>
+                        </div>
+                        <div class="app-bar-actions">
+                            <button class="hdr-btn" id="${UID}xOpen" title="Abrir em nova aba">${svg('external', 16)}</button>
+                        </div>
+                    `;
+                    const wrap = document.createElement('div');
+                    wrap.className = 'app-frame-wrap';
+                    const iframe = document.createElement('iframe');
+                    iframe.setAttribute('allow', 'autoplay; fullscreen; encrypted-media');
+                    iframe.setAttribute('referrerpolicy', 'no-referrer');
+                    const blocked = document.createElement('div');
+                    blocked.className = 'app-blocked';
+                    blocked.innerHTML = `
+                        <div class="app-blocked-icon">${svg('external', 22)}</div>
+                        <div class="app-blocked-title">${escapeHtml(name)} não permite incorporação</div>
+                        <div class="app-blocked-desc">Este serviço restringe a exibição dentro de outros sites. Abra em uma nova aba para usar a sua conta normalmente.</div>
+                        <button class="app-blocked-btn" id="${UID}xBlockedOpen">Abrir em nova aba</button>
+                    `;
+                    wrap.appendChild(iframe);
+                    wrap.appendChild(blocked);
+                    container.appendChild(bar);
+                    container.appendChild(wrap);
+                    appUrlAtual = url;
+                    let carregou = false;
+                    iframe.addEventListener('load', () => {
+                        carregou = true;
+                        const d = win.querySelector('#' + UID + 'xDot');
+                        const s = win.querySelector('#' + UID + 'xSub');
+                        if (d) d.classList.remove('warn');
+                        if (s) s.textContent = 'conectado';
+                    });
+                    iframe.src = url;
+                    const t = setTimeout(() => {
+                        if (!carregou) {
+                            blocked.classList.add('show');
+                            const d = win.querySelector('#' + UID + 'xDot');
+                            const s = win.querySelector('#' + UID + 'xSub');
+                            if (d) d.classList.add('warn');
+                            if (s) s.textContent = 'bloqueado pelo site';
+                        }
+                    }, EMBED_DETECT_MS);
+                    win.querySelector('#' + UID + 'xOpen').onclick = () => window.open(url, '_blank', 'noopener');
+                    win.querySelector('#' + UID + 'xBlockedOpen').onclick = () => window.open(url, '_blank', 'noopener');
+                    return () => { clearTimeout(t); iframe.src = 'about:blank'; };
+                }
+            });
+        }
 
-                const grid = document.createElement('div');
-                grid.className = 'anime-grid';
-                grid.innerHTML = '<div class="anime-state"><div class="tv-spin"></div>Carregando animes…</div>';
-                wrap.appendChild(grid);
+        registrarAppExterno({ id:'netflix', name:'Netflix', url:'https://www.netflix.com/browse', icon:'play', tag:'ASSINATURA', cardBg:'linear-gradient(135deg, #991b1b 0%, #450a0a 100%)' });
+        registrarAppExterno({ id:'prime',   name:'Prime Video', url:'https://www.primevideo.com/', icon:'film', tag:'ASSINATURA', cardBg:'linear-gradient(135deg, #075985 0%, #082f49 100%)' });
+        registrarAppExterno({ id:'disney',  name:'Disney+', url:'https://www.disneyplus.com/', icon:'sparkle', tag:'ASSINATURA', cardBg:'linear-gradient(135deg, #1e1b4b 0%, #0c0a30 100%)' });
+        registrarAppExterno({ id:'voot',    name:'Voot', url:'https://www.voot.com/', icon:'film', tag:'GRÁTIS', cardBg:'linear-gradient(135deg, #5b21b6 0%, #2e1065 100%)' });
+        registrarAppExterno({ id:'twitch',  name:'Twitch', url:'https://www.twitch.tv/', icon:'play', tag:'GRÁTIS', cardBg:'linear-gradient(135deg, #6d28d9 0%, #3b0764 100%)' });
+
+        // ---------- Anime App (stream via Consumet) ----------
+        apps.set('anime', {
+            id: 'anime', name: 'Anime', icon: 'film', tag: 'STREAM',
+            cardBg: 'linear-gradient(135deg, #c2410c 0%, #7c2d12 100%)',
+            mount(container) {
+                container.innerHTML = '';
+                const bar = document.createElement('div');
+                bar.className = 'app-bar';
+                bar.innerHTML = `
+                    <div class="app-bar-left">
+                        <span class="app-bar-dot" id="${UID}animeDot"></span>
+                        <span class="app-bar-title">Anime</span>
+                        <span class="app-bar-sub" id="${UID}animeSub">catálogo</span>
+                    </div>
+                    <div class="app-bar-actions">
+                        <button class="hdr-btn" id="${UID}animeBack" title="Voltar ao catálogo" style="display:none">${svg('back', 16)}</button>
+                        <button class="hdr-btn" id="${UID}animeExternal" title="Abrir fonte em nova aba">${svg('external', 16)}</button>
+                    </div>
+                `;
+
+                const wrap = document.createElement('div');
+                wrap.className = 'app-frame-wrap';
+                wrap.style.display = 'flex';
+                wrap.style.flexDirection = 'column';
+
+                const catalog = document.createElement('div');
+                catalog.className = 'anime-wrap';
+                catalog.innerHTML = `
+                    <div class="anime-head">
+                        <div>
+                            <small>Anime</small>
+                            <h2>Top do momento</h2>
+                        </div>
+                        <div class="anime-head-sub">clique pra ver episódios · fonte: Consumet</div>
+                    </div>
+                    <div class="anime-grid" id="${UID}animeGrid"><div class="anime-state"><div class="tv-spin"></div>Carregando…</div></div>
+                `;
+
+                const episodesPanel = document.createElement('div');
+                episodesPanel.className = 'anime-episodes';
+                episodesPanel.style.display = 'none';
+                episodesPanel.innerHTML = '<div class="tv-empty" style="padding:20px">Clique em um anime para ver os episódios.</div>';
+
+                const playerWrap = document.createElement('div');
+                playerWrap.className = 'app-frame-wrap';
+                playerWrap.style.display = 'none';
+                playerWrap.style.flex = '1';
+
+                wrap.appendChild(catalog);
+                wrap.appendChild(episodesPanel);
+                wrap.appendChild(playerWrap);
+
+                container.appendChild(bar);
                 container.appendChild(wrap);
 
-                let cancelado = false;
-                const ac = new AbortController();
-                const signal = ac.signal;
+                const grid = win.querySelector('#' + UID + 'animeGrid');
+                const sub = win.querySelector('#' + UID + 'animeSub');
+                const backA = win.querySelector('#' + UID + 'animeBack');
+                const extBtn = win.querySelector('#' + UID + 'animeExternal');
 
-                fetch(JIKAN_TOP_ANIME_URL, { signal })
-                    .then(r => {
-                        if (!r.ok) throw new Error('HTTP ' + r.status);
-                        return r.json();
-                    })
+                let cancelado = false;
+                let tituloAtual = '';
+                let slugAtual = '';
+                let hlsAnime = null;
+                const fetchAc = new AbortController();
+
+                function limparPlayerAnime() {
+                    if (hlsAnime) { try { hlsAnime.destroy(); } catch (_) {} hlsAnime = null; }
+                    const v = playerWrap.querySelector('video');
+                    if (v) { try { v.pause(); v.src = ''; } catch (_) {} }
+                    playerWrap.innerHTML = '';
+                }
+
+                function voltarAoCatalogo() {
+                    limparPlayerAnime();
+                    playerWrap.style.display = 'none';
+                    episodesPanel.style.display = 'none';
+                    episodesPanel.innerHTML = '<div class="tv-empty" style="padding:20px">Clique em um anime para ver os episódios.</div>';
+                    catalog.style.display = 'block';
+                    backA.style.display = 'none';
+                    sub.textContent = 'catálogo';
+                }
+
+                async function carregarEpisodios(slug, titulo) {
+                    tituloAtual = titulo;
+                    slugAtual = slug;
+                    sub.textContent = titulo;
+                    catalog.style.display = 'none';
+                    playerWrap.style.display = 'none';
+                    episodesPanel.style.display = 'block';
+                    episodesPanel.innerHTML = '<div class="tv-empty" style="padding:20px"><div class="tv-spin"></div>Carregando episódios…</div>';
+                    backA.style.display = 'grid';
+
+                    try {
+                        const res = await fetch(CONSUMET_ANIME_INFO + encodeURIComponent(slug), { signal: fetchAc.signal });
+                        if (!res.ok) throw new Error('HTTP ' + res.status);
+                        const data = await res.json();
+                        const eps = Array.isArray(data.episodes) ? data.episodes : [];
+                        if (!eps.length) {
+                            episodesPanel.innerHTML = '<div class="tv-empty" style="padding:20px">Nenhum episódio disponível.</div>';
+                            return;
+                        }
+                        episodesPanel.innerHTML = '';
+                        eps.forEach(ep => {
+                            const btn = document.createElement('button');
+                            btn.className = 'anime-episode';
+                            btn.type = 'button';
+                            const num = document.createElement('span');
+                            num.className = 'ep-num';
+                            num.textContent = 'EP ' + ep.number;
+                            const t = document.createElement('span');
+                            t.textContent = ep.title || ('Episódio ' + ep.number);
+                            btn.appendChild(num);
+                            btn.appendChild(t);
+                            btn.addEventListener('click', () => tocarEpisodio(ep.id, ep.number));
+                            episodesPanel.appendChild(btn);
+                        });
+                    } catch (e) {
+                        if (cancelado || e.name === 'AbortError') return;
+                        episodesPanel.innerHTML = '<div class="tv-empty" style="padding:20px">⚠ Falha ao carregar episódios.<br>' + escapeHtml(e.message) + '</div>';
+                    }
+                }
+
+                async function tocarEpisodio(episodeId, epNumero) {
+                    sub.textContent = tituloAtual + ' — EP ' + epNumero;
+                    episodesPanel.style.display = 'none';
+                    playerWrap.style.display = 'block';
+                    playerWrap.innerHTML = '<div class="tv-placeholder" style="display:flex;align-items:center;justify-content:center;height:100%"><div class="tv-spin"></div></div>';
+
+                    try {
+                        const res = await fetch(CONSUMET_ANIME_WATCH + encodeURIComponent(episodeId), { signal: fetchAc.signal });
+                        if (!res.ok) throw new Error('HTTP ' + res.status);
+                        const data = await res.json();
+                        const sources = Array.isArray(data.sources) ? data.sources : [];
+                        const hlsSource = sources.find(s => s.isM3U8) || sources.find(s => (s.url || '').includes('.m3u8')) || sources[0];
+                        if (!hlsSource || !hlsSource.url) throw new Error('Nenhuma fonte HLS encontrada.');
+
+                        limparPlayerAnime();
+                        const video = document.createElement('video');
+                        video.className = 'anime-player';
+                        video.controls = true;
+                        video.autoplay = true;
+                        playerWrap.appendChild(video);
+
+                        const Hls = await loadHlsJs();
+                        if (cancelado) return;
+
+                        if (Hls.isSupported()) {
+                            const instancia = new Hls();
+                            hlsAnime = instancia;
+                            instancia.loadSource(hlsSource.url);
+                            instancia.attachMedia(video);
+                            instancia.on(Hls.Events.ERROR, (event, errData) => {
+                                if (hlsAnime !== instancia) return;
+                                if (!errData.fatal) return;
+                                if (errData.type === Hls.ErrorTypes.NETWORK_ERROR) instancia.startLoad();
+                                else if (errData.type === Hls.ErrorTypes.MEDIA_ERROR) instancia.recoverMediaError();
+                                else {
+                                    playerWrap.innerHTML = '<div class="tv-placeholder" style="display:flex;align-items:center;justify-content:center;height:100%">⚠ Falha na reprodução.</div>';
+                                }
+                            });
+                        } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+                            video.src = hlsSource.url;
+                        } else {
+                            playerWrap.innerHTML = '<div class="tv-placeholder" style="display:flex;align-items:center;justify-content:center;height:100%">Seu navegador não suporta HLS.</div>';
+                        }
+                    } catch (e) {
+                        if (cancelado || e.name === 'AbortError') return;
+                        playerWrap.innerHTML = '<div class="tv-placeholder" style="display:flex;align-items:center;justify-content:center;height:100%">⚠ ' + escapeHtml(e.message) + '</div>';
+                    }
+                }
+
+                // Catálogo inicial: usa Jikan para popular pôsteres e o slug do Consumet (por título)
+                fetch('https://api.jikan.moe/v4/top/anime?limit=24', { signal: fetchAc.signal })
+                    .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
                     .then(data => {
                         if (cancelado) return;
                         const lista = Array.isArray(data?.data) ? data.data : [];
-                        if (!lista.length) {
-                            grid.innerHTML = '<div class="anime-state">Nenhum anime encontrado.</div>';
-                            return;
-                        }
+                        if (!lista.length) { grid.innerHTML = '<div class="anime-state">Nenhum anime encontrado.</div>'; return; }
                         grid.innerHTML = '';
                         lista.forEach(a => {
                             const titulo = a.title_english || a.title || 'Anime';
@@ -1719,21 +1734,47 @@
                             poster.src = img;
                             poster.alt = '';
 
+                            const info = document.createElement('div');
+                            info.className = 'anime-info';
                             const nome = document.createElement('div');
                             nome.className = 'anime-name';
                             nome.textContent = titulo;
-
                             const meta = document.createElement('div');
                             meta.className = 'anime-meta';
                             meta.textContent = nota + ' · ' + ano;
+                            info.appendChild(nome);
+                            info.appendChild(meta);
 
                             card.appendChild(poster);
-                            card.appendChild(nome);
-                            card.appendChild(meta);
+                            card.appendChild(info);
 
-                            card.addEventListener('click', () => {
-                                const q = encodeURIComponent(titulo);
-                                window.open('https://www.crunchyroll.com/search?q=' + q, '_blank', 'noopener');
+                            // Ao clicar, busca no Consumet pelo título e pega o primeiro resultado
+                            card.addEventListener('click', async () => {
+                                try {
+                                    const r = await fetch(CONSUMET_ANIME_SEARCH + encodeURIComponent(titulo), { signal: fetchAc.signal });
+                                    if (!r.ok) throw new Error('HTTP ' + r.status);
+                                    const d = await r.json();
+                                    const results = Array.isArray(d.results) ? d.results : [];
+                                    if (!results.length) throw new Error('Anime não encontrado na fonte de streaming.');
+                                    const first = results[0];
+                                    carregarEpisodios(first.id, titulo);
+                                } catch (e) {
+                                    if (cancelado || e.name === 'AbortError') return;
+                                    // fallback: abre trailer no YouTube dentro do script
+                                    const q = encodeURIComponent(titulo + ' official trailer');
+                                    sub.textContent = titulo + ' (trailer)';
+                                    catalog.style.display = 'none';
+                                    playerWrap.style.display = 'block';
+                                    backA.style.display = 'grid';
+                                    limparPlayerAnime();
+                                    const iframe = document.createElement('iframe');
+                                    iframe.className = 'anime-player';
+                                    iframe.setAttribute('allow', 'autoplay; fullscreen; encrypted-media; picture-in-picture');
+                                    iframe.setAttribute('referrerpolicy', 'strict-origin-when-cross-origin');
+                                    iframe.src = 'https://www.youtube.com/embed/?listType=search&list=' + q;
+                                    playerWrap.appendChild(iframe);
+                                    playerWrap.querySelector('.anime-player').dataset.tipo = 'trailer';
+                                }
                             });
 
                             grid.appendChild(card);
@@ -1741,12 +1782,21 @@
                     })
                     .catch(e => {
                         if (cancelado || e.name === 'AbortError') return;
-                        grid.innerHTML = '<div class="anime-state">⚠ Falha ao carregar animes.<br>' + escapeHtml(e.message) + '</div>';
+                        grid.innerHTML = '<div class="anime-state">⚠ Falha ao carregar catálogo.<br>' + escapeHtml(e.message) + '</div>';
                     });
+
+                backA.onclick = () => {
+                    voltarAoCatalogo();
+                };
+                extBtn.onclick = () => {
+                    if (slugAtual) window.open('https://gogoanime3.co/category/' + encodeURIComponent(slugAtual), '_blank', 'noopener');
+                    else window.open('https://gogoanime3.co/', '_blank', 'noopener');
+                };
 
                 return () => {
                     cancelado = true;
-                    try { ac.abort(); } catch (_) {}
+                    try { fetchAc.abort(); } catch(_) {}
+                    limparPlayerAnime();
                 };
             }
         });
@@ -1756,8 +1806,10 @@
                 try { appCleanup(); } catch (e) { console.warn('[IPTV] app cleanup falhou:', e); }
                 appCleanup = null;
             }
-            appContainer.innerHTML = '';
+            appShell.innerHTML = '';
             appAtualId = null;
+            appUrlAtual = null;
+            win.querySelector('#' + UID + 'actExternal').style.display = 'none';
         }
 
         function abrirApp(id) {
@@ -1769,24 +1821,27 @@
 
             if (app.isBuiltin) {
                 vista = 'home';
-                win.classList.remove('vista-smart', 'vista-player', 'vista-app');
-                win.classList.add('vista-home');
+                win.classList.remove('v-smart', 'v-app', 'v-player');
+                win.classList.add('v-home');
+                win.querySelector('#' + UID + 'appShell').style.display = 'none';
                 aplicarLayout(true);
                 return;
             }
 
-            appContainer.innerHTML = '';
-            win.classList.remove('vista-smart', 'vista-home', 'vista-player');
-            win.classList.add('vista-app');
+            appShell.innerHTML = '';
+            win.classList.remove('v-smart', 'v-home', 'v-player');
+            win.classList.add('v-app');
+            appShell.style.display = 'flex';
             vista = 'app';
 
             try {
-                const r = app.mount?.(appContainer);
+                const r = app.mount?.(appShell);
                 appCleanup = typeof r === 'function' ? r : null;
             } catch (e) {
                 console.warn('[IPTV] app mount falhou:', e);
-                appContainer.innerHTML = '<div class="tv-empty">App indisponível.</div>';
+                appShell.innerHTML = '<div class="tv-empty">App indisponível.</div>';
             }
+            if (app.url) win.querySelector('#' + UID + 'actExternal').style.display = 'grid';
             aplicarLayout(true);
         }
 
@@ -1794,29 +1849,27 @@
             if (vista === 'player') pararReproducao();
             if (vista === 'app') fecharAppAtual();
             vista = 'smart';
-            win.classList.remove('vista-home', 'vista-player', 'vista-app');
-            win.classList.add('vista-smart');
+            win.classList.remove('v-home', 'v-player', 'v-app');
+            win.classList.add('v-smart');
             setSidebarAtivo('home');
             renderApps();
             aplicarLayout(true);
         }
 
         function setSidebarAtivo(nav) {
-            win.querySelectorAll('.iptv-sidebar-btn').forEach(b => {
-                b.classList.toggle('active', b.dataset.nav === nav);
-            });
+            win.querySelectorAll('.sb-btn').forEach(b => b.classList.toggle('active', b.dataset.nav === nav));
         }
 
         function renderApps() {
             const h = new Date().getHours();
             if (greetEl) greetEl.textContent = h < 12 ? 'Bom dia' : h < 18 ? 'Boa tarde' : 'Boa noite';
             appsRowEl.innerHTML = [...apps.values()].map((a, i) => `
-                <button class="smart-app focused-target" data-app="${escapeHtml(a.id)}"
-                        style="--app-bg:${a.bg || 'linear-gradient(135deg, #1c1f28, #0e1017)'};animation-delay:${Math.min(i * 40, 240)}ms"
+                <button class="app-card" data-app="${escapeHtml(a.id)}"
+                        style="--card-bg:${a.cardBg || 'linear-gradient(135deg, #1b1d26 0%, #0f1117 100%)'};animation-delay:${Math.min(i * 40, 240)}ms"
                         type="button">
-                    <div class="smart-app-icon">${a.icon || '📦'}</div>
-                    <div class="smart-app-name">${escapeHtml(a.name)}</div>
-                    ${a.tag ? `<span class="smart-app-tag">${escapeHtml(a.tag)}</span>` : ''}
+                    <div class="app-icon">${svg(a.icon || 'apps', 22)}</div>
+                    <div class="app-name">${escapeHtml(a.name)}</div>
+                    ${a.tag ? `<span class="app-tag">${escapeHtml(a.tag)}</span>` : ''}
                 </button>
             `).join('');
             focarPrimeiro();
@@ -1830,26 +1883,26 @@
                 try { focoEl.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'smooth' }); } catch (_) {}
             }
         }
-
         function focarPrimeiro() {
             if (vista !== 'smart') return;
-            const first = appsRowEl.querySelector('.smart-app');
+            const first = appsRowEl.querySelector('.app-card');
             if (first) focar(first);
         }
 
-        // ---------- Flush em unload ----------
         function aoDescarregar() { persistirAgora(); }
         window.addEventListener('beforeunload', aoDescarregar);
         window.addEventListener('pagehide', aoDescarregar);
 
-        // ---------- Layout ----------
+        // Layout
         function aplicarLayout(animar) {
-            const headerVisible = !win.classList.contains('header-hidden');
+            const headerVisible = !win.classList.contains('hdr-hidden');
             const headerH = headerVisible ? HEADER_HEIGHT : 0;
 
-            win.style.transition = animar
-                ? 'width .25s cubic-bezier(.4,0,.2,1), height .25s cubic-bezier(.4,0,.2,1)'
-                : 'none';
+            win.style.transition = animar ? '' : 'none';
+            win.classList.toggle('anim-off', !animar);
+
+            const resizable = (vista === 'app' || vista === 'player');
+            win.classList.toggle('can-resize', resizable);
 
             if (vista === 'player') {
                 const videoW = state.winW - BORDER_TOTAL;
@@ -1857,24 +1910,29 @@
                 const winH = videoH + headerH + CONTROLBAR_HEIGHT + BORDER_TOTAL;
                 win.style.width = Math.round(state.winW) + 'px';
                 win.style.height = Math.round(winH) + 'px';
-            } else {
+            } else if (vista === 'app') {
                 win.style.width = Math.round(state.winW) + 'px';
-                win.style.height = Math.round(state.winHHome) + 'px';
+                win.style.height = Math.round(state.winHApp) + 'px';
+            } else {
+                state.winW = FIXED_W;
+                state.winHApp = FIXED_H;
+                win.style.width = FIXED_W + 'px';
+                win.style.height = FIXED_H + 'px';
             }
 
             if (animar) {
                 clearTimeout(layoutTimeout);
                 layoutTimeout = setTimeout(() => {
-                    if (!resizeState) win.style.transition = '';
+                    win.classList.remove('anim-off');
                     layoutTimeout = null;
-                }, 280);
+                }, 260);
             }
         }
 
-        // ---------- Drag ----------
+        // Drag
         let drag = null;
         hdr.addEventListener('mousedown', e => {
-            if (e.target.closest('.iptv-btn')) return;
+            if (e.target.closest('button')) return;
             const r = win.getBoundingClientRect();
             drag = { x: e.clientX - r.left, y: e.clientY - r.top };
         });
@@ -1887,28 +1945,25 @@
         document.addEventListener('mousemove', aoMoverJanela);
         document.addEventListener('mouseup', aoSoltarJanela);
 
-        // ---------- Resize ----------
+        // Resize
         let resizeState = null;
         resizeHandle.addEventListener('mousedown', e => {
-            e.preventDefault();
-            e.stopPropagation();
-            resizeState = { startX: e.clientX, startY: e.clientY, startWinW: state.winW, startWinH: state.winHHome };
+            e.preventDefault(); e.stopPropagation();
+            if (vista !== 'app' && vista !== 'player') return;
+            resizeState = { startX: e.clientX, startY: e.clientY, startWinW: state.winW, startWinH: state.winHApp };
             win.style.transition = 'none';
         });
         function aoMoverResize(e) {
             if (!resizeState) return;
             const dx = e.clientX - resizeState.startX;
             const dy = e.clientY - resizeState.startY;
-
             if (vista === 'player') {
                 const dyAsDx = dy * ASPECT_RATIO;
                 const delta = Math.abs(dx) > Math.abs(dyAsDx) ? dx : dyAsDx;
-                const minWinW = MIN_VIDEO_W + BORDER_TOTAL;
-                const maxWinW = MAX_VIDEO_W + BORDER_TOTAL;
-                state.winW = Math.max(minWinW, Math.min(maxWinW, resizeState.startWinW + delta));
+                state.winW = Math.max(MIN_VIDEO_W + BORDER_TOTAL, Math.min(MAX_VIDEO_W + BORDER_TOTAL, resizeState.startWinW + delta));
             } else {
-                state.winW = Math.max(MIN_HOME_W, Math.min(MAX_HOME_W, resizeState.startWinW + dx));
-                state.winHHome = Math.max(MIN_HOME_H, Math.min(MAX_HOME_H, resizeState.startWinH + dy));
+                state.winW = Math.max(MIN_APP_W, Math.min(MAX_APP_W, resizeState.startWinW + dx));
+                state.winHApp = Math.max(MIN_APP_H, Math.min(MAX_APP_H, resizeState.startWinH + dy));
             }
             aplicarLayout(false);
         }
@@ -1920,11 +1975,19 @@
         document.addEventListener('mousemove', aoMoverResize);
         document.addEventListener('mouseup', aoSoltarResize);
 
-        // ---------- Navegação home <-> player ----------
+        // Sidebar toggle
+        function setSidebarHidden(v) {
+            sidebarHidden = v;
+            win.classList.toggle('sb-hidden', v);
+        }
+        win.querySelector('#' + UID + 'sbToggle').addEventListener('click', () => setSidebarHidden(true));
+        win.querySelector('#' + UID + 'sbExpand').addEventListener('click', () => setSidebarHidden(false));
+
+        // Navegação
         function irParaPlayer() {
             vista = 'player';
-            win.classList.remove('vista-smart', 'vista-home', 'vista-app');
-            win.classList.add('vista-player');
+            win.classList.remove('v-smart', 'v-home', 'v-app');
+            win.classList.add('v-player');
             setSidebarAtivo('library');
             aplicarLayout(true);
         }
@@ -1932,51 +1995,46 @@
             chamadaAtual++;
             clearTimeout(conectarTimeout);
             if (hls) { hls.destroy(); hls = null; }
-            videoWrapEl.innerHTML = '<div class="tv-placeholder">▶ Selecione um canal</div>';
+            videoWrapEl.innerHTML = '<div class="tv-placeholder">' + svg('play', 26) + '<div style="margin-top:10px">Selecione um canal</div></div>';
         }
         function voltarParaHome() {
             pararReproducao();
             vista = 'home';
-            win.classList.remove('vista-smart', 'vista-player', 'vista-app');
-            win.classList.add('vista-home');
+            win.classList.remove('v-smart', 'v-player', 'v-app');
+            win.classList.add('v-home');
             setSidebarAtivo('library');
             aplicarLayout(true);
         }
         backBtn.addEventListener('click', voltarParaHome);
 
-        // ---------- Estrela ----------
         function sincronizarEstrela(id) {
             const fav = ehFavorito(id);
             win.querySelectorAll(`[data-star="${CSS.escape(id)}"]`).forEach(btn => {
-                btn.textContent = fav ? '★' : '☆';
+                btn.innerHTML = fav ? svg('starFill', 16) : svg('star', 16);
                 btn.classList.toggle('faved', fav);
                 btn.title = fav ? 'Remover dos favoritos' : 'Adicionar aos favoritos';
             });
         }
 
-        // ---------- Clique delegado ----------
+        // Clique delegado
         win.addEventListener('click', (e) => {
-            const heroCta = e.target.closest('.smart-hero-cta');
-            if (heroCta && vista === 'smart') {
-                e.preventDefault();
-                abrirApp(heroCta.dataset.app || 'tv');
-                return;
-            }
-            const smartCard = e.target.closest('.smart-app');
-            if (smartCard && vista === 'smart') {
-                e.preventDefault();
-                abrirApp(smartCard.dataset.app);
-                return;
-            }
-            const sidebarBtn = e.target.closest('.iptv-sidebar-btn');
-            if (sidebarBtn) {
-                const nav = sidebarBtn.dataset.nav;
+            const heroCta = e.target.closest('.hero-cta');
+            if (heroCta && vista === 'smart') { e.preventDefault(); abrirApp(heroCta.dataset.app || 'tv'); return; }
+
+            const card = e.target.closest('.app-card');
+            if (card && vista === 'smart') { e.preventDefault(); abrirApp(card.dataset.app); return; }
+
+            const sbBtn = e.target.closest('.sb-btn');
+            if (sbBtn) {
+                const nav = sbBtn.dataset.nav;
                 if (nav === 'home') irParaSmart();
                 else if (nav === 'library') abrirApp('tv');
-                else if (nav === 'apps') { irParaSmart(); }
+                else if (nav === 'apps') irParaSmart();
+                else if (nav === 'search') { irParaSmart(); setTimeout(() => searchEl?.focus?.(), 120); }
                 else setSidebarAtivo(nav);
                 return;
             }
+
             const starBtn = e.target.closest('.tv-star');
             if (starBtn && starBtn.dataset.star) {
                 e.stopPropagation();
@@ -1986,6 +2044,7 @@
                 if (mostrarSoFavoritos && vista === 'home') renderChannels();
                 return;
             }
+
             const tile = e.target.closest('.tv-tile');
             if (tile && vista === 'home') {
                 const canal = allChannels.find(c => c.id === tile.dataset.id);
@@ -1993,7 +2052,7 @@
             }
         });
 
-        // ---------- Teclado ----------
+        // Teclado
         function aoTeclado(e) {
             if (win.style.display === 'none') return;
             const t = e.target;
@@ -2001,48 +2060,40 @@
 
             if (e.key === 'Escape') {
                 if (vista === 'player') { e.preventDefault(); voltarParaHome(); return; }
-                if (vista === 'home' || vista === 'app') { e.preventDefault(); irParaSmart(); return; }
+                if (vista === 'home') { e.preventDefault(); irParaSmart(); return; }
+                if (vista === 'app') { e.preventDefault(); irParaSmart(); return; }
                 return;
             }
 
             if (vista !== 'smart') return;
-
-            if (e.key === 'Enter' && focoEl) {
-                e.preventDefault();
-                abrirApp(focoEl.dataset.app);
-                return;
-            }
-
-            if (e.key === 'ArrowRight' || e.key === 'ArrowDown' || e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
-                const cards = [...appsRowEl.querySelectorAll('.smart-app')];
+            if (e.key === 'Enter' && focoEl) { e.preventDefault(); abrirApp(focoEl.dataset.app); return; }
+            if (['ArrowRight','ArrowDown','ArrowLeft','ArrowUp'].includes(e.key)) {
+                const cards = [...appsRowEl.querySelectorAll('.app-card')];
                 if (!cards.length) return;
                 e.preventDefault();
                 const forward = (e.key === 'ArrowRight' || e.key === 'ArrowDown');
                 const idx = focoEl ? cards.indexOf(focoEl) : -1;
-                let next = idx + (forward ? 1 : -1);
-                next = Math.max(0, Math.min(cards.length - 1, next));
+                let next = Math.max(0, Math.min(cards.length - 1, idx + (forward ? 1 : -1)));
                 if (cards[next]) focar(cards[next]);
             }
         }
         document.addEventListener('keydown', aoTeclado);
 
-        // ---------- Filtros ----------
+        // Filtros
         filtersEl.addEventListener('click', (e) => {
             const chip = e.target.closest('.tv-chip');
             if (!chip) return;
-            if (chip.dataset.fav !== undefined) {
-                mostrarSoFavoritos = !mostrarSoFavoritos;
-            } else {
+            if (chip.dataset.fav !== undefined) mostrarSoFavoritos = !mostrarSoFavoritos;
+            else {
                 const cat = chip.dataset.cat || null;
                 filtroCategoria = cat === '' ? null : cat;
             }
-            renderFiltros();
-            renderChannels();
+            renderFiltros(); renderChannels();
         });
 
         function renderFiltros() {
             const chips = [];
-            chips.push(`<span class="tv-chip fav-chip${mostarSoFavoritosClass()}" data-fav="1">★ Favoritos</span>`);
+            chips.push(`<span class="tv-chip fav-chip${mostrarSoFavoritos ? ' active' : ''}" data-fav="1">★ Favoritos</span>`);
             chips.push(`<span class="tv-chip${filtroCategoria === null ? ' active' : ''}" data-cat="">Todos</span>`);
             allCategories.forEach(cat => {
                 const ativo = filtroCategoria === cat ? ' active' : '';
@@ -2050,8 +2101,6 @@
             });
             filtersEl.innerHTML = chips.join('');
         }
-
-        function mostarSoFavoritosClass() { return mostrarSoFavoritos ? ' active' : ''; }
 
         function badgeFalhaHtml(id) {
             const registro = obterStatusFalha(id);
@@ -2062,24 +2111,13 @@
         function renderChannels() {
             const q = termoBusca.toLowerCase();
             let filtered = allChannels;
-
             if (mostrarSoFavoritos) filtered = filtered.filter(c => estado.favoritos.has(c.id));
             if (filtroCategoria) filtered = filtered.filter(c => c.categorias.includes(filtroCategoria));
-            if (q) {
-                filtered = filtered.filter(c =>
-                    c.name.toLowerCase().includes(q) ||
-                    c.categoriaPrincipal.toLowerCase().includes(q)
-                );
-            }
-
-            if (!filtered.length) {
-                gridEl.innerHTML = '<div class="tv-empty">Nenhum canal encontrado.</div>';
-                return;
-            }
+            if (q) filtered = filtered.filter(c => c.name.toLowerCase().includes(q) || c.categoriaPrincipal.toLowerCase().includes(q));
+            if (!filtered.length) { gridEl.innerHTML = '<div class="tv-empty">Nenhum canal encontrado.</div>'; return; }
 
             const limit = q || filtroCategoria || mostrarSoFavoritos ? filtered.length : 300;
             const visiveis = filtered.slice(0, limit);
-
             const agora = Date.now();
             const falhas = estado.falhas;
             const favs = estado.favoritos;
@@ -2087,27 +2125,19 @@
             gridEl.innerHTML = visiveis.map(c => {
                 const reg = falhas[c.id];
                 let falhou = false;
-                if (reg) {
-                    const t = typeof reg.em === 'number' ? reg.em : Date.parse(reg.em);
-                    falhou = (agora - t) < FALHA_TTL_MS;
-                }
+                if (reg) { const t = typeof reg.em === 'number' ? reg.em : Date.parse(reg.em); falhou = (agora - t) < FALHA_TTL_MS; }
                 const fav = favs.has(c.id);
                 const logoSrc = c.logo || logoPlaceholder(c.name);
                 const fallback = logoPlaceholder(c.name);
                 const meta = c.categorias.slice(0, 2).join(' · ');
                 return `
                 <div class="tv-tile${falhou ? ' tv-tile-off' : ''}" data-id="${escapeHtml(c.id)}">
-                    <button class="tv-star${fav ? ' faved' : ''}" data-star="${escapeHtml(c.id)}"
-                            title="${fav ? 'Remover dos favoritos' : 'Adicionar aos favoritos'}">${fav ? '★' : '☆'}</button>
-                    <div class="tv-tile-logo">
-                        <img src="${escapeHtml(logoSrc)}" alt="" loading="lazy" decoding="async"
-                             referrerpolicy="no-referrer" onerror="this.onerror=null;this.src='${fallback}'"/>
-                    </div>
+                    <button class="tv-star${fav ? ' faved' : ''}" data-star="${escapeHtml(c.id)}" title="${fav ? 'Remover dos favoritos' : 'Adicionar aos favoritos'}">${fav ? svg('starFill', 14) : svg('star', 14)}</button>
+                    <div class="tv-tile-logo"><img src="${escapeHtml(logoSrc)}" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer" onerror="this.onerror=null;this.src='${fallback}'"/></div>
                     <div class="tv-tile-name">${escapeHtml(c.name)}</div>
                     ${meta ? `<div class="tv-tile-meta">${escapeHtml(meta)}</div>` : ''}
                     ${badgeFalhaHtml(c.id)}
-                </div>
-            `;
+                </div>`;
             }).join('');
         }
 
@@ -2122,16 +2152,15 @@
             if (nowStar) {
                 nowStar.dataset.star = ch.id;
                 const fav = ehFavorito(ch.id);
-                nowStar.textContent = fav ? '★' : '☆';
+                nowStar.innerHTML = fav ? svg('starFill', 16) : svg('star', 16);
                 nowStar.classList.toggle('faved', fav);
             }
         }
 
-        // ---------- Reprodução com fallback ----------
+        // HLS
         async function playChannel(ch, itemEl) {
             const minhaChamada = ++chamadaAtual;
             clearTimeout(conectarTimeout);
-
             irParaPlayer();
             atualizarControlbar(ch);
 
@@ -2148,24 +2177,17 @@
                 clearTimeout(conectarTimeout);
                 limparFalha(ch.id);
                 salvarLinkFuncional(ch.id, url);
-                if (itemEl) {
-                    itemEl.classList.remove('tv-tile-off');
-                    itemEl.querySelector('.tv-tile-badge')?.remove();
-                }
+                if (itemEl) { itemEl.classList.remove('tv-tile-off'); itemEl.querySelector('.tv-tile-badge')?.remove(); }
             }
-
             function tudoFalhou() {
                 if (minhaChamada !== chamadaAtual) return;
                 marcarFalha(ch.id, 'todas-fontes');
                 if (itemEl) {
                     itemEl.classList.add('tv-tile-off');
-                    if (!itemEl.querySelector('.tv-tile-badge')) {
-                        itemEl.insertAdjacentHTML('beforeend', badgeFalhaHtml(ch.id));
-                    }
+                    if (!itemEl.querySelector('.tv-tile-badge')) itemEl.insertAdjacentHTML('beforeend', badgeFalhaHtml(ch.id));
                 }
                 videoWrapEl.innerHTML = '<div class="tv-placeholder">⚠ Nenhuma fonte funcionou pra esse canal.<br>Volte e tente outro.</div>';
             }
-
             function proximaFonte() {
                 if (minhaChamada !== chamadaAtual) return;
                 clearTimeout(conectarTimeout);
@@ -2173,28 +2195,21 @@
                 indice++;
                 tentar();
             }
-
             async function tentar() {
                 if (minhaChamada !== chamadaAtual) return;
                 if (indice >= candidatos.length) { tudoFalhou(); return; }
-
                 const url = candidatos[indice];
                 let tentativasRecuperacao = 0;
                 const rotulo = candidatos.length > 1 ? ` (${indice + 1}/${candidatos.length})` : '';
                 videoWrapEl.innerHTML = '<div class="tv-placeholder"><div class="tv-spin"></div>Conectando' + rotulo + '…</div>';
-
                 conectarTimeout = setTimeout(proximaFonte, CONECTAR_TIMEOUT_MS);
-
                 try {
                     const Hls = await loadHlsJs();
                     if (minhaChamada !== chamadaAtual) return;
-
                     videoWrapEl.innerHTML = '<video id="' + UID + 'video" controls autoplay></video>';
                     const video = document.getElementById(UID + 'video');
                     video.addEventListener('playing', () => sucesso(url), { once: true });
-
                     if (hls) { hls.destroy(); hls = null; }
-
                     if (Hls.isSupported()) {
                         const instancia = new Hls();
                         hls = instancia;
@@ -2203,7 +2218,6 @@
                         instancia.on(Hls.Events.ERROR, (event, data) => {
                             if (minhaChamada !== chamadaAtual || hls !== instancia) return;
                             if (!data.fatal) return;
-
                             if (tentativasRecuperacao < MAX_TENTATIVAS_RECUPERACAO) {
                                 tentativasRecuperacao++;
                                 if (data.type === Hls.ErrorTypes.NETWORK_ERROR) { instancia.startLoad(); return; }
@@ -2218,71 +2232,53 @@
                         clearTimeout(conectarTimeout);
                         videoWrapEl.innerHTML = '<div class="tv-placeholder">Seu navegador não suporta streams HLS.</div>';
                     }
-                } catch (e) {
-                    proximaFonte();
-                }
+                } catch (e) { proximaFonte(); }
             }
-
             tentar();
         }
 
-        // ---------- Busca ----------
         let buscaDebounce = null;
         searchEl.addEventListener('input', () => {
             clearTimeout(buscaDebounce);
-            buscaDebounce = setTimeout(() => {
-                termoBusca = searchEl.value;
-                renderChannels();
-            }, 180);
+            buscaDebounce = setTimeout(() => { termoBusca = searchEl.value; renderChannels(); }, 180);
         });
 
-        // ---------- Header hide/unhide ----------
         function toggleHeader() {
-            win.classList.toggle('header-hidden');
+            win.classList.toggle('hdr-hidden');
             aplicarLayout(true);
         }
-        win.querySelector('#' + UID + 'hdrToggle').addEventListener('click', toggleHeader);
+        win.querySelector('#' + UID + 'actHdr').addEventListener('click', toggleHeader);
         win.querySelector('#' + UID + 'unhide').addEventListener('click', toggleHeader);
 
-        // ---------- Header actions ----------
-        win.querySelector('#' + UID + 'home').addEventListener('click', irParaSmart);
+        win.querySelector('#' + UID + 'actHome').addEventListener('click', irParaSmart);
         win.querySelector('#' + UID + 'actSearch').addEventListener('click', () => {
             irParaSmart();
             setTimeout(() => searchEl?.focus?.(), 120);
         });
-        win.querySelector('#' + UID + 'actBell').addEventListener('click', () => {
-            // reservado
-        });
-        win.querySelector('#' + UID + 'actUser').addEventListener('click', () => {
-            // reservado
+        win.querySelector('#' + UID + 'actBell').addEventListener('click', () => {});
+        win.querySelector('#' + UID + 'actUser').addEventListener('click', () => {});
+        win.querySelector('#' + UID + 'actExternal').addEventListener('click', () => {
+            if (appUrlAtual) window.open(appUrlAtual, '_blank', 'noopener');
         });
 
-        // ---------- Carga inicial ----------
         aplicarLayout(false);
         irParaSmart();
 
         carregarDados()
             .then(({ canais, categorias }) => {
                 if (abortController && abortController.signal.aborted) return;
-                allChannels = canais;
-                allCategories = categorias;
-                renderFiltros();
-                renderChannels();
-                if (!canais.length) {
-                    gridEl.innerHTML = '<div class="tv-empty">Nenhum canal BR disponível.</div>';
-                }
+                allChannels = canais; allCategories = categorias;
+                renderFiltros(); renderChannels();
+                if (!canais.length) gridEl.innerHTML = '<div class="tv-empty">Nenhum canal BR disponível.</div>';
             })
             .catch(e => {
                 if (e && e.name === 'AbortError') return;
                 gridEl.innerHTML = '<div class="tv-empty">⚠ Falha ao carregar canais.<br>' + escapeHtml(e.message) + '</div>';
             });
 
-        // ---------- Minimizar / Fechar ----------
         function minimize() { win.style.display = 'none'; }
         function kill() {
-            clearTimeout(conectarTimeout);
-            clearTimeout(buscaDebounce);
-            clearTimeout(layoutTimeout);
+            clearTimeout(conectarTimeout); clearTimeout(buscaDebounce); clearTimeout(layoutTimeout);
             if (clockTimer) { clearInterval(clockTimer); clockTimer = null; }
             chamadaAtual++;
             fecharAppAtual();
@@ -2300,8 +2296,8 @@
             style.remove();
             delete window._iptv;
         }
-        win.querySelector('#' + UID + 'min').addEventListener('click', minimize);
-        win.querySelector('#' + UID + 'cls').addEventListener('click', kill);
+        win.querySelector('#' + UID + 'actMin').addEventListener('click', minimize);
+        win.querySelector('#' + UID + 'actClose').addEventListener('click', kill);
 
         window._iptv = {
             kill,
@@ -2314,15 +2310,12 @@
                 return true;
             },
             abrirApp,
-            irParaSmart
+            irParaSmart,
         };
     }
 
-    if (document.body) {
-        init();
-    } else {
-        const iv = setInterval(() => {
-            if (document.body) { clearInterval(iv); init(); }
-        }, 80);
+    if (document.body) init();
+    else {
+        const iv = setInterval(() => { if (document.body) { clearInterval(iv); init(); } }, 80);
     }
 })();
