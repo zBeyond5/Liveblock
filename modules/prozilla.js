@@ -1,7 +1,7 @@
  function init() {
         if (window._prozilla) return;
 
-        const OS_URL = 'https://prozilla.com'; 
+        const OS_URL = 'https://prozilla.dev/'; 
 
         const style = document.createElement('style');
         style.setAttribute('data-prozilla', '1');
