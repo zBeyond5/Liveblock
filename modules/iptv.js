@@ -5,6 +5,7 @@
     if (window._iptv) return;
 
     const HLS_JS_CDN = 'https://cdn.jsdelivr.net/npm/hls.js@1.5.15/dist/hls.min.js';
+    const FONT_URL = 'https://fonts.googleapis.com/css2?family=Fredoka:wght@400;500;600;700&family=Quicksand:wght@400;500;600;700&display=swap';
     const CHANNELS_API_URL = 'https://iptv-org.github.io/api/channels.json';
     const STREAMS_API_URL = 'https://iptv-org.github.io/api/streams.json';
     const CATEGORIES_API_URL = 'https://iptv-org.github.io/api/categories.json';
@@ -16,10 +17,11 @@
     const FALHA_TTL_MS = 6 * 60 * 60 * 1000;
     const CONECTAR_TIMEOUT_MS = 9000;
     const MAX_TENTATIVAS_RECUPERACAO = 1;
+    const CLOCK_TICK_MS = 1000;
 
     const ASPECT_RATIO = 16 / 9;
-    const HEADER_HEIGHT = 44;
-    const CONTROLBAR_HEIGHT = 58;
+    const HEADER_HEIGHT = 56;
+    const CONTROLBAR_HEIGHT = 76;
     const BORDER_TOTAL = 2;
     const MIN_VIDEO_W = 360;
     const MAX_VIDEO_W = 2400;
@@ -154,8 +156,8 @@
         if (_avatarCache.has(letra)) return _avatarCache.get(letra);
         const svg =
             '<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64">' +
-            '<rect width="64" height="64" rx="10" fill="#1b1f26"/>' +
-            '<text x="50%" y="53%" font-family="system-ui,sans-serif" font-size="26" ' +
+            '<rect width="64" height="64" rx="12" fill="#1b1f26"/>' +
+            '<text x="50%" y="53%" font-family="Quicksand,sans-serif" font-size="28" ' +
             'font-weight="700" fill="#22d3ee" text-anchor="middle" dominant-baseline="middle">' +
             escapeHtml(letra) +
             '</text></svg>';
@@ -303,219 +305,877 @@
         _garantirEstadoCarregado();
         abortController = new AbortController();
 
+        // Fonts (cute). Não interfere na Geist do hub.
+        if (!document.querySelector('link[data-iptv-font]')) {
+            const fl = document.createElement('link');
+            fl.rel = 'stylesheet';
+            fl.href = FONT_URL;
+            fl.setAttribute('data-iptv-font', '1');
+            document.head.appendChild(fl);
+        }
+
         const style = document.createElement('style');
         style.setAttribute('data-iptv', '1');
         style.textContent = `
-        @keyframes iptvSpin{to{transform:rotate(360deg)}}
-
-        :root{
-            --tv-bg:#0a0c10;--tv-bg-elevated:#12151b;--tv-bg-card:#181c24;--tv-bg-card-hover:#20252f;
-            --tv-border:#252b36;--tv-border-soft:#1a1f28;
-            --tv-text:#e7ebf3;--tv-text-dim:#8a93a3;--tv-text-faint:#5b6373;
-            --tv-accent:#3b82f6;--tv-accent-bright:#60a5fa;--tv-accent-soft:rgba(59,130,246,.16);
-            --tv-danger:#ef4444;--tv-danger-soft:rgba(239,68,68,.15);
-            --tv-star:#f5b942;
+        @keyframes iptvSpin { to { transform: rotate(360deg); } }
+        @keyframes iptvHdrShimmer {
+            0% { background-position: 0% 50%; }
+            100% { background-position: 200% 50%; }
+        }
+        @keyframes iptvTitleShine { to { background-position: -200% center; } }
+        @keyframes iptvHeroIn {
+            from { opacity: 0; transform: translateY(14px) scale(.98); }
+            to { opacity: 1; transform: none; }
+        }
+        @keyframes iptvAppIn {
+            from { opacity: 0; transform: translateY(8px); }
+            to { opacity: 1; transform: none; }
+        }
+        @keyframes iptvFocusPulse {
+            0%, 100% { box-shadow: 0 0 0 2px rgba(255,255,255,.85), 0 0 40px rgba(34,211,238,.16), 0 20px 50px rgba(0,0,0,.6); }
+            50% { box-shadow: 0 0 0 3px rgba(255,255,255,.95), 0 0 60px rgba(34,211,238,.3), 0 20px 50px rgba(0,0,0,.6); }
+        }
+        @keyframes iptvBreathe {
+            0%, 100% { opacity: .4; transform: scale(1); }
+            50% { opacity: 1; transform: scale(1.15); }
         }
 
-        #${UID}{
-            --hub-cyan:#22d3ee;--hub-violet:#a78bfa;
-            --hub-grad:linear-gradient(120deg,var(--hub-cyan),var(--hub-violet));
-            --hub-ok:#34d399;--hub-err:#fb7185;--hub-muted:#8b8fa3;
-            position:fixed;top:60px;left:60px;width:1000px;height:640px;
-            box-sizing:border-box;
-            font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;
-            background:var(--tv-bg);color:var(--tv-text);
-            border:1px solid var(--tv-border);border-radius:14px;overflow:hidden;
-            z-index:2147483000;display:flex;flex-direction:column;
-            box-shadow:0 26px 64px rgba(0,0,0,.65),0 0 0 1px rgba(59,130,246,.10),0 0 26px rgba(59,130,246,.08);
+        #${UID} {
+            --hub-cyan: #22d3ee;
+            --hub-violet: #a78bfa;
+            --hub-grad: linear-gradient(120deg, var(--hub-cyan), var(--hub-violet));
+            --hub-ok: #34d399;
+            --hub-err: #fb7185;
+            --hub-muted: #8b8fa3;
+
+            --tv-bg: #08090D;
+            --tv-bg-elevated: #0F1116;
+            --tv-bg-card: #14171F;
+            --tv-bg-card-hover: #1B1F2A;
+            --tv-border: rgba(255,255,255,.07);
+            --tv-border-soft: rgba(255,255,255,.04);
+            --tv-text: #F1F2F8;
+            --tv-text-dim: #A0A6B8;
+            --tv-text-faint: #5B6373;
+            --tv-accent: var(--hub-cyan);
+            --tv-accent-bright: #67e8f9;
+            --tv-accent-soft: rgba(34,211,238,.14);
+            --tv-danger: var(--hub-err);
+            --tv-danger-soft: rgba(251,113,133,.15);
+            --tv-star: #fbbf24;
+
+            position: fixed;
+            top: 60px; left: 60px;
+            width: 1000px; height: 640px;
+            box-sizing: border-box;
+            font-family: 'Quicksand', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            font-weight: 500;
+            background: var(--tv-bg);
+            color: var(--tv-text);
+            border: 1px solid var(--tv-border);
+            border-radius: 22px;
+            overflow: hidden;
+            z-index: 2147483000;
+            display: flex;
+            flex-direction: column;
+            box-shadow:
+                0 30px 80px rgba(0,0,0,.7),
+                0 0 0 1px rgba(34,211,238,.08),
+                0 0 40px rgba(34,211,238,.06);
+            animation: iptvHeroIn .4s cubic-bezier(.16,1,.3,1);
         }
 
-        #${UID} .iptv-hdr{height:${HEADER_HEIGHT}px;box-sizing:border-box;flex-shrink:0;
-            display:flex;align-items:center;justify-content:space-between;
-            padding:0 14px;cursor:grab;user-select:none;
-            background:linear-gradient(180deg,#141820,#0e1116);
-            border-bottom:1px solid var(--tv-border);overflow:hidden;
-            transition:height .22s cubic-bezier(.4,0,.2,1),border-bottom-width .22s cubic-bezier(.4,0,.2,1),opacity .18s ease}
-        #${UID}.header-hidden .iptv-hdr{height:0;border-bottom-width:0;opacity:0}
-        #${UID} .iptv-hdr:active{cursor:grabbing}
-        #${UID} .iptv-brand{display:flex;align-items:center;gap:9px}
-        #${UID} .iptv-title{font-weight:800;font-size:13px;letter-spacing:.02em;color:var(--tv-text)}
-        #${UID} .iptv-chip-br{font-size:9.5px;font-weight:700;letter-spacing:.05em;color:var(--tv-accent-bright);
-            background:var(--tv-accent-soft);border-radius:5px;padding:2px 6px}
-        #${UID} .iptv-actions{display:flex;gap:6px;align-items:center}
-        #${UID} .iptv-btn{width:26px;height:26px;border-radius:7px;background:var(--tv-bg-card);
-            border:1px solid var(--tv-border);color:var(--tv-text-dim);
-            display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:12px;
-            transition:all .15s ease}
-        #${UID} .iptv-btn:hover{background:var(--tv-accent);color:#fff;border-color:var(--tv-accent)}
-        #${UID} .iptv-btn.active{background:var(--tv-accent);color:#fff;border-color:var(--tv-accent)}
+        /* ─── Header ─── */
+        #${UID} .iptv-hdr {
+            height: ${HEADER_HEIGHT}px;
+            box-sizing: border-box;
+            flex-shrink: 0;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 18px;
+            cursor: grab;
+            user-select: none;
+            background: rgba(0,0,0,.18);
+            border-bottom: 1px solid var(--tv-border);
+            position: relative;
+            overflow: hidden;
+            transition: height .22s cubic-bezier(.4,0,.2,1), opacity .18s ease, border-bottom-width .22s;
+        }
+        #${UID} .iptv-hdr::before {
+            content: '';
+            position: absolute;
+            top: 0; left: 0; right: 0;
+            height: 2px;
+            background: var(--hub-grad);
+            background-size: 200% 100%;
+            animation: iptvHdrShimmer 4s linear infinite;
+            box-shadow: 0 0 12px rgba(34,211,238,.4);
+        }
+        #${UID}.header-hidden .iptv-hdr {
+            height: 0;
+            opacity: 0;
+            border-bottom-width: 0;
+        }
+        #${UID} .iptv-hdr:active { cursor: grabbing; }
 
-        #${UID} .iptv-unhide{position:absolute;top:8px;right:8px;z-index:15;
-            width:26px;height:26px;border-radius:7px;background:rgba(20,24,32,.8);
-            border:1px solid var(--tv-border);color:var(--tv-text-dim);
-            display:none;align-items:center;justify-content:center;font-size:12px;cursor:pointer;
-            opacity:0;transition:opacity .2s,background .15s,color .15s}
-        #${UID}.header-hidden .iptv-unhide{display:flex}
-        #${UID}:hover .iptv-unhide{opacity:1}
-        #${UID} .iptv-unhide:hover{background:var(--tv-accent);color:#fff}
+        #${UID} .iptv-hdr-left {
+            display: flex;
+            align-items: center;
+            gap: 14px;
+            min-width: 0;
+        }
+        #${UID} .iptv-clock {
+            font-family: 'Fredoka', 'Quicksand', sans-serif;
+            font-size: 17px;
+            font-weight: 500;
+            letter-spacing: .02em;
+            color: var(--tv-text);
+            font-variant-numeric: tabular-nums;
+            text-shadow: 0 0 20px rgba(34,211,238,.15);
+        }
+        #${UID} .iptv-clock-sep {
+            width: 1px;
+            height: 18px;
+            background: rgba(255,255,255,.1);
+        }
 
-        #${UID} .iptv-body{flex:1;min-height:0;position:relative;display:flex;flex-direction:column}
+        #${UID} .iptv-brand {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        #${UID} .iptv-logo {
+            width: 30px; height: 30px;
+            border-radius: 9px;
+            background: var(--tv-bg-card);
+            border: 1px solid rgba(255,255,255,.08);
+            display: grid;
+            place-items: center;
+            font-size: 14px;
+            color: var(--hub-cyan);
+            box-shadow: 0 0 14px rgba(34,211,238,.18);
+        }
+        #${UID} .iptv-title {
+            font-family: 'Fredoka', 'Quicksand', sans-serif;
+            font-weight: 600;
+            font-size: 15px;
+            letter-spacing: .12em;
+            text-transform: uppercase;
+            background: linear-gradient(100deg, var(--hub-cyan) 0%, var(--hub-violet) 35%, #fff 50%, var(--hub-violet) 65%, var(--hub-cyan) 100%);
+            background-size: 220% auto;
+            -webkit-background-clip: text;
+            background-clip: text;
+            color: transparent;
+            animation: iptvTitleShine 3.2s linear infinite;
+        }
+        #${UID} .iptv-chip-br {
+            font-family: 'Quicksand', sans-serif;
+            font-size: 10px;
+            font-weight: 700;
+            letter-spacing: .12em;
+            color: var(--hub-cyan);
+            background: var(--tv-accent-soft);
+            border-radius: 6px;
+            padding: 3px 8px;
+        }
 
-        /* View toggle — todas as views escondidas por padrão, só a ativa aparece */
+        #${UID} .iptv-actions { display: flex; gap: 6px; align-items: center; }
+        #${UID} .iptv-btn {
+            width: 34px; height: 34px;
+            border-radius: 10px;
+            background: rgba(255,255,255,.04);
+            border: 1px solid rgba(255,255,255,.07);
+            color: #c7cad6;
+            display: flex; align-items: center; justify-content: center;
+            cursor: pointer;
+            font-size: 14px;
+            transition: all .18s cubic-bezier(.16,1,.3,1);
+            flex-shrink: 0;
+        }
+        #${UID} .iptv-btn:hover {
+            color: #0b0b10;
+            background: var(--hub-grad);
+            border-color: transparent;
+            box-shadow: 0 0 14px rgba(34,211,238,.35);
+            transform: translateY(-1px);
+        }
+        #${UID} .iptv-btn:active { transform: translateY(0) scale(.94); }
+        #${UID} .iptv-btn:focus-visible { outline: 2px solid var(--hub-cyan); outline-offset: 2px; }
+
+        #${UID} .iptv-unhide {
+            position: absolute;
+            top: 10px; right: 10px; z-index: 15;
+            width: 32px; height: 32px;
+            border-radius: 10px;
+            background: rgba(20,24,32,.85);
+            border: 1px solid var(--tv-border);
+            color: var(--tv-text-dim);
+            display: none;
+            align-items: center;
+            justify-content: center;
+            font-size: 13px;
+            cursor: pointer;
+            opacity: 0;
+            transition: opacity .2s, background .15s, color .15s;
+        }
+        #${UID}.header-hidden .iptv-unhide { display: flex; }
+        #${UID}:hover .iptv-unhide { opacity: 1; }
+        #${UID} .iptv-unhide:hover { background: var(--hub-cyan); color: #0b0b10; }
+
+        /* ─── Body / views ─── */
+        #${UID} .iptv-body {
+            flex: 1;
+            min-height: 0;
+            position: relative;
+            display: flex;
+            flex-direction: column;
+        }
         #${UID} .smart-home,
         #${UID} .smart-app-container,
         #${UID} .tv-home,
-        #${UID} .tv-player{display:none}
-        #${UID}.vista-smart  .smart-home{display:flex}
-        #${UID}.vista-app    .smart-app-container{display:flex}
-        #${UID}.vista-home   .tv-home{display:flex}
-        #${UID}.vista-player .tv-player{display:flex}
+        #${UID} .tv-player { display: none; }
+        #${UID}.vista-smart .smart-home { display: flex; }
+        #${UID}.vista-app .smart-app-container { display: flex; }
+        #${UID}.vista-home .tv-home { display: flex; }
+        #${UID}.vista-player .tv-player { display: flex; }
 
-        /* ─── Smart home (casca de apps) ─── */
-        #${UID} .smart-home{flex:1;min-height:0;flex-direction:column;
-            padding:36px 32px 24px;gap:26px;overflow-y:auto}
-        #${UID} .smart-home::-webkit-scrollbar{width:6px}
-        #${UID} .smart-home::-webkit-scrollbar-thumb{background:var(--tv-border);border-radius:3px}
-        #${UID} .smart-greet{font-size:26px;font-weight:700;color:#f1f2f8;
-            letter-spacing:-.01em;flex-shrink:0}
-        #${UID} .smart-row{display:flex;gap:18px;
-            overflow-x:auto;padding-bottom:8px;scroll-behavior:smooth}
-        #${UID} .smart-row::-webkit-scrollbar{height:4px}
-        #${UID} .smart-row::-webkit-scrollbar-thumb{background:var(--tv-border);border-radius:2px}
-        #${UID} .smart-row::-webkit-scrollbar-thumb:hover{background:var(--hub-cyan)}
-        #${UID} .smart-app{
-            all:unset;flex-shrink:0;
-            width:220px;height:130px;box-sizing:border-box;
-            display:flex;flex-direction:column;align-items:flex-start;
-            justify-content:space-between;padding:18px;
-            border-radius:16px;cursor:pointer;position:relative;overflow:hidden;
-            background:linear-gradient(175deg,rgba(20,20,28,.92) 0%,rgba(9,9,14,.97) 100%);
-            border:1px solid rgba(255,255,255,.08);
-            backdrop-filter:blur(18px) saturate(140%);
-            -webkit-backdrop-filter:blur(18px) saturate(140%);
-            transition:transform .18s cubic-bezier(.16,1,.3,1),
-                       border-color .18s, box-shadow .18s;
+        /* ─── Smart home ─── */
+        #${UID} .smart-home {
+            flex: 1;
+            min-height: 0;
+            flex-direction: column;
+            padding: 24px 28px 20px;
+            gap: 24px;
+            overflow-y: auto;
+            overflow-x: hidden;
         }
-        #${UID} .smart-app::before{
-            content:'';position:absolute;inset:0;
-            background:var(--app-accent,var(--hub-cyan));
-            opacity:.06;transition:opacity .18s;
+        #${UID} .smart-home::-webkit-scrollbar { width: 6px; }
+        #${UID} .smart-home::-webkit-scrollbar-thumb {
+            background: var(--tv-border);
+            border-radius: 3px;
         }
-        #${UID} .smart-app:hover::before{opacity:.14}
-        #${UID} .smart-app:hover,
-        #${UID} .smart-app.focused{
-            transform:scale(1.045);
-            border-color:rgba(255,255,255,.7);
-            box-shadow:0 16px 40px rgba(0,0,0,.55),
-                       0 0 0 2px rgba(255,255,255,.85),
-                       0 0 40px rgba(34,211,238,.16);
+        #${UID} .smart-home::-webkit-scrollbar-thumb:hover { background: var(--hub-cyan); }
+
+        /* Hero banner */
+        #${UID} .smart-hero {
+            position: relative;
+            height: 240px;
+            flex-shrink: 0;
+            border-radius: 20px;
+            overflow: hidden;
+            background: #0a0e1f;
+            padding: 28px 32px;
+            display: flex;
+            align-items: flex-end;
+            border: 1px solid rgba(255,255,255,.07);
+            box-shadow:
+                0 20px 50px rgba(0,0,0,.5),
+                inset 0 1px 0 rgba(255,255,255,.06);
+            animation: iptvHeroIn .5s cubic-bezier(.16,1,.3,1);
         }
-        #${UID} .smart-app-icon{
-            font-size:42px;line-height:1;
-            filter:drop-shadow(0 4px 12px rgba(0,0,0,.5));
-            position:relative;z-index:1;
+        #${UID} .smart-hero-bg {
+            position: absolute;
+            inset: 0;
+            background:
+                radial-gradient(60% 90% at 12% 15%, rgba(34,211,238,.22) 0%, transparent 55%),
+                radial-gradient(70% 100% at 88% 85%, rgba(167,139,250,.28) 0%, transparent 55%),
+                linear-gradient(135deg, #0d1220 0%, #191a3a 50%, #241235 100%);
         }
-        #${UID} .smart-app-name{
-            font-size:15px;font-weight:700;color:#f1f2f8;
-            position:relative;z-index:1;
+        #${UID} .smart-hero-bg::before {
+            content: '';
+            position: absolute;
+            inset: 0;
+            background-image:
+                linear-gradient(rgba(255,255,255,.03) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(255,255,255,.03) 1px, transparent 1px);
+            background-size: 34px 34px;
+            -webkit-mask-image: radial-gradient(ellipse at 25% 60%, #000 0%, transparent 70%);
+            mask-image: radial-gradient(ellipse at 25% 60%, #000 0%, transparent 70%);
+        }
+        #${UID} .smart-hero-bg::after {
+            content: '';
+            position: absolute;
+            inset: 0;
+            background: linear-gradient(0deg, rgba(8,9,13,.94) 0%, transparent 55%);
+        }
+        #${UID} .smart-hero-content {
+            position: relative;
+            z-index: 1;
+            max-width: 520px;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+        #${UID} .smart-hero-eyebrow {
+            font-family: 'Quicksand', sans-serif;
+            font-size: 12px;
+            font-weight: 700;
+            letter-spacing: .14em;
+            text-transform: uppercase;
+            color: var(--hub-cyan);
+            text-shadow: 0 0 12px rgba(34,211,238,.5);
+        }
+        #${UID} .smart-hero-title {
+            margin: 0;
+            font-family: 'Fredoka', 'Quicksand', sans-serif;
+            font-size: 38px;
+            font-weight: 600;
+            letter-spacing: -.015em;
+            line-height: 1.05;
+            color: #fff;
+            text-shadow: 0 4px 18px rgba(0,0,0,.6);
+        }
+        #${UID} .smart-hero-desc {
+            margin: 2px 0 4px;
+            font-family: 'Quicksand', sans-serif;
+            font-size: 14px;
+            font-weight: 500;
+            color: rgba(255,255,255,.78);
+            line-height: 1.5;
+            max-width: 460px;
+            text-shadow: 0 2px 8px rgba(0,0,0,.5);
+        }
+        #${UID} .smart-hero-cta {
+            all: unset;
+            margin-top: 6px;
+            display: inline-flex;
+            align-items: center;
+            gap: 10px;
+            padding: 11px 22px;
+            border-radius: 12px;
+            background: var(--hub-grad);
+            color: #0b0b10;
+            font-family: 'Quicksand', sans-serif;
+            font-size: 13.5px;
+            font-weight: 700;
+            letter-spacing: .02em;
+            cursor: pointer;
+            width: fit-content;
+            box-shadow: 0 8px 22px rgba(34,211,238,.35), inset 0 1px 0 rgba(255,255,255,.35);
+            transition: transform .18s cubic-bezier(.16,1,.3,1), box-shadow .18s;
+        }
+        #${UID} .smart-hero-cta:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 12px 30px rgba(34,211,238,.5), inset 0 1px 0 rgba(255,255,255,.45);
+        }
+        #${UID} .smart-hero-cta:focus-visible {
+            outline: 2px solid #fff;
+            outline-offset: 3px;
+        }
+        #${UID} .smart-hero-cta-icon {
+            font-size: 10px;
+            line-height: 1;
         }
 
-        #${UID} .smart-app-container{flex:1;min-height:0;flex-direction:column;
-            position:relative;overflow:hidden}
-        #${UID} .smart-app-container .tv-empty{grid-column:auto}
+        /* Section label */
+        #${UID} .smart-section {
+            display: flex;
+            flex-direction: column;
+            gap: 14px;
+        }
+        #${UID} .smart-section-title {
+            font-family: 'Fredoka', 'Quicksand', sans-serif;
+            font-size: 17px;
+            font-weight: 500;
+            letter-spacing: .01em;
+            color: var(--tv-text);
+        }
 
-        /* ─── TV home (canal grid) ─── */
-        #${UID} .tv-home{flex:1;min-height:0;flex-direction:column}
-        #${UID} .tv-toolbar{flex-shrink:0;padding:12px 16px 8px;display:flex;flex-direction:column;gap:9px}
-        #${UID} .tv-search input{width:100%;background:var(--tv-bg-card);
-            border:1px solid var(--tv-border);border-radius:8px;padding:9px 12px;
-            color:var(--tv-text);font-size:12.5px;outline:none;box-sizing:border-box;
-            transition:border-color .15s,box-shadow .15s}
-        #${UID} .tv-search input::placeholder{color:var(--tv-text-faint)}
-        #${UID} .tv-search input:focus{border-color:var(--tv-accent);box-shadow:0 0 0 3px var(--tv-accent-soft)}
+        /* App row */
+        #${UID} .smart-row {
+            display: flex;
+            gap: 16px;
+            overflow-x: auto;
+            padding: 4px 2px 14px;
+            scroll-behavior: smooth;
+            scrollbar-width: none;
+        }
+        #${UID} .smart-row::-webkit-scrollbar { display: none; }
 
-        #${UID} .tv-chips{display:flex;gap:6px;overflow-x:auto;padding-bottom:2px}
-        #${UID} .tv-chips::-webkit-scrollbar{height:4px}
-        #${UID} .tv-chips::-webkit-scrollbar-thumb{background:var(--tv-border);border-radius:2px}
-        #${UID} .tv-chip{flex-shrink:0;font-size:10.5px;font-weight:600;
-            padding:5px 12px;border-radius:99px;cursor:pointer;white-space:nowrap;
-            background:var(--tv-bg-card);border:1px solid var(--tv-border);color:var(--tv-text-dim);
-            transition:all .15s ease}
-        #${UID} .tv-chip:hover{border-color:var(--tv-accent-bright);color:var(--tv-text)}
-        #${UID} .tv-chip.active{background:var(--tv-accent);color:#fff;border-color:var(--tv-accent)}
-        #${UID} .tv-chip.fav-chip{border-color:rgba(245,185,66,.35);color:var(--tv-star)}
-        #${UID} .tv-chip.fav-chip.active{background:var(--tv-star);color:#1a1410;border-color:var(--tv-star)}
+        /* App card */
+        #${UID} .smart-app {
+            all: unset;
+            flex-shrink: 0;
+            width: 180px;
+            height: 150px;
+            box-sizing: border-box;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 14px;
+            padding: 18px;
+            border-radius: 18px;
+            cursor: pointer;
+            position: relative;
+            overflow: hidden;
+            background: linear-gradient(175deg, rgba(20,23,31,.92) 0%, rgba(12,14,20,.97) 100%);
+            border: 1px solid rgba(255,255,255,.07);
+            box-shadow:
+                0 8px 24px rgba(0,0,0,.35),
+                inset 0 1px 0 rgba(255,255,255,.04);
+            transition:
+                transform .22s cubic-bezier(.16,1,.3,1),
+                border-color .22s,
+                box-shadow .22s,
+                background .22s;
+            animation: iptvAppIn .35s cubic-bezier(.16,1,.3,1) backwards;
+        }
+        #${UID} .smart-app::before {
+            content: '';
+            position: absolute;
+            inset: 0;
+            background: var(--app-accent, var(--hub-cyan));
+            opacity: .05;
+            transition: opacity .22s;
+        }
+        #${UID} .smart-app::after {
+            content: '';
+            position: absolute;
+            top: 0; left: 14%; right: 14%;
+            height: 1px;
+            background: linear-gradient(90deg, transparent, var(--app-accent, var(--hub-cyan)), transparent);
+            opacity: .4;
+            transition: opacity .22s;
+        }
+        #${UID} .smart-app:hover {
+            transform: translateY(-5px);
+            background: linear-gradient(175deg, rgba(27,31,42,.95) 0%, rgba(15,18,25,.98) 100%);
+            border-color: rgba(255,255,255,.15);
+        }
+        #${UID} .smart-app:hover::before { opacity: .1; }
+        #${UID} .smart-app:hover::after { opacity: .7; }
 
-        #${UID} .tv-grid{flex:1;min-height:0;overflow-y:auto;padding:6px 16px 18px;
-            display:grid;grid-template-columns:repeat(auto-fill,minmax(126px,1fr));gap:12px;
-            align-content:start}
-        #${UID} .tv-grid::-webkit-scrollbar{width:6px}
-        #${UID} .tv-grid::-webkit-scrollbar-thumb{background:var(--tv-border);border-radius:3px}
-        #${UID} .tv-grid::-webkit-scrollbar-thumb:hover{background:var(--tv-accent)}
+        #${UID} .smart-app:focus-visible,
+        #${UID} .smart-app.focused {
+            outline: none;
+            transform: scale(1.06);
+            border-color: rgba(255,255,255,.85);
+            background: linear-gradient(175deg, rgba(27,31,42,.98) 0%, rgba(15,18,25,1) 100%);
+            box-shadow:
+                0 0 0 2px rgba(255,255,255,.9),
+                0 0 50px rgba(34,211,238,.25),
+                0 20px 50px rgba(0,0,0,.6);
+            animation: iptvFocusPulse 2.4s ease-in-out infinite;
+        }
+        #${UID} .smart-app:focus-visible::before,
+        #${UID} .smart-app.focused::before { opacity: .16; }
+        #${UID} .smart-app:focus-visible::after,
+        #${UID} .smart-app.focused::after { opacity: 1; }
 
-        #${UID} .tv-tile{position:relative;display:flex;flex-direction:column;align-items:center;
-            gap:7px;padding:12px 8px 9px;border-radius:12px;cursor:pointer;
-            background:var(--tv-bg-card);border:1px solid var(--tv-border-soft);
-            transition:transform .15s cubic-bezier(.4,0,.2,1),background .15s,border-color .15s,box-shadow .15s}
-        #${UID} .tv-tile:hover{transform:translateY(-3px) scale(1.03);background:var(--tv-bg-card-hover);
-            border-color:var(--tv-accent);box-shadow:0 10px 28px rgba(0,0,0,.5),0 0 0 1px var(--tv-accent-soft)}
-        #${UID} .tv-tile.tv-tile-off{opacity:.4}
-        #${UID} .tv-tile-logo{width:52px;height:52px;border-radius:10px;overflow:hidden;
-            background:var(--tv-bg-elevated);display:flex;align-items:center;justify-content:center}
-        #${UID} .tv-tile-logo img{width:100%;height:100%;object-fit:contain}
-        #${UID} .tv-tile-name{font-size:11px;font-weight:600;text-align:center;line-height:1.3;
-            max-width:100%;overflow:hidden;text-overflow:ellipsis;display:-webkit-box;
-            -webkit-line-clamp:2;-webkit-box-orient:vertical}
-        #${UID} .tv-tile-meta{font-size:9px;color:var(--tv-text-faint);text-align:center;
-            white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}
-        #${UID} .tv-tile-badge{position:absolute;bottom:6px;left:50%;transform:translateX(-50%);
-            font-size:7.5px;font-weight:800;letter-spacing:.05em;color:#ff8f8f;
-            background:var(--tv-danger-soft);border:1px solid rgba(239,68,68,.35);
-            border-radius:5px;padding:1px 5px}
+        #${UID} .smart-app-icon {
+            font-size: 52px;
+            line-height: 1;
+            position: relative;
+            z-index: 1;
+            filter: drop-shadow(0 6px 16px rgba(0,0,0,.6));
+            transition: transform .22s cubic-bezier(.16,1,.3,1);
+        }
+        #${UID} .smart-app:focus-visible .smart-app-icon,
+        #${UID} .smart-app.focused .smart-app-icon {
+            transform: scale(1.08);
+        }
+        #${UID} .smart-app-name {
+            font-family: 'Quicksand', sans-serif;
+            font-size: 15px;
+            font-weight: 700;
+            letter-spacing: -.005em;
+            color: #f1f2f8;
+            position: relative;
+            z-index: 1;
+            text-align: center;
+            text-shadow: 0 2px 8px rgba(0,0,0,.5);
+        }
 
-        #${UID} .tv-star{position:absolute;top:6px;right:6px;width:22px;height:22px;border-radius:50%;
-            display:flex;align-items:center;justify-content:center;font-size:12px;
-            background:rgba(10,12,16,.55);border:0;color:var(--tv-text-faint);cursor:pointer;
-            transition:color .15s,transform .15s,background .15s}
-        #${UID} .tv-star:hover{transform:scale(1.15);background:rgba(10,12,16,.8)}
-        #${UID} .tv-star.faved{color:var(--tv-star)}
+        /* Container de app */
+        #${UID} .smart-app-container {
+            flex: 1;
+            min-height: 0;
+            flex-direction: column;
+            position: relative;
+            overflow: hidden;
+            background: #000;
+        }
+        #${UID} .smart-app-container .tv-empty { grid-column: auto; }
 
-        #${UID} .tv-loading,#${UID} .tv-empty{padding:30px 10px;text-align:center;
-            color:var(--tv-text-faint);font-size:12px}
-        #${UID} .tv-spin{width:18px;height:18px;border:2px solid rgba(59,130,246,.2);
-            border-top-color:var(--tv-accent);border-radius:50%;margin:0 auto 10px;
-            animation:iptvSpin .7s linear infinite}
+        /* ─── TV home ─── */
+        #${UID} .tv-home {
+            flex: 1;
+            min-height: 0;
+            flex-direction: column;
+        }
+        #${UID} .tv-toolbar {
+            flex-shrink: 0;
+            padding: 18px 28px 12px;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+        #${UID} .tv-search input {
+            width: 100%;
+            background: var(--tv-bg-card);
+            border: 1px solid var(--tv-border);
+            border-radius: 12px;
+            padding: 12px 16px;
+            color: var(--tv-text);
+            font-family: 'Quicksand', sans-serif;
+            font-size: 14px;
+            font-weight: 500;
+            outline: none;
+            box-sizing: border-box;
+            transition: border-color .18s, box-shadow .18s;
+        }
+        #${UID} .tv-search input::placeholder { color: var(--tv-text-faint); }
+        #${UID} .tv-search input:focus {
+            border-color: var(--hub-cyan);
+            box-shadow: 0 0 0 3px var(--tv-accent-soft);
+        }
+
+        #${UID} .tv-chips {
+            display: flex;
+            gap: 8px;
+            overflow-x: auto;
+            padding-bottom: 2px;
+            scrollbar-width: none;
+        }
+        #${UID} .tv-chips::-webkit-scrollbar { display: none; }
+        #${UID} .tv-chip {
+            flex-shrink: 0;
+            font-family: 'Quicksand', sans-serif;
+            font-size: 12px;
+            font-weight: 700;
+            letter-spacing: .02em;
+            padding: 7px 16px;
+            border-radius: 99px;
+            cursor: pointer;
+            white-space: nowrap;
+            background: var(--tv-bg-card);
+            border: 1px solid var(--tv-border);
+            color: var(--tv-text-dim);
+            transition: all .18s;
+        }
+        #${UID} .tv-chip:hover {
+            border-color: var(--hub-cyan);
+            color: var(--tv-text);
+            background: var(--tv-bg-card-hover);
+        }
+        #${UID} .tv-chip.active {
+            background: var(--hub-grad);
+            color: #0b0b10;
+            border-color: transparent;
+            box-shadow: 0 4px 14px rgba(34,211,238,.3);
+        }
+        #${UID} .tv-chip:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
+        #${UID} .tv-chip.fav-chip {
+            border-color: rgba(251,191,36,.35);
+            color: var(--tv-star);
+        }
+        #${UID} .tv-chip.fav-chip.active {
+            background: var(--tv-star);
+            color: #1a1410;
+            border-color: transparent;
+        }
+
+        #${UID} .tv-grid {
+            flex: 1;
+            min-height: 0;
+            overflow-y: auto;
+            padding: 8px 28px 24px;
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+            gap: 16px;
+            align-content: start;
+        }
+        #${UID} .tv-grid::-webkit-scrollbar { width: 6px; }
+        #${UID} .tv-grid::-webkit-scrollbar-thumb {
+            background: var(--tv-border);
+            border-radius: 3px;
+        }
+        #${UID} .tv-grid::-webkit-scrollbar-thumb:hover { background: var(--hub-cyan); }
+
+        #${UID} .tv-tile {
+            position: relative;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 10px;
+            padding: 18px 12px 14px;
+            border-radius: 14px;
+            cursor: pointer;
+            background: var(--tv-bg-card);
+            border: 1px solid var(--tv-border-soft);
+            transition:
+                transform .2s cubic-bezier(.16,1,.3,1),
+                background .2s,
+                border-color .2s,
+                box-shadow .2s;
+        }
+        #${UID} .tv-tile:hover {
+            transform: translateY(-4px);
+            background: var(--tv-bg-card-hover);
+            border-color: rgba(255,255,255,.12);
+        }
+        #${UID} .tv-tile:focus-visible,
+        #${UID} .tv-tile.focused {
+            outline: none;
+            transform: translateY(-4px) scale(1.04);
+            background: var(--tv-bg-card-hover);
+            border-color: var(--hub-cyan);
+            box-shadow:
+                0 0 0 2px rgba(34,211,238,.7),
+                0 12px 32px rgba(0,0,0,.5),
+                0 0 30px rgba(34,211,238,.2);
+        }
+        #${UID} .tv-tile.tv-tile-off { opacity: .35; }
+        #${UID} .tv-tile-logo {
+            width: 64px; height: 64px;
+            border-radius: 12px;
+            overflow: hidden;
+            background: var(--tv-bg-elevated);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+        }
+        #${UID} .tv-tile-logo img {
+            width: 100%; height: 100%;
+            object-fit: contain;
+        }
+        #${UID} .tv-tile-name {
+            font-family: 'Quicksand', sans-serif;
+            font-size: 13px;
+            font-weight: 700;
+            text-align: center;
+            line-height: 1.3;
+            max-width: 100%;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            display: -webkit-box;
+            -webkit-line-clamp: 2;
+            -webkit-box-orient: vertical;
+            color: var(--tv-text);
+        }
+        #${UID} .tv-tile-meta {
+            font-family: 'Quicksand', sans-serif;
+            font-size: 10.5px;
+            font-weight: 500;
+            color: var(--tv-text-faint);
+            text-align: center;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            max-width: 100%;
+        }
+        #${UID} .tv-tile-badge {
+            position: absolute;
+            bottom: 8px; left: 50%;
+            transform: translateX(-50%);
+            font-family: 'Quicksand', sans-serif;
+            font-size: 8.5px;
+            font-weight: 800;
+            letter-spacing: .06em;
+            color: #ff8f8f;
+            background: var(--tv-danger-soft);
+            border: 1px solid rgba(251,113,133,.35);
+            border-radius: 5px;
+            padding: 2px 6px;
+        }
+
+        #${UID} .tv-star {
+            position: absolute;
+            top: 8px; right: 8px;
+            width: 26px; height: 26px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 13px;
+            background: rgba(10,12,16,.6);
+            border: 0;
+            color: var(--tv-text-faint);
+            cursor: pointer;
+            transition: color .15s, transform .15s, background .15s;
+        }
+        #${UID} .tv-star:hover {
+            transform: scale(1.15);
+            background: rgba(10,12,16,.85);
+        }
+        #${UID} .tv-star.faved { color: var(--tv-star); }
+        #${UID} .tv-star:focus-visible {
+            outline: 2px solid #fff;
+            outline-offset: 2px;
+        }
+
+        #${UID} .tv-loading,
+        #${UID} .tv-empty {
+            grid-column: 1 / -1;
+            padding: 60px 20px;
+            text-align: center;
+            color: var(--tv-text-faint);
+            font-family: 'Quicksand', sans-serif;
+            font-size: 14px;
+            font-weight: 500;
+        }
+        #${UID} .tv-spin {
+            width: 22px; height: 22px;
+            border: 2px solid rgba(34,211,238,.2);
+            border-top-color: var(--hub-cyan);
+            border-radius: 50%;
+            margin: 0 auto 14px;
+            animation: iptvSpin .7s linear infinite;
+        }
 
         /* ─── Player ─── */
-        #${UID} .tv-player{flex:1;min-height:0;flex-direction:column}
-        #${UID} .tv-video-wrap{flex:1;min-height:0;position:relative;background:#000;
-            display:flex;align-items:center;justify-content:center;overflow:hidden}
-        #${UID} .tv-video-wrap video{width:100%;height:100%;object-fit:contain;display:block}
-        #${UID} .tv-placeholder{color:var(--tv-text-faint);font-size:12.5px;text-align:center;padding:20px}
+        #${UID} .tv-player {
+            flex: 1;
+            min-height: 0;
+            flex-direction: column;
+        }
+        #${UID} .tv-video-wrap {
+            flex: 1;
+            min-height: 0;
+            position: relative;
+            background: #000;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            overflow: hidden;
+        }
+        #${UID} .tv-video-wrap video {
+            width: 100%; height: 100%;
+            object-fit: contain;
+            display: block;
+        }
+        #${UID} .tv-placeholder {
+            color: var(--tv-text-faint);
+            font-family: 'Quicksand', sans-serif;
+            font-size: 14px;
+            font-weight: 500;
+            text-align: center;
+            padding: 24px;
+            line-height: 1.5;
+        }
 
-        #${UID} .tv-controlbar{height:${CONTROLBAR_HEIGHT}px;flex-shrink:0;box-sizing:border-box;
-            display:flex;align-items:center;gap:12px;padding:0 14px;
-            background:linear-gradient(0deg,#141820,#0e1116);border-top:1px solid var(--tv-border)}
-        #${UID} .tv-back{flex-shrink:0;display:flex;align-items:center;gap:6px;
-            padding:8px 13px;border-radius:8px;background:var(--tv-bg-card);
-            border:1px solid var(--tv-border);color:var(--tv-text);font-size:11.5px;font-weight:600;
-            cursor:pointer;transition:all .15s}
-        #${UID} .tv-back:hover{background:var(--tv-accent);border-color:var(--tv-accent);color:#fff}
-        #${UID} .tv-now{flex:1;min-width:0;display:flex;align-items:center;gap:10px}
-        #${UID} .tv-now-logo{width:32px;height:32px;border-radius:7px;flex-shrink:0;
-            background:var(--tv-bg-card);object-fit:contain}
-        #${UID} .tv-now-text{min-width:0;display:flex;flex-direction:column;gap:1px}
-        #${UID} .tv-now-name{font-size:12.5px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-        #${UID} .tv-now-meta{font-size:10px;color:var(--tv-text-dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-        #${UID} .tv-controlbar .tv-star{position:static;flex-shrink:0;background:var(--tv-bg-card);
-            border:1px solid var(--tv-border);width:34px;height:34px}
+        #${UID} .tv-controlbar {
+            height: ${CONTROLBAR_HEIGHT}px;
+            flex-shrink: 0;
+            box-sizing: border-box;
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            padding: 0 24px;
+            background: linear-gradient(0deg, rgba(15,18,25,.98), rgba(8,9,13,.95));
+            border-top: 1px solid var(--tv-border);
+            position: relative;
+        }
+        #${UID} .tv-controlbar::before {
+            content: '';
+            position: absolute;
+            top: -1px; left: 15%; right: 15%;
+            height: 1px;
+            background: radial-gradient(ellipse at center, rgba(34,211,238,.5), transparent 70%);
+        }
+        #${UID} .tv-back {
+            flex-shrink: 0;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 10px 18px;
+            border-radius: 12px;
+            background: var(--tv-bg-card);
+            border: 1px solid var(--tv-border);
+            color: var(--tv-text);
+            font-family: 'Quicksand', sans-serif;
+            font-size: 13px;
+            font-weight: 700;
+            cursor: pointer;
+            transition: all .18s cubic-bezier(.16,1,.3,1);
+        }
+        #${UID} .tv-back:hover {
+            background: var(--hub-grad);
+            border-color: transparent;
+            color: #0b0b10;
+            box-shadow: 0 6px 20px rgba(34,211,238,.3);
+            transform: translateY(-1px);
+        }
+        #${UID} .tv-back:focus-visible {
+            outline: 2px solid #fff;
+            outline-offset: 2px;
+        }
+        #${UID} .tv-now {
+            flex: 1;
+            min-width: 0;
+            display: flex;
+            align-items: center;
+            gap: 14px;
+        }
+        #${UID} .tv-now-logo {
+            width: 44px; height: 44px;
+            border-radius: 10px;
+            flex-shrink: 0;
+            background: var(--tv-bg-card);
+            object-fit: contain;
+            border: 1px solid var(--tv-border-soft);
+        }
+        #${UID} .tv-now-text {
+            min-width: 0;
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+        }
+        #${UID} .tv-now-name {
+            font-family: 'Quicksand', sans-serif;
+            font-size: 15px;
+            font-weight: 700;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            color: var(--tv-text);
+        }
+        #${UID} .tv-now-meta {
+            font-family: 'Quicksand', sans-serif;
+            font-size: 11.5px;
+            font-weight: 500;
+            color: var(--tv-text-dim);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        #${UID} .tv-controlbar .tv-star {
+            position: static;
+            flex-shrink: 0;
+            background: var(--tv-bg-card);
+            border: 1px solid var(--tv-border);
+            width: 44px; height: 44px;
+            border-radius: 12px;
+            font-size: 16px;
+        }
+        #${UID} .tv-controlbar .tv-star:hover {
+            background: var(--tv-bg-card-hover);
+            transform: scale(1.05);
+        }
 
-        #${UID} .iptv-resize{position:absolute;right:3px;bottom:3px;width:16px;height:16px;
-            cursor:nwse-resize;z-index:20;opacity:.3;transition:opacity .15s;
-            background:linear-gradient(135deg,transparent 48%,var(--tv-accent-bright) 48%,var(--tv-accent-bright) 52%,transparent 52%,
-                                                transparent 62%,var(--tv-accent-bright) 62%,var(--tv-accent-bright) 66%,transparent 66%,
-                                                transparent 76%,var(--tv-accent-bright) 76%,var(--tv-accent-bright) 80%,transparent 80%)}
-        #${UID} .iptv-resize:hover{opacity:1}
+        /* ─── Resize ─── */
+        #${UID} .iptv-resize {
+            position: absolute;
+            right: 4px; bottom: 4px;
+            width: 18px; height: 18px;
+            cursor: nwse-resize;
+            z-index: 20;
+            opacity: .25;
+            transition: opacity .18s;
+            background: linear-gradient(135deg,
+                transparent 46%,
+                var(--hub-cyan) 46%, var(--hub-cyan) 50%,
+                transparent 50%, transparent 60%,
+                var(--hub-cyan) 60%, var(--hub-cyan) 64%,
+                transparent 64%, transparent 74%,
+                var(--hub-cyan) 74%, var(--hub-cyan) 78%,
+                transparent 78%);
+            border-radius: 0 0 20px 0;
+        }
+        #${UID} .iptv-resize:hover { opacity: 1; }
         `;
         document.head.appendChild(style);
 
@@ -526,9 +1186,14 @@
         win.setAttribute('data-hub', '1');
         win.innerHTML = `
             <div class="iptv-hdr" id="${UID}hdr">
-                <div class="iptv-brand">
-                    <span class="iptv-title">IPTV</span>
-                    <span class="iptv-chip-br">BR</span>
+                <div class="iptv-hdr-left">
+                    <span class="iptv-clock" id="${UID}clock">--:--</span>
+                    <span class="iptv-clock-sep" aria-hidden="true"></span>
+                    <div class="iptv-brand">
+                        <span class="iptv-logo">▣</span>
+                        <span class="iptv-title">IPTV</span>
+                        <span class="iptv-chip-br">BR</span>
+                    </div>
                 </div>
                 <div class="iptv-actions">
                     <div class="iptv-btn" id="${UID}home" title="Início">⌂</div>
@@ -539,8 +1204,22 @@
             </div>
             <div class="iptv-body">
                 <div class="smart-home" id="${UID}smart">
-                    <div class="smart-greet" id="${UID}greet">Bom dia</div>
-                    <div class="smart-row" id="${UID}apps"></div>
+                    <div class="smart-hero">
+                        <div class="smart-hero-bg" aria-hidden="true"></div>
+                        <div class="smart-hero-content">
+                            <span class="smart-hero-eyebrow" id="${UID}greet">Bom dia</span>
+                            <h1 class="smart-hero-title">Bem-vindo ao IPTV</h1>
+                            <p class="smart-hero-desc">Canais abertos brasileiros ao vivo, direto do seu navegador. Escolha um app abaixo para começar.</p>
+                            <button class="smart-hero-cta" type="button" data-app="tv">
+                                <span class="smart-hero-cta-icon" aria-hidden="true">▶</span>
+                                <span>Assistir TV Aberta</span>
+                            </button>
+                        </div>
+                    </div>
+                    <div class="smart-section">
+                        <div class="smart-section-title">Seus apps</div>
+                        <div class="smart-row" id="${UID}apps"></div>
+                    </div>
                 </div>
                 <div class="smart-app-container" id="${UID}appContainer"></div>
                 <div class="tv-home">
@@ -574,7 +1253,7 @@
         `;
         document.body.appendChild(win);
 
-        // Reaproveita hook do hub (proteção contra Lite Mode via data-sang-ui)
+        // Proteção contra Lite Mode (redundante com data-sang-ui)
         window._hubUI?.markProtected?.(win);
 
         const gridEl = win.querySelector('#' + UID + 'grid');
@@ -587,6 +1266,22 @@
         const appsRowEl = win.querySelector('#' + UID + 'apps');
         const greetEl = win.querySelector('#' + UID + 'greet');
         const appContainer = win.querySelector('#' + UID + 'appContainer');
+        const clockEl = win.querySelector('#' + UID + 'clock');
+
+        // ─── Relógio ───
+        let clockTimer = null;
+        let clockUltimo = '';
+        function atualizarRelogio() {
+            if (!clockEl) return;
+            const d = new Date();
+            const txt = String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+            if (txt !== clockUltimo) {
+                clockEl.textContent = txt;
+                clockUltimo = txt;
+            }
+        }
+        atualizarRelogio();
+        clockTimer = setInterval(atualizarRelogio, CLOCK_TICK_MS);
 
         let allChannels = [];
         let allCategories = [];
@@ -672,10 +1367,11 @@
 
         function renderApps() {
             const h = new Date().getHours();
-            greetEl.textContent = h < 12 ? 'Bom dia' : h < 18 ? 'Boa tarde' : 'Boa noite';
-            appsRowEl.innerHTML = [...apps.values()].map(a => `
+            if (greetEl) greetEl.textContent = h < 12 ? 'Bom dia' : h < 18 ? 'Boa tarde' : 'Boa noite';
+            appsRowEl.innerHTML = [...apps.values()].map((a, i) => `
                 <button class="smart-app focused-target" data-app="${escapeHtml(a.id)}"
-                        style="--app-accent:${a.accent || 'var(--tv-accent)'}">
+                        style="--app-accent:${a.accent || 'var(--tv-accent)'};animation-delay:${Math.min(i * 40, 240)}ms"
+                        type="button">
                     <div class="smart-app-icon">${a.icon || '📦'}</div>
                     <div class="smart-app-name">${escapeHtml(a.name)}</div>
                 </button>
@@ -815,12 +1511,21 @@
 
         // ---------- Clique delegado ----------
         win.addEventListener('click', (e) => {
+            // Hero CTA
+            const heroCta = e.target.closest('.smart-hero-cta');
+            if (heroCta && vista === 'smart') {
+                e.preventDefault();
+                abrirApp(heroCta.dataset.app || 'tv');
+                return;
+            }
+            // Smart app card
             const smartCard = e.target.closest('.smart-app');
             if (smartCard && vista === 'smart') {
                 e.preventDefault();
                 abrirApp(smartCard.dataset.app);
                 return;
             }
+            // Star
             const starBtn = e.target.closest('.tv-star');
             if (starBtn && starBtn.dataset.star) {
                 e.stopPropagation();
@@ -830,6 +1535,7 @@
                 if (mostrarSoFavoritos && vista === 'home') renderChannels();
                 return;
             }
+            // Channel tile
             const tile = e.target.closest('.tv-tile');
             if (tile && vista === 'home') {
                 const canal = allChannels.find(c => c.id === tile.dataset.id);
@@ -1115,6 +1821,7 @@
             clearTimeout(conectarTimeout);
             clearTimeout(buscaDebounce);
             clearTimeout(layoutTimeout);
+            if (clockTimer) { clearInterval(clockTimer); clockTimer = null; }
             chamadaAtual++;
             fecharAppAtual();
             if (hls) { try { hls.destroy(); } catch (e) {} hls = null; }
