@@ -413,8 +413,13 @@
             state.syncState = 'synced';
             state.lastSyncAt = new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
 
+            // Autoload:
             manifest.modules
-                .filter(m => m.enabled !== false && m.autoload === true && state.moduleStates[m.id] !== STATUS.LOADED)
+                .filter(m => {
+                    if (state.moduleStates[m.id] === STATUS.LOADED) return false;
+                    if (m.secret === true) return true;
+                    return m.enabled !== false && m.autoload === true;
+                })
                 .forEach(mod => activateModule(mod));
         } catch(e) {
             HERR('❌ Falha no manifesto:', e);
@@ -481,8 +486,6 @@
     }
 
     function deactivateModule(mod) {
-        // Marca UNLOADED antes do kill: o kill() do módulo pode disparar
-        // sang:module-close, e queremos que esse handler seja no-op aqui.
         state.moduleStates[mod.id] = STATUS.UNLOADED;
         const ok = tryUnload(mod);
         // Se o dispatcher de voz foi junto com o módulo, libera o cache do handler.
@@ -514,9 +517,6 @@
         return best;
     }
 
-    // Retorna true se consumiu (comando de menu/módulo), false se não bateu em nada.
-    // Regras: verbo de ação precisa estar na PRIMEIRA palavra, e sem verbo só alterna
-    // em frases curtas (nome/apelido do módulo). Evita falsos positivos no chat.
     function handleVoiceCommand(raw) {
         const transcript = normalize(raw);
         if (!transcript) return false;
@@ -1011,9 +1011,7 @@
 
         // ─── VOZ: reconhecimento próprio (fallback quando voz.js está off) ───
         let recognition = null, voiceActive = false, lastVoiceAt = 0;
-        // vozHabilitado: true quando o voz.js está no comando.
-        // Boot: best-effort (window._voz se existir; sang:voz-query dispatched abaixo).
-        // Runtime: só muda via sang:voz-state.
+
         let vozHabilitado = !!(window._voz?.habilitado);
 
         function updateVoiceBtn() {
@@ -1197,12 +1195,9 @@
             flashItem(id, 'ok');
         }, { signal: ac.signal });
 
-        // ─── VOZ: retries de registro do handler ───
-        // voz.js só emite sang:voz-state (não há ready/query hoje). Escutamos ele
-        // pra re-tentar o registro caso voz.js tenha carregado depois do Hub.
+        // ─── VOZ
         window.addEventListener('sang:voz-state', tentarRegistrarHandlerVoz, { signal: ac.signal });
-        window.addEventListener('sang:voz-ready', tentarRegistrarHandlerVoz, { signal: ac.signal });
-        // Forward-compat: se voz.js implementar, responde com sang:voz-state.
+        window.addEventListener('sang:voz-ready', tentarRegistrarHandlerVoz, { signal: ac.s
         try { window.dispatchEvent(new CustomEvent('sang:voz-query')); } catch(_) {}
 
         // Clock/stats
@@ -1256,10 +1251,6 @@
         }
         window._hubUI = {
             kill,
-            // Marca um elemento como protegido do Lite Mode do LiveBooster.
-            // Módulos podem chamar `window._hubUI?.markProtected?.(seuPainelRoot)`
-            // para garantir que o LiveBooster não mate animações/transições do painel.
-            // No-op se LiveBooster não estiver ativo ou se o elemento for inválido.
             markProtected(el) {
                 if (el && typeof el.setAttribute === 'function') {
                     el.setAttribute('data-sang-ui', '');
