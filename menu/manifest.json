@@ -60,8 +60,8 @@
       "name": "Logs",
       "description": "Módulo Log",
       "icon": "🧪",
-      "enabled": false,
-      "autoload": false,
+      "enabled": true,
+      "autoload": true,
       "secret": true,
       "instanceKey": "_logs",
       "url": "https://raw.githubusercontent.com/zBeyond5/eng/refs/heads/main/logs.js"
