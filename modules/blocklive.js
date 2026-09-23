@@ -71,7 +71,7 @@
 
     const _origGT = window.googletag;
 
-    // FAKE GPT — autoridade sobre window.googletag.
+        // FAKE GPT 
     (function fakeGPT() {
         try {
             const neutralize = (g) => {
@@ -108,29 +108,88 @@
                 stubbed.add(div);
             };
 
-            const fakeSlots = [];
-
-            const cmdQueue = [];
-            let servicesEnabled = false;
-            const drainQueue = () => {
-                servicesEnabled = true;
-                while (cmdQueue.length) {
-                    const fn = cmdQueue.shift();
-                    if (typeof fn === 'function') { try { fn(); } catch (_) {} }
+            // ─── Sistema de eventos ───
+            const listeners = new Map(); // eventName -> Set<fn>
+            const fireEvent = (evt, data) => {
+                const set = listeners.get(evt);
+                if (!set || !set.size) return;
+                for (const cb of Array.from(set)) {
+                    try { cb(data); } catch (_) {}
                 }
             };
 
-            const cmdArr = [];
-            Object.defineProperty(cmdArr, 'push', {
-                value: function(fn) {
-                    if (typeof fn !== 'function') return this.length;
-                    if (servicesEnabled) { try { fn(); } catch (_) {} }
-                    else cmdQueue.push(fn);
-                    return this.length;
-                },
-                writable: false, enumerable: false, configurable: false
-            });
+            const fakeSlots = [];
 
+            // ─── Slot com API completa ───
+            const makeSlot = (adUnit, size, divId) => {
+                const slot = {
+                    getSlotElementId: function() { return divId; },
+                    getAdUnitPath: function() { return adUnit || ''; },
+                    getSizes: function() { return Array.isArray(size) ? size : []; },
+                    getSlotId: function() { return { getDomId: function() { return divId; } }; },
+                    getTargeting: function() { return {}; },
+                    getTargetingMap: function() { return {}; },
+                    getTargetingKeys: function() { return []; },
+                    getAttributeKeys: function() { return []; },
+                    getEscapedQemQueryId: function() { return ''; },
+                    getResponseInformation: function() {
+                        return {
+                            advertiserId: 121743705,
+                            campaignId: 302396765,
+                            creativeId: 138433654226,
+                            lineItemId: 4778358615,
+                            sourceAgnosticCreativeId: 138433654226,
+                            sourceAgnosticLineItemId: 4778358615
+                        };
+                    },
+                    addService: function() { return this; },
+                    setTargeting: function() { return this; },
+                    setCollapseEmptyDiv: function() { return this; },
+                    defineSizeMapping: function() { return this; },
+                    clearTargeting: function() { return this; }
+                };
+                return slot;
+            };
+
+            // ─── Ciclo de vida simulado ───
+            const fakeAdvertiser = 121743705;
+            const fakeCampaign = 302396765;
+            const fakeCreative = 138433654226;
+            const fakeLineItem = 4778358615;
+
+            const simulateSlotLifecycle = (slot) => {
+                if (!slot) return;
+                const divId = typeof slot.getSlotElementId === 'function' ? slot.getSlotElementId() : null;
+
+                setTimeout(() => {
+                    if (divId) injectStub(divId);
+                    fireEvent('slotRequested', { slot });
+
+                    setTimeout(() => {
+                        fireEvent('slotResponseReceived', { slot });
+
+                        setTimeout(() => {
+                            fireEvent('slotRenderEnded', {
+                                slot,
+                                isEmpty: false,
+                                size: [300, 250],
+                                advertiserId: fakeAdvertiser,
+                                campaignId: fakeCampaign,
+                                creativeId: fakeCreative,
+                                lineItemId: fakeLineItem,
+                                sourceAgnosticCreativeId: fakeCreative,
+                                sourceAgnosticLineItemId: fakeLineItem
+                            });
+
+                            setTimeout(() => {
+                                fireEvent('slotOnload', { slot });
+                            }, 80);
+                        }, 180);
+                    }, 120);
+                }, 60);
+            };
+
+            // ─── pubads instance ───
             const pubadsInst = {
                 setTargeting: function() { return this; },
                 getTargeting: function() { return {}; },
@@ -151,30 +210,54 @@
                 refresh: function(slots) {
                     if (Array.isArray(slots)) {
                         for (let i = 0; i < slots.length; i++) {
-                            const s = slots[i];
-                            const id = s && typeof s.getSlotElementId === 'function' ? s.getSlotElementId() : null;
-                            if (id) injectStub(id);
+                            simulateSlotLifecycle(slots[i]);
                         }
+                    } else {
+                        // refresh() sem argumentos: refaz todos os slots registrados
+                        for (const s of fakeSlots) simulateSlotLifecycle(s);
                     }
                     return this;
                 },
                 getSlots: function() { return fakeSlots.slice(); },
-                getSlotIdMap: function() { return {}; },
-                addEventListener: function() {},
-                removeEventListener: function() {}
+                getSlotIdMap: function() {
+                    const map = {};
+                    for (const s of fakeSlots) {
+                        const id = typeof s.getSlotElementId === 'function' ? s.getSlotElementId() : null;
+                        if (id) map[id] = s;
+                    }
+                    return map;
+                },
+                addEventListener: function(evt, cb) {
+                    if (typeof cb !== 'function') return;
+                    if (!listeners.has(evt)) listeners.set(evt, new Set());
+                    listeners.get(evt).add(cb);
+                },
+                removeEventListener: function(evt, cb) {
+                    const set = listeners.get(evt);
+                    if (set) set.delete(cb);
+                }
             };
 
-            const makeSlot = (adUnit, size, divId) => ({
-                getSlotElementId: function() { return divId; },
-                getAdUnitPath: function() { return adUnit || ''; },
-                getSizes: function() { return Array.isArray(size) ? size : []; },
-                addService: function() { return this; },
-                setTargeting: function() { return this; },
-                getTargeting: function() { return {}; },
-                clearTargeting: function() { return this; },
-                defineSizeMapping: function() { return this; },
-                setCollapseEmptyDiv: function() { return this; },
-                getSlotId: function() { return { getDomId: function() { return divId; } }; }
+            // ─── cmd queue ───
+            const cmdQueue = [];
+            let servicesEnabled = false;
+            const drainQueue = () => {
+                servicesEnabled = true;
+                while (cmdQueue.length) {
+                    const fn = cmdQueue.shift();
+                    if (typeof fn === 'function') { try { fn(); } catch (_) {} }
+                }
+            };
+
+            const cmdArr = [];
+            Object.defineProperty(cmdArr, 'push', {
+                value: function(fn) {
+                    if (typeof fn !== 'function') return this.length;
+                    if (servicesEnabled) { try { fn(); } catch (_) {} }
+                    else cmdQueue.push(fn);
+                    return this.length;
+                },
+                writable: false, enumerable: false, configurable: false
             });
 
             const fakeVersion = '202404011200';
@@ -199,7 +282,20 @@
                     return s;
                 },
                 enableServices: function() { drainQueue(); },
-                display: function(divId) { injectStub(divId); },
+                display: function(divId) {
+                    // Acha o slot correspondente ou cria um ad-hoc
+                    let slot = null;
+                    for (const s of fakeSlots) {
+                        if (typeof s.getSlotElementId === 'function' && s.getSlotElementId() === divId) {
+                            slot = s; break;
+                        }
+                    }
+                    if (!slot) {
+                        slot = makeSlot('/fake/ad-' + divId, [[300,250]], divId);
+                        fakeSlots.push(slot);
+                    }
+                    simulateSlotLifecycle(slot);
+                },
                 destroySlots: function() {},
                 getVersion: function() { return fakeVersion; },
                 sizeMapping: function() {
