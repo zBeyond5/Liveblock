@@ -1,40 +1,27 @@
 (function() {
     'use strict';
 
-    // CONSOLE FILTER — único, no topo absoluto, antes de qualquer hook.
-    const _origLog   = console.log;
-    const _origWarn  = console.warn;
-    const _origError = console.error;
-    const _isRuido = s =>
-        /adblock|ad-block/i.test(s) ||
-        /Minified React error #200|createPortal/i.test(s);
-
-    console.log   = (...a) => { if (!_isRuido(a.map(String).join(' '))) _origLog.apply(console, a); };
-    console.warn  = (...a) => { if (!_isRuido(a.map(String).join(' '))) _origWarn.apply(console, a); };
-    console.error = (...a) => { if (!_isRuido(a.map(String).join(' '))) _origError.apply(console, a); };
-
-    // CLEANUP PRÉVIO — idempotência de reload
+    // CLEANUP PRÉVIO
     if (window._blocklive) {
         try { if (typeof window._blocklive.kill === 'function') window._blocklive.kill(); } catch(e) {}
         try { delete window._blocklive; } catch(e) {}
     }
 
-    // LOG
-    const LOG  = (...a) => console.log  ('🔵 [LiveBlock]', ...a);
-    const WARN = (...a) => console.warn ('🟡 [LiveBlock]', ...a);
-    const ERR  = (...a) => console.error('🔴 [LiveBlock]', ...a);
+    // DEBUG 
+    const IS_DBG = () => window._lbDebug === true;
+    const LOG  = (...a) => { if (IS_DBG()) console.log  ('🔵 [LB]', ...a); };
+    const WARN = (...a) => { if (IS_DBG()) console.warn ('🟡 [LB]', ...a); };
+    const ERR  = (...a) => { if (IS_DBG()) console.error('🔴 [LB]', ...a); };
 
     // VERSION
-    const VERSION = "4.7.9";
+    const VERSION = "4.8.0";
     const RAW_URL = "https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/adblock.js";
     const REPO_VIEW_URL = "https://github.com/zBeyond5/Liveblock/blob/main/adblock.js";
     const FONT_URL = "https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700;800;900&family=Geist+Mono:wght@400;500;600&display=swap";
 
-    LOG('🚀 Script iniciado em', document.URL, `| v${VERSION}`);
+    try {
 
-  try {
-
-    // FONT — uma vez por página, igual ao hub2. Outros módulos reusam.
+    // FONT — uma vez por página
     if (!document.querySelector('link[data-sang-font]')) {
         const fl = document.createElement('link');
         fl.rel = 'stylesheet';
@@ -51,14 +38,13 @@
         { icon: "🌐", label: "GitHub",    url: "https://github.com/zBeyond5" }
     ];
 
-    // CAPTURA ERROS REACT — só listeners. O filter do console já está no topo.
+    // REACT #200 — silencioso. Sem logs; apenas preventDefault.
     (function catchReactErrors() {
         window.addEventListener('error', (e) => {
             const msg = e.message || '';
             if (msg.includes('Minified React error #200') || msg.includes('createPortal')) {
                 e.preventDefault();
                 e.stopPropagation();
-                WARN('⚠️ React #200 capturado e ignorado');
                 return false;
             }
         }, true);
@@ -67,66 +53,137 @@
             const msg = String(e.reason || '');
             if (msg.includes('Minified React error #200') || msg.includes('createPortal')) {
                 e.preventDefault();
-                WARN('⚠️ Promise rejection React #200 capturada');
             }
         });
     })();
 
-    // FAKE GPT
-    let _origGT = null;
+    // HELPERS DE STEALTH
+
+    // Aplica toString nativo em qualquer função — usado onde o Proxy não cobre
+    // (métodos de instância em XHR, por exemplo).
+    const _NATIVE_TAG = '[native code]';
+    const nativeStr = (name) => `function ${name || ''}() { ${_NATIVE_TAG} }`;
+
+    const maskNative = (fn, name) => {
+        try {
+            Object.defineProperty(fn, 'toString', {
+                value: function() { return nativeStr(name || fn.name); },
+                writable: false, enumerable: false, configurable: false
+            });
+        } catch (_) {}
+        return fn;
+    };
+
+    // Já existe um googletag legítimo?
+    const _origGT = window.googletag;
+
+    // FAKE GPT — reescrito para sobreviver a checks de descriptor, tipo
+    // e comportamento. Sem atributos com prefixo identificável. Sem logs.
     (function fakeGPT() {
         try {
-            _origGT = window.googletag;
-
-            if (window.googletag && typeof window.googletag.pubads === 'function') {
+            // Branch 1: GPT real já instalado — só silencia refresh.
+            if (_origGT && typeof _origGT.pubads === 'function') {
                 try {
-                    const origRefresh = window.googletag.pubads().refresh;
-                    if (origRefresh) {
-                        window.googletag.pubads().refresh = function() { return this; };
+                    const svc = _origGT.pubads();
+                    if (svc && typeof svc.refresh === 'function') {
+                        const _r = svc.refresh;
+                        svc.refresh = function() { return this; };
+                        maskNative(svc.refresh, 'refresh');
                     }
-                } catch(e) {}
+                } catch (_) {}
                 return;
             }
 
-            const injetarIframeStub = (divId) => {
+            // Branch 2: instalar fake realista.
+            const stubbed = new WeakSet();
+
+            const injectStub = (divId) => {
                 const div = document.getElementById(divId);
-                if (div && !div.querySelector('iframe[data-gpt]')) {
-                    const iframe = document.createElement('iframe');
-                    iframe.style.cssText = 'width:0;height:0;display:none;';
-                    iframe.setAttribute('data-gpt', 'true');
-                    div.appendChild(iframe);
-                }
+                if (!div || stubbed.has(div)) return;
+                const iframe = document.createElement('iframe');
+                iframe.style.cssText = 'width:0;height:0;border:0;display:none;';
+                iframe.setAttribute('aria-hidden', 'true');
+                iframe.setAttribute('tabindex', '-1');
+                div.appendChild(iframe);
+                stubbed.add(div);
             };
 
             const fakeSlots = [];
-            const pubads = {
+
+            const pubadsInst = {
                 setTargeting: function() { return this; },
                 getTargeting: function() { return {}; },
+                clearTargeting: function() { return this; },
                 set: function() { return this; },
                 get: function() { return null; },
                 setCategoryExclusion: function() { return this; },
                 clearCategoryExclusions: function() { return this; },
                 enableSingleRequest: function() { return this; },
                 disableInitialLoad: function() { return this; },
+                enableAsyncRendering: function() { return this; },
+                enableSyncRendering: function() { return this; },
+                enableLazyLoad: function() { return this; },
+                updateCorrelator: function() { return this; },
+                collapseEmptyDivs: function() { return this; },
                 refresh: function(slots) {
-                    if (slots) {
-                        slots.forEach(slot => {
-                            const divId = slot.getSlotElementId ? slot.getSlotElementId() : null;
-                            if (divId) injetarIframeStub(divId);
-                        });
+                    if (slots && slots.length) {
+                        for (let i = 0; i < slots.length; i++) {
+                            const s = slots[i];
+                            const id = s && typeof s.getSlotElementId === 'function' ? s.getSlotElementId() : null;
+                            if (id) injectStub(id);
+                        }
                     }
                     return this;
                 },
-                getSlots: function() { return fakeSlots; },
+                getSlots: function() { return fakeSlots.slice(); },
+                getSlotIdMap: function() { return {}; },
                 addEventListener: function() {},
-                removeEventListener: function() {}
+                removeEventListener: function() {},
+                getAttributeKeys: function() { return []; },
+                getTargetingKeys: function() { return []; }
+            };
+
+            const cmdArr = [];
+            cmdArr.push = function(fn) {
+                if (typeof fn === 'function') { try { fn(); } catch (_) {} }
+                return this.length;
+            };
+
+            const enums = {
+                OutOfPageFormat: {
+                    BOTTOM_ANCHOR: 1, TOP_ANCHOR: 2, INTERSTITIAL: 3,
+                    REWARDED: 4, LEFT_SIDE_RAIL: 5, RIGHT_SIDE_RAIL: 6
+                },
+                TrafficSource: { ORGANIC: 1, PURCHASED: 2 }
             };
 
             const gpt = {
-                pubads: function() { return pubads; },
+                apiReady: true,
+                pubadsReady: true,
+                _loaded_: true,
+
+                pubads: function() { return pubadsInst; },
+                companionAds: function() { return pubadsInst; },
+                content: function() { return pubadsInst; },
                 defineSlot: function(adUnit, size, divId) {
                     const slot = {
                         getSlotElementId: function() { return divId; },
+                        getAdUnitPath: function() { return adUnit || ''; },
+                        getSizes: function() { return Array.isArray(size) ? size : []; },
+                        addService: function() { return this; },
+                        setTargeting: function() { return this; },
+                        getTargeting: function() { return {}; },
+                        clearTargeting: function() { return this; },
+                        defineSizeMapping: function() { return this; },
+                        setCollapseEmptyDiv: function() { return this; }
+                    };
+                    fakeSlots.push(slot);
+                    return slot;
+                },
+                defineOutOfPageSlot: function(adUnit, divId) {
+                    const slot = {
+                        getSlotElementId: function() { return divId || ('gpt-passback-' + Math.random().toString(36).slice(2, 8)); },
+                        getAdUnitPath: function() { return adUnit || ''; },
                         addService: function() { return this; },
                         setTargeting: function() { return this; },
                         getTargeting: function() { return {}; }
@@ -135,23 +192,34 @@
                     return slot;
                 },
                 enableServices: function() {},
-                display: function(divId) { injetarIframeStub(divId); },
-                cmd: { push: function(fn) { if (typeof fn === 'function') try { fn(); } catch(e) {} } },
-                apiReady: true,
-                push: function(fn) { if (typeof fn === 'function') try { fn(); } catch(e) {} }
+                display: function(divId) { injectStub(divId); },
+                destroySlots: function() {},
+                getVersion: function() { return '0'; },
+                sizeMapping: function() {
+                    const builder = {
+                        addSize: function() { return builder; },
+                        build: function() { return []; }
+                    };
+                    return builder;
+                },
+                setAdIframeTitle: function() {},
+                enums: enums,
+                cmd: cmdArr,
+                secureSignalProviders: { push: function() {} },
+                _vars_: {}
             };
 
-            Object.defineProperty(window, 'googletag', {
-                value: gpt,
-                enumerable: false,
-                configurable: true,
-                writable: false
-            });
-
-            LOG('✅ Fake GPT injetado com sucesso');
-        } catch(e) {
-            ERR('❌ Erro no Fake GPT (ignorado, não é fatal):', e);
-        }
+            // Assignment direto — o real googletag é criado via
+            // `window.googletag = window.googletag || {}` (writable:true).
+            // defineProperty com writable:false é assinatura de fake.
+            try {
+                window.googletag = gpt;
+            } catch (_) {
+                Object.defineProperty(window, 'googletag', {
+                    value: gpt, enumerable: true, configurable: true, writable: true
+                });
+            }
+        } catch (_) { /* silencioso */ }
     })();
 
     // CONFIG
@@ -174,62 +242,91 @@
         dying:    false
     };
 
-    // PATTERNS — regex única (mais barata que array de 16 patterns .some()).
+    // PATTERNS
     const AD_RX = /securepubads|doubleclick\.net|googlesyndication|googleads|gampad\/ads|\/ads\?|div-gpt-ad|adservice|adserver|adnxs|openx|rubicon|pubmatic|indexexchange|sovrn|contextweb|amazon-adsystem|criteo|casale|adform/i;
     const isAd = url => !!url && AD_RX.test(String(url));
 
-    // HELPERS
+    // CLEANUP DE FLAGS SUSPEITAS — só exact match, sem varrer window.
+    const BAD_EXACT = new Set([
+        '__blocklive', '_blocklive', 'adblock', 'adblocker',
+        'adBlockDetected', 'adsBlocked', 'AdBlock', 'adblockDetected'
+    ]);
     const cleanWindow = () => {
-        const props = Object.getOwnPropertyNames(window);
-        const bad = ['__blocklive', '_blocklive', 'lb', 'adblock', 'adblocker', 'ublock', 'adguard'];
-        props.forEach(p => {
-            const low = p.toLowerCase();
-            if (bad.some(b => low.includes(b))) {
-                try { delete window[p]; } catch(e) {}
-            }
-        });
+        for (const k of BAD_EXACT) {
+            try { if (k in window) delete window[k]; } catch (_) {}
+        }
     };
     cleanWindow();
 
-    // HOOKS — patches de prototype, desfeitos em kill().
-    const _fetch = window.fetch;
-    window.fetch = function(...a) {
-        const url = a[0]?.url || a[0];
-        if (S.on && !S.killFlag && isAd(url)) {
-            S.nFetch++;
-            push("FETCH", String(url).slice(0, 60));
-            return Promise.resolve(new Response(null, { status: 204 }));
+    // HOOKS — fetch via Proxy (toString nativo preservado automaticamente).
+    const _fetchOrig = window.fetch;
+    const _fetchProxy = new Proxy(_fetchOrig, {
+        apply(target, thisArg, args) {
+            if (S.on && !S.killFlag) {
+                const url = args[0]?.url || args[0];
+                if (isAd(url)) {
+                    S.nFetch++;
+                    push("FETCH", String(url).slice(0, 60));
+                    return Promise.resolve(new Response(null, { status: 204 }));
+                }
+            }
+            return Reflect.apply(target, thisArg, args);
         }
-        return _fetch.apply(this, a);
-    };
+    });
+    window.fetch = _fetchProxy;
 
-    const _XHR = window.XMLHttpRequest;
-    window.XMLHttpRequest = function() {
-        const x = new _XHR();
-        let blocked = false;
-        const _open = x.open, _send = x.send;
-        x.open = function(m, url, ...r) {
-            blocked = S.on && !S.killFlag && isAd(url);
-            if (blocked) {
-                S.nXhr++;
-                push("XHR", String(url || "").slice(0, 60));
-                return;
-            }
-            return _open.call(this, m, url, ...r);
-        };
-        x.send = function(...a) {
-            if (blocked) {
-                setTimeout(() => {
-                    try { if (x.onload) x.onload(); } catch(e) {}
-                }, 0);
-                return;
-            }
-            return _send.apply(this, a);
-        };
-        return x;
-    };
+    // HOOKS — XMLHttpRequest via Proxy no construtor.
+    const _XHROrig = window.XMLHttpRequest;
+    const _XHRProxy = new Proxy(_XHROrig, {
+        construct(Target, args) {
+            const x = new Target(...args);
+            const _open = x.open;
+            const _send = x.send;
+            let blocked = false;
+            let blockedUrl = '';
 
-    // DOM — ad selectors e proteção
+            Object.defineProperty(x, 'open', {
+                value: function(method, url, ...rest) {
+                    blocked = S.on && !S.killFlag && isAd(url);
+                    if (blocked) {
+                        S.nXhr++;
+                        blockedUrl = String(url || '');
+                        push("XHR", blockedUrl.slice(0, 60));
+                        return;
+                    }
+                    return _open.call(this, method, url, ...rest);
+                },
+                writable: true, enumerable: false, configurable: true
+            });
+            maskNative(x.open, 'open');
+
+            Object.defineProperty(x, 'send', {
+                value: function(...a) {
+                    if (!blocked) return _send.apply(this, a);
+                    setTimeout(() => {
+                        try {
+                            Object.defineProperty(x, 'readyState',   { value: 4,      configurable: true });
+                            Object.defineProperty(x, 'status',       { value: 204,    configurable: true });
+                            Object.defineProperty(x, 'statusText',   { value: 'No Content', configurable: true });
+                            Object.defineProperty(x, 'response',     { value: '',     configurable: true });
+                            Object.defineProperty(x, 'responseText', { value: '',     configurable: true });
+                            Object.defineProperty(x, 'responseURL',  { value: blockedUrl, configurable: true });
+                            if (typeof x.onreadystatechange === 'function') x.onreadystatechange();
+                            if (typeof x.onload === 'function') x.onload();
+                            if (typeof x.onloadend === 'function') x.onloadend();
+                        } catch (_) {}
+                    }, 0);
+                },
+                writable: true, enumerable: false, configurable: true
+            });
+            maskNative(x.send, 'send');
+
+            return x;
+        }
+    });
+    window.XMLHttpRequest = _XHRProxy;
+
+    // DOM — selectors e proteção
     const AD_SEL = [
         "iframe[src*='doubleclick']",
         "iframe[src*='googlesyndication']",
@@ -261,48 +358,56 @@
 
     const removeAds = () => {
         if (!S.on || S.killFlag || !S.dom) return;
+
+        // Bail rápido — sem candidatos, sem varredura de texto.
+        let candidates;
+        try { candidates = document.querySelectorAll(AD_SEL); } catch (_) { return; }
+        if (!candidates.length) return;
+
         let n = 0;
         try {
-            document.querySelectorAll(AD_SEL).forEach(el => {
+            candidates.forEach(el => {
                 if (!isElementProtected(el)) { el.remove(); n++; }
             });
-        } catch(e) {}
+        } catch (_) {}
 
+        // Varredura de overlays — restrita a fixed/absolute.
         try {
-            const all = document.querySelectorAll('div, section, aside');
-            for (let el of all) {
+            const suspects = document.querySelectorAll(
+                'div[style*="position:fixed"],div[style*="position: fixed"],' +
+                'div[style*="position:absolute"],div[style*="position: absolute"],' +
+                'section[style*="position:fixed"],section[style*="position:absolute"]'
+            );
+            for (let el of suspects) {
                 if (isElementProtected(el)) continue;
+                const st = window.getComputedStyle(el);
+                if (st.position !== 'fixed' && st.position !== 'absolute') continue;
+                const z = parseInt(st.zIndex, 10) || 0;
+                if (z < 1000) continue;
                 const txt = (el.innerText || '').toLowerCase();
                 if ((txt.includes('bloqueador') || txt.includes('adblock') || txt.includes('desabilite')) &&
                     el.offsetWidth > 50 && el.offsetHeight > 50) {
-                    const st = window.getComputedStyle(el);
-                    if (st.position === 'fixed' || st.position === 'absolute' || st.zIndex > 1000) {
-                        el.remove(); n++;
-                    }
+                    el.remove(); n++;
                 }
             }
-            document.querySelectorAll('[style*="background:black"], [style*="background:#000"]').forEach(el => {
-                if (!isElementProtected(el)) {
-                    const st = window.getComputedStyle(el);
-                    if (st.position === 'fixed' || st.position === 'absolute') { el.remove(); n++; }
-                }
-            });
-            // Só mexe no body se algo foi de fato removido — evita reflow à toa.
-            if (n > 0) {
+        } catch (_) {}
+
+        if (n > 0) {
+            try {
                 document.body.style.overflow = 'auto';
                 document.body.style.pointerEvents = 'auto';
-            }
-        } catch(e) {}
-        if (n) push("DOM", `Removidos ${n}`);
+            } catch (_) {}
+            push("DOM", `Removidos ${n}`);
+        }
     };
 
     let removeAdsTimer = null;
     const scheduleRemoveAds = () => {
         if (removeAdsTimer) return;
-        removeAdsTimer = setTimeout(() => { removeAdsTimer = null; removeAds(); }, 150);
+        removeAdsTimer = setTimeout(() => { removeAdsTimer = null; removeAds(); }, 200);
     };
 
-    // LOG (helpers de UI — preenchidos em injectUI)
+    // LOG helpers
     let _renderLogs = () => {}, _renderStats = () => {}, _toast = () => {};
 
     const push = (type, text, force = false) => {
@@ -314,25 +419,42 @@
         _renderStats();
     };
 
-    // TIMERS/OBSERVERS (referências para o kill)
+    // TIMERS/OBSERVERS
     let obs = null;
     let bodyWatcher = null;
     let timerInterval = null;
     let toastTm = null;
     let refreshTimer = null;
     let UIDAtual = null;
-    let acUI = null;              // AbortController de listeners do painel
-    let killFn = null;            // kill real (definido em injectUI)
+    let acUI = null;
+    let killFn = null;
+
+    const SUSPECT_RX = /gpt|ad-|ads|ad_|banner|sponsor|promo|iframe/i;
+    const isSuspicious = (n) => {
+        if (!n || n.nodeType !== 1) return false;
+        if (n.tagName === 'IFRAME' || n.tagName === 'INS') return true;
+        const id = n.id || '';
+        const cls = typeof n.className === 'string' ? n.className : '';
+        const src = n.src || '';
+        return SUSPECT_RX.test(id + ' ' + cls + ' ' + src);
+    };
 
     const initObserver = () => {
         if (obs) obs.disconnect();
-        // Exceção consciente à §3 (observer por escopo): adblocking precisa
-        // detectar injeção em qualquer ponto do DOM, não só num container.
-        obs = new MutationObserver(scheduleRemoveAds);
+        // Observer global é caro em páginas com muitos mutações. Filtro
+        // barato antes de acionar a limpeza.
+        obs = new MutationObserver(muts => {
+            if (S.killFlag || S.dying) return;
+            outer: for (let i = 0; i < muts.length; i++) {
+                const added = muts[i].addedNodes;
+                for (let j = 0; j < added.length; j++) {
+                    if (isSuspicious(added[j])) { scheduleRemoveAds(); break outer; }
+                }
+            }
+        });
         obs.observe(document.documentElement, { childList: true, subtree: true });
     };
 
-    // SPA que troca <body> leva a UI junto. Reinjeta quando detecta ausência.
     const vigiarBody = () => {
         if (bodyWatcher) bodyWatcher.disconnect();
         bodyWatcher = new MutationObserver(() => {
@@ -345,10 +467,6 @@
         bodyWatcher.observe(document.documentElement, { childList: true });
     };
 
-    // Exceção consciente à §3 (evitar setInterval): sweeper de segurança
-    // a cada 5min. Event-driven cobre 99% dos casos; este é o cinto de
-    // segurança pra ads que se reintroduzem por caminhos que o observer
-    // não vê (innerHTML silencioso, Shadow DOM de terceiros).
     const refreshLoop = () => {
         refreshTimer = setInterval(() => {
             if (S.killFlag || S.dying) return;
@@ -356,18 +474,16 @@
         }, 300000);
     };
 
-    // UI
+    // UI — inalterada visualmente.
     function injectUI() {
         if (S.injected || S.dying) return;
 
         try {
-            // Limpa restos de injeção anterior (body trocado sem remover style).
             document.querySelectorAll('style[data-lb], div[data-lb]').forEach(el => el.remove());
 
             const UID = "_blocklive" + Math.random().toString(36).slice(2, 8);
             UIDAtual = UID;
 
-            // AbortController agrupa todos os listeners do painel — §3.
             acUI = new AbortController();
             const sig = acUI.signal;
 
@@ -469,13 +585,12 @@
                 overflow:hidden;position:relative;
             }
             #${UID} .lb-bar::after{
-                content:'';position:absolute;inset:0;width:0%;
+                content:'';position:absolute;inset:0;width:var(--w,0%);
                 background:var(--lb-grad);
                 border-radius:2px;
                 transition:width .8s cubic-bezier(0.16,1,0.3,1);
                 box-shadow:0 0 8px rgba(34,211,238,0.4);
             }
-            #${UID} .lb-bar[data-w]::after{width:attr(data-w)}
 
             #${UID} .lb-row{
                 display:flex;align-items:center;justify-content:space-between;
@@ -654,7 +769,6 @@
 
             document.body.appendChild(root);
 
-            // §17 — sinaliza pro LiveBooster não matar animações deste painel.
             try { window._hubUI?.markProtected?.(root); } catch(e) {}
 
             if (S.pos) { root.style.left = S.pos.l+"px"; root.style.top = S.pos.t+"px"; root.style.right = "auto"; }
@@ -678,23 +792,15 @@
             };
 
             _renderStats = () => {
-                root.querySelector(`#${UID}nf`).textContent = S.nFetch;
-                root.querySelector(`#${UID}nx`).textContent = S.nXhr;
+                const nf = root.querySelector(`#${UID}nf`);
+                const nx = root.querySelector(`#${UID}nx`);
+                if (nf) nf.textContent = S.nFetch;
+                if (nx) nx.textContent = S.nXhr;
                 const bar = root.querySelector(`#${UID}bar`);
-                const w = Math.min(100, (S.nFetch + S.nXhr) * 2.5);
-                bar.dataset.w = w;
-                // attr() ainda não é confiável em todos os navegadores pra width
-                // em ::after; aplica direto no inline style do pseudo via
-                // variável CSS local.
-                bar.style.setProperty('--w', w + '%');
-                const after = bar;
-                // atalho: aplica direto via style do elemento, o ::after lê de attr
-                // (mantido por compat — o fallback abaixo garante a barra).
-                requestAnimationFrame(() => {
-                    const inner = bar;
-                    // width real do pseudo não dá pra setar direto; usa CSS var.
-                    inner.style.cssText = inner.style.cssText;
-                });
+                if (bar) {
+                    const w = Math.min(100, (S.nFetch + S.nXhr) * 2.5);
+                    bar.style.setProperty('--w', w + '%');
+                }
             };
 
             const logBox = root.querySelector(`#${UID}logbox`);
@@ -756,7 +862,7 @@
                 _toast("Checando versão...");
                 push("ACTION", "Checagem de atualização iniciada", true);
                 try {
-                    const res = await fetch(RAW_URL + "?t=" + Date.now(), { cache: "no-store" });
+                    const res = await _fetchOrig.call(window, RAW_URL + "?t=" + Date.now(), { cache: "no-store" });
                     const text = await res.text();
                     const match = text.match(/@version\s+([\d.]+)/);
                     if (!match) { _toast("Não consegui ler a versão remota"); return; }
@@ -776,7 +882,6 @@
                         _toast(`Você já está atualizado (v${VERSION})`);
                     }
                 } catch (e) {
-                    ERR('❌ Erro ao checar versão remota:', e);
                     _toast("Falha ao checar. Abrindo GitHub...");
                     window.open(REPO_VIEW_URL, "_blank");
                 }
@@ -788,7 +893,6 @@
 
             root.querySelector(`#${UID}cls`).addEventListener("click", () => killFn?.(), { signal: sig });
 
-            // Drag
             const hdr = root.querySelector(`#${UID}hdr`);
             let drag = null;
             hdr.addEventListener("mousedown", e => {
@@ -817,7 +921,6 @@
                 root.querySelector(`#${UID}pLogs`).style.display = logsVisible ? "block" : "none";
             }, { signal: sig });
 
-            // KILL — §15 (contrato canônico, atômico, idempotente).
             killFn = function kill() {
                 if (S.dying) return;
                 S.dying = true;
@@ -828,11 +931,8 @@
                     ['observers', () => { obs?.disconnect(); bodyWatcher?.disconnect(); }],
                     ['listeners', () => acUI?.abort()],
                     ['patches',   () => {
-                        window.fetch = _fetch;
-                        window.XMLHttpRequest = _XHR;
-                        console.log = _origLog;
-                        console.warn = _origWarn;
-                        console.error = _origError;
+                        window.fetch = _fetchOrig;
+                        window.XMLHttpRequest = _XHROrig;
                         if (_origGT) window.googletag = _origGT;
                     }],
                     ['dom',       () => { root.parentNode && root.remove(); style.parentNode && style.remove(); }],
@@ -845,7 +945,6 @@
                 }
             };
 
-            // §15 — API pública: kill obrigatório, show/hide se tem UI flutuante.
             window._blocklive = {
                 kill: killFn,
                 show: () => { S.min = false; root.classList.remove("min"); save(); },
@@ -856,13 +955,11 @@
             _renderStats();
             _renderLogs();
             push("INIT", `LiveBlock v${VERSION} ativo`, true);
-            _toast("LiveBlock ativo");
 
             S.injected = true;
-            LOG('✅ UI injetada com sucesso!');
 
         } catch(e) {
-            ERR('❌ Erro ao injetar UI (nova tentativa será feita):', e);
+            ERR('Erro ao injetar UI:', e);
         }
     }
 
@@ -882,15 +979,10 @@
 
     const aggressiveInject = () => {
         injectAttempts++;
-
         if (S.injected || S.dying) return;
 
         if (!document.body) {
-            if (injectAttempts < maxAttempts) {
-                setTimeout(aggressiveInject, 200);
-            } else {
-                ERR('❌ Falha ao encontrar body após várias tentativas');
-            }
+            if (injectAttempts < maxAttempts) setTimeout(aggressiveInject, 200);
             return;
         }
 
@@ -901,10 +993,7 @@
             removeAds();
             refreshLoop();
         } catch(e) {
-            ERR('❌ Erro durante injeção:', e);
-            if (injectAttempts < maxAttempts) {
-                setTimeout(aggressiveInject, 400);
-            }
+            if (injectAttempts < maxAttempts) setTimeout(aggressiveInject, 400);
         }
     };
 
@@ -915,10 +1004,7 @@
         setTimeout(aggressiveInject, 1000);
     }
 
-    LOG(`✅ LiveBlock v${VERSION} inicializado com sucesso`);
-
-  } catch (fatalErr) {
-    console.error('🔴 [LiveBlock] Erro fatal não tratado:', fatalErr);
-  }
-
+    } catch (fatalErr) {
+        // Silencioso — mesmo em erro fatal, sem ruído no console.
+    }
 })();
