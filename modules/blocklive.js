@@ -12,7 +12,7 @@
     const WARN = (...a) => { if (IS_DBG()) console.warn ('🟡 [LB]', ...a); };
     const ERR  = (...a) => { if (IS_DBG()) console.error('🔴 [LB]', ...a); };
 
-    const VERSION = "4.8.0";
+    const VERSION = "4.8.1";
     const RAW_URL = "https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/adblock.js";
     const REPO_VIEW_URL = "https://github.com/zBeyond5/Liveblock/blob/main/adblock.js";
     const FONT_URL = "https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700;800;900&family=Geist+Mono:wght@400;500;600&display=swap";
