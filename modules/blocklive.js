@@ -1,19 +1,17 @@
 (function() {
     'use strict';
 
-    // CLEANUP PRÉVIO
     if (window._blocklive) {
         try { if (typeof window._blocklive.kill === 'function') window._blocklive.kill(); } catch(e) {}
         try { delete window._blocklive; } catch(e) {}
     }
 
-    // DEBUG 
+    // DEBUG (silencioso por padrão; ativar via window._lbDebug = true)
     const IS_DBG = () => window._lbDebug === true;
     const LOG  = (...a) => { if (IS_DBG()) console.log  ('🔵 [LB]', ...a); };
     const WARN = (...a) => { if (IS_DBG()) console.warn ('🟡 [LB]', ...a); };
     const ERR  = (...a) => { if (IS_DBG()) console.error('🔴 [LB]', ...a); };
 
-    // VERSION
     const VERSION = "4.8.0";
     const RAW_URL = "https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/adblock.js";
     const REPO_VIEW_URL = "https://github.com/zBeyond5/Liveblock/blob/main/adblock.js";
@@ -38,7 +36,7 @@
         { icon: "🌐", label: "GitHub",    url: "https://github.com/zBeyond5" }
     ];
 
-    // REACT #200 — silencioso. Sem logs; apenas preventDefault.
+    // REACT #200 — silencioso
     (function catchReactErrors() {
         window.addEventListener('error', (e) => {
             const msg = e.message || '';
@@ -58,9 +56,6 @@
     })();
 
     // HELPERS DE STEALTH
-
-    // Aplica toString nativo em qualquer função — usado onde o Proxy não cobre
-    // (métodos de instância em XHR, por exemplo).
     const _NATIVE_TAG = '[native code]';
     const nativeStr = (name) => `function ${name || ''}() { ${_NATIVE_TAG} }`;
 
@@ -74,29 +69,34 @@
         return fn;
     };
 
-    // Já existe um googletag legítimo?
     const _origGT = window.googletag;
 
-    // FAKE GPT — reescrito para sobreviver a checks de descriptor, tipo
-    // e comportamento. Sem atributos com prefixo identificável. Sem logs.
+    // FAKE GPT — autoridade sobre window.googletag.
     (function fakeGPT() {
         try {
-            // Branch 1: GPT real já instalado — só silencia refresh.
-            if (_origGT && typeof _origGT.pubads === 'function') {
+            const neutralize = (g) => {
+                if (!g || typeof g !== 'object') return;
                 try {
-                    const svc = _origGT.pubads();
-                    if (svc && typeof svc.refresh === 'function') {
-                        const _r = svc.refresh;
-                        svc.refresh = function() { return this; };
-                        maskNative(svc.refresh, 'refresh');
+                    if (typeof g.pubads === 'function') {
+                        const svc = g.pubads();
+                        if (svc) {
+                            ['refresh','enableSingleRequest','updateCorrelator','enableLazyLoad']
+                                .forEach(m => {
+                                    try { if (typeof svc[m] === 'function') svc[m] = function() { return this; }; }
+                                    catch (_) {}
+                                });
+                        }
                     }
+                    ['display','enableServices'].forEach(m => {
+                        try { if (typeof g[m] === 'function') g[m] = function() {}; }
+                        catch (_) {}
+                    });
                 } catch (_) {}
-                return;
-            }
+            };
 
-            // Branch 2: instalar fake realista.
+            if (_origGT && typeof _origGT.pubads === 'function') neutralize(_origGT);
+
             const stubbed = new WeakSet();
-
             const injectStub = (divId) => {
                 const div = document.getElementById(divId);
                 if (!div || stubbed.has(div)) return;
@@ -110,6 +110,27 @@
 
             const fakeSlots = [];
 
+            const cmdQueue = [];
+            let servicesEnabled = false;
+            const drainQueue = () => {
+                servicesEnabled = true;
+                while (cmdQueue.length) {
+                    const fn = cmdQueue.shift();
+                    if (typeof fn === 'function') { try { fn(); } catch (_) {} }
+                }
+            };
+
+            const cmdArr = [];
+            Object.defineProperty(cmdArr, 'push', {
+                value: function(fn) {
+                    if (typeof fn !== 'function') return this.length;
+                    if (servicesEnabled) { try { fn(); } catch (_) {} }
+                    else cmdQueue.push(fn);
+                    return this.length;
+                },
+                writable: false, enumerable: false, configurable: false
+            });
+
             const pubadsInst = {
                 setTargeting: function() { return this; },
                 getTargeting: function() { return {}; },
@@ -118,6 +139,8 @@
                 get: function() { return null; },
                 setCategoryExclusion: function() { return this; },
                 clearCategoryExclusions: function() { return this; },
+                getTargetingKeys: function() { return []; },
+                getAttributeKeys: function() { return []; },
                 enableSingleRequest: function() { return this; },
                 disableInitialLoad: function() { return this; },
                 enableAsyncRendering: function() { return this; },
@@ -126,7 +149,7 @@
                 updateCorrelator: function() { return this; },
                 collapseEmptyDivs: function() { return this; },
                 refresh: function(slots) {
-                    if (slots && slots.length) {
+                    if (Array.isArray(slots)) {
                         for (let i = 0; i < slots.length; i++) {
                             const s = slots[i];
                             const id = s && typeof s.getSlotElementId === 'function' ? s.getSlotElementId() : null;
@@ -138,24 +161,23 @@
                 getSlots: function() { return fakeSlots.slice(); },
                 getSlotIdMap: function() { return {}; },
                 addEventListener: function() {},
-                removeEventListener: function() {},
-                getAttributeKeys: function() { return []; },
-                getTargetingKeys: function() { return []; }
+                removeEventListener: function() {}
             };
 
-            const cmdArr = [];
-            cmdArr.push = function(fn) {
-                if (typeof fn === 'function') { try { fn(); } catch (_) {} }
-                return this.length;
-            };
+            const makeSlot = (adUnit, size, divId) => ({
+                getSlotElementId: function() { return divId; },
+                getAdUnitPath: function() { return adUnit || ''; },
+                getSizes: function() { return Array.isArray(size) ? size : []; },
+                addService: function() { return this; },
+                setTargeting: function() { return this; },
+                getTargeting: function() { return {}; },
+                clearTargeting: function() { return this; },
+                defineSizeMapping: function() { return this; },
+                setCollapseEmptyDiv: function() { return this; },
+                getSlotId: function() { return { getDomId: function() { return divId; } }; }
+            });
 
-            const enums = {
-                OutOfPageFormat: {
-                    BOTTOM_ANCHOR: 1, TOP_ANCHOR: 2, INTERSTITIAL: 3,
-                    REWARDED: 4, LEFT_SIDE_RAIL: 5, RIGHT_SIDE_RAIL: 6
-                },
-                TrafficSource: { ORGANIC: 1, PURCHASED: 2 }
-            };
+            const fakeVersion = '202404011200';
 
             const gpt = {
                 apiReady: true,
@@ -166,35 +188,20 @@
                 companionAds: function() { return pubadsInst; },
                 content: function() { return pubadsInst; },
                 defineSlot: function(adUnit, size, divId) {
-                    const slot = {
-                        getSlotElementId: function() { return divId; },
-                        getAdUnitPath: function() { return adUnit || ''; },
-                        getSizes: function() { return Array.isArray(size) ? size : []; },
-                        addService: function() { return this; },
-                        setTargeting: function() { return this; },
-                        getTargeting: function() { return {}; },
-                        clearTargeting: function() { return this; },
-                        defineSizeMapping: function() { return this; },
-                        setCollapseEmptyDiv: function() { return this; }
-                    };
-                    fakeSlots.push(slot);
-                    return slot;
+                    const s = makeSlot(adUnit, size, divId);
+                    fakeSlots.push(s);
+                    return s;
                 },
                 defineOutOfPageSlot: function(adUnit, divId) {
-                    const slot = {
-                        getSlotElementId: function() { return divId || ('gpt-passback-' + Math.random().toString(36).slice(2, 8)); },
-                        getAdUnitPath: function() { return adUnit || ''; },
-                        addService: function() { return this; },
-                        setTargeting: function() { return this; },
-                        getTargeting: function() { return {}; }
-                    };
-                    fakeSlots.push(slot);
-                    return slot;
+                    const id = divId || ('gpt-passback-' + Math.random().toString(36).slice(2, 8));
+                    const s = makeSlot(adUnit, null, id);
+                    fakeSlots.push(s);
+                    return s;
                 },
-                enableServices: function() {},
+                enableServices: function() { drainQueue(); },
                 display: function(divId) { injectStub(divId); },
                 destroySlots: function() {},
-                getVersion: function() { return '0'; },
+                getVersion: function() { return fakeVersion; },
                 sizeMapping: function() {
                     const builder = {
                         addSize: function() { return builder; },
@@ -203,23 +210,56 @@
                     return builder;
                 },
                 setAdIframeTitle: function() {},
-                enums: enums,
+                enums: {
+                    OutOfPageFormat: {
+                        BOTTOM_ANCHOR: 1, TOP_ANCHOR: 2, INTERSTITIAL: 3,
+                        REWARDED: 4, LEFT_SIDE_RAIL: 5, RIGHT_SIDE_RAIL: 6
+                    },
+                    TrafficSource: { ORGANIC: 1, PURCHASED: 2 }
+                },
                 cmd: cmdArr,
-                secureSignalProviders: { push: function() {} },
-                _vars_: {}
+                secureSignalProviders: {
+                    push: function(fn) {
+                        if (typeof fn === 'function') { try { fn(); } catch (_) {} }
+                        return this;
+                    }
+                }
             };
 
-            // Assignment direto — o real googletag é criado via
-            // `window.googletag = window.googletag || {}` (writable:true).
-            // defineProperty com writable:false é assinatura de fake.
+            ['pubads','companionAds','content','defineSlot','defineOutOfPageSlot',
+             'enableServices','display','destroySlots','getVersion','sizeMapping',
+             'setAdIframeTitle'].forEach(m => {
+                try {
+                    Object.defineProperty(gpt, m, {
+                        value: gpt[m], writable: false, enumerable: true, configurable: false
+                    });
+                } catch (_) {}
+            });
             try {
-                window.googletag = gpt;
-            } catch (_) {
-                Object.defineProperty(window, 'googletag', {
-                    value: gpt, enumerable: true, configurable: true, writable: true
+                Object.defineProperty(gpt, 'cmd', {
+                    value: cmdArr, writable: false, enumerable: true, configurable: false
                 });
+            } catch (_) {}
+
+            try {
+                Object.defineProperty(window, 'googletag', {
+                    get() { return gpt; },
+                    set(v) { if (v && v !== gpt) neutralize(v); },
+                    configurable: true,
+                    enumerable: true
+                });
+            } catch (_) {
+                try {
+                    if (window.googletag && window.googletag !== gpt) neutralize(window.googletag);
+                } catch (_) {}
             }
-        } catch (_) { /* silencioso */ }
+
+            setTimeout(() => {
+                try {
+                    if (window.googletag && window.googletag !== gpt) neutralize(window.googletag);
+                } catch (_) {}
+            }, 3000);
+        } catch (_) {}
     })();
 
     // CONFIG
@@ -246,7 +286,7 @@
     const AD_RX = /securepubads|doubleclick\.net|googlesyndication|googleads|gampad\/ads|\/ads\?|div-gpt-ad|adservice|adserver|adnxs|openx|rubicon|pubmatic|indexexchange|sovrn|contextweb|amazon-adsystem|criteo|casale|adform/i;
     const isAd = url => !!url && AD_RX.test(String(url));
 
-    // CLEANUP DE FLAGS SUSPEITAS — só exact match, sem varrer window.
+    // CLEANUP DE FLAGS SUSPEITAS
     const BAD_EXACT = new Set([
         '__blocklive', '_blocklive', 'adblock', 'adblocker',
         'adBlockDetected', 'adsBlocked', 'AdBlock', 'adblockDetected'
@@ -258,7 +298,7 @@
     };
     cleanWindow();
 
-    // HOOKS — fetch via Proxy (toString nativo preservado automaticamente).
+    // HOOKS — fetch via Proxy (toString nativo preservado)
     const _fetchOrig = window.fetch;
     const _fetchProxy = new Proxy(_fetchOrig, {
         apply(target, thisArg, args) {
@@ -275,7 +315,7 @@
     });
     window.fetch = _fetchProxy;
 
-    // HOOKS — XMLHttpRequest via Proxy no construtor.
+    // HOOKS — XMLHttpRequest via Proxy no construtor
     const _XHROrig = window.XMLHttpRequest;
     const _XHRProxy = new Proxy(_XHROrig, {
         construct(Target, args) {
@@ -326,7 +366,7 @@
     });
     window.XMLHttpRequest = _XHRProxy;
 
-    // DOM — selectors e proteção
+    // DOM
     const AD_SEL = [
         "iframe[src*='doubleclick']",
         "iframe[src*='googlesyndication']",
@@ -359,7 +399,6 @@
     const removeAds = () => {
         if (!S.on || S.killFlag || !S.dom) return;
 
-        // Bail rápido — sem candidatos, sem varredura de texto.
         let candidates;
         try { candidates = document.querySelectorAll(AD_SEL); } catch (_) { return; }
         if (!candidates.length) return;
@@ -371,7 +410,6 @@
             });
         } catch (_) {}
 
-        // Varredura de overlays — restrita a fixed/absolute.
         try {
             const suspects = document.querySelectorAll(
                 'div[style*="position:fixed"],div[style*="position: fixed"],' +
@@ -441,8 +479,6 @@
 
     const initObserver = () => {
         if (obs) obs.disconnect();
-        // Observer global é caro em páginas com muitos mutações. Filtro
-        // barato antes de acionar a limpeza.
         obs = new MutationObserver(muts => {
             if (S.killFlag || S.dying) return;
             outer: for (let i = 0; i < muts.length; i++) {
@@ -474,7 +510,7 @@
         }, 300000);
     };
 
-    // UI — inalterada visualmente.
+    // UI
     function injectUI() {
         if (S.injected || S.dying) return;
 
@@ -933,7 +969,15 @@
                     ['patches',   () => {
                         window.fetch = _fetchOrig;
                         window.XMLHttpRequest = _XHROrig;
-                        if (_origGT) window.googletag = _origGT;
+                        if (_origGT) {
+                            try {
+                                Object.defineProperty(window, 'googletag', {
+                                    value: _origGT, writable: true, enumerable: true, configurable: true
+                                });
+                            } catch (_) {
+                                try { window.googletag = _origGT; } catch (_) {}
+                            }
+                        }
                     }],
                     ['dom',       () => { root.parentNode && root.remove(); style.parentNode && style.remove(); }],
                     ['global',    () => { try { delete window._blocklive; } catch(e) {} cleanWindow(); }],
@@ -1005,6 +1049,6 @@
     }
 
     } catch (fatalErr) {
-        // Silencioso — mesmo em erro fatal, sem ruído no console.
+        // silencioso
     }
 })();
