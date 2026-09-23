@@ -500,7 +500,7 @@
                 injectUI();
             }
         });
-        bodyWatcher.observe(document.documentElement, { childList: true });
+        bodyWatcher.observe(document.documentElement, { childList: true, subtree: true});
     };
 
     const refreshLoop = () => {
