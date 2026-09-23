@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Sang Hub
 // @namespace    http://tampermonkey.net/
-// @version      1.1.0
+// @version      1.1.1
 // @description  Gerenciador de módulos
 // @author       Sang
 // @match        *://*.habblive.in/bigclient*
