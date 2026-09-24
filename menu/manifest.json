@@ -116,10 +116,10 @@
       "name": "ProzillaOS",
       "description": "Sistema Operacional HTML",
       "icon": "https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/assets/GIF/prozilla.gif",
-      "enabled": true,
+      "enabled": false,
       "autoload": false,
       "secret": false,
-      "misc": true,
+      "misc": false,
       "instanceKey": "_prozilla",
       "url": "https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/modules/prozilla.js"
     },
@@ -167,6 +167,7 @@
     "enabled": true,
     "autoload": false,
     "secret": false,
+    "misc": true,
     "instanceKey": "_voz",
     "url": "https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/modules/voz.js"
     },
