@@ -1,4 +1,4 @@
-// modules/admin.js
+// modules/admin.js — Painel Admin do Sang Hub
 (function() {
     'use strict';
     const UID = '_admin';
@@ -10,16 +10,21 @@
         return;
     }
 
+    // ═══ CONFIG ═══
     const ADMIN_U_B64 = 'c2FuZw==';
     const ADMIN_P_B64 = 'ZGV2ZWxvcGVyMTI=';
     const ADMIN_TOKEN_KEY = 'sanghub_admin_token';
     const ADMIN_TTL = 30 * 24 * 60 * 60 * 1000;
-    const SESSAO_ONLINE_MS = 90 * 1000; // considera "online" se o heartbeat foi há menos que isso
+    const SESSAO_ONLINE_MS = 5 * 60 * 1000;
+    const SESSOES_REFRESH_MS = 30 * 1000;
 
+    // ═══ STATE ═══
     let _admAuthed = false;
     let _admPanelEl = null;
     let _admModalEl = null;
+    let _sessoesTimer = null;
 
+    // ═══ AUTH ═══
     function _admCheck(u, p) {
         try { return u === atob(ADMIN_U_B64) && p === atob(ADMIN_P_B64); }
         catch(e) { return false; }
@@ -47,14 +52,25 @@
         try { localStorage.removeItem(ADMIN_TOKEN_KEY); } catch(e) {}
     }
 
+    // ═══ KILL ═══
     function _admKillModal() {
         if (_admModalEl) { _admAnimateOutAndRemove(_admModalEl); _admModalEl = null; }
     }
 
     function _admKillPanel() {
         if (_admPanelEl) { _admAnimateOutAndRemove(_admPanelEl); _admPanelEl = null; }
+        if (_sessoesTimer) { clearInterval(_sessoesTimer); _sessoesTimer = null; }
     }
 
+    function _admAnimateOutAndRemove(el) {
+        if (!el) return;
+        el.style.transition = 'opacity .16s ease, transform .16s ease';
+        el.style.opacity = '0';
+        el.style.transform = 'scale(.97)';
+        setTimeout(() => el.remove(), 160);
+    }
+
+    // ═══ TOAST ═══
     function _admToast(msg, kind) {
         _admEnsureStyle();
         const t = document.createElement('div');
@@ -69,6 +85,7 @@
         }, 2200);
     }
 
+    // ═══ STYLE ═══
     let _admStyleInjected = false;
     function _admEnsureStyle() {
         if (_admStyleInjected) return;
@@ -78,7 +95,6 @@
         st.textContent = `
         @keyframes hubFade{from{opacity:0;transform:translateY(-8px) scale(0.98)}to{opacity:1;transform:none}}
         @property --adm-angle{syntax:'<angle>';inherits:false;initial-value:0deg}
-        @keyframes admFadeIn{from{opacity:0}to{opacity:1}}
         @keyframes admBoxIn{from{opacity:0;transform:translateY(14px) scale(.96)}to{opacity:1;transform:none}}
         @keyframes admPanelIn{from{opacity:0;transform:translateY(-10px) scale(.98)}to{opacity:1;transform:none}}
         @keyframes admRingSpin{to{--adm-angle:360deg}}
@@ -226,31 +242,47 @@
         document.head.appendChild(st);
     }
 
-    function _admAnimateOutAndRemove(el) {
-        if (!el) return;
-        el.style.transition = 'opacity .16s ease, transform .16s ease';
-        el.style.opacity = '0';
-        el.style.transform = 'scale(.97)';
-        setTimeout(() => el.remove(), 160);
-    }
-
+    // ═══ ICONS ═══
     const ICON = {
-        lock: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#22d3ee" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V6a4 4 0 0 1 8 0v4"/></svg>`,
-        gear: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#22d3ee" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>`,
-        status: `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>`,
-        shield: `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>`,
-        zap: `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>`,
-        user: `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>`,
+        lock:    `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#22d3ee" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V6a4 4 0 0 1 8 0v4"/></svg>`,
+        gear:    `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#22d3ee" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>`,
+        status:  `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>`,
+        shield:  `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>`,
+        zap:     `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>`,
+        user:    `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>`,
         refresh: `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 12a8 8 0 1 1-2.34-5.66M20 4v5h-5"/></svg>`,
-        upload: `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>`,
-        stop: `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>`,
-        broom: `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="m19 4-6 6"/><path d="M9 10 5 14l-3 3 5 5 3-3 4-4z"/><path d="M5 19h14"/></svg>`,
-        reload: `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6"/><path d="M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10"/><path d="M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>`,
-        exit: `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>`,
-        trash: `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>`,
-        users: `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>`
+        upload:  `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>`,
+        stop:    `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>`,
+        broom:   `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="m19 4-6 6"/><path d="M9 10 5 14l-3 3 5 5 3-3 4-4z"/><path d="M5 19h14"/></svg>`,
+        reload:  `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6"/><path d="M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10"/><path d="M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>`,
+        exit:    `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>`,
+        trash:   `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>`,
+        users:   `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>`
     };
 
+    // ═══ HELPERS ═══
+    function escHtml(s) {
+        return String(s ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
+    }
+    function fmtDuracao(ms) {
+        const s = Math.floor(ms / 1000);
+        const m = Math.floor(s / 60);
+        if (m < 60) return m + 'min';
+        const h = Math.floor(m / 60);
+        const mm = m % 60;
+        return h + 'h' + (mm ? String(mm).padStart(2, '0') : '');
+    }
+    function fmtAtras(ms) {
+        const s = Math.floor(ms / 1000);
+        if (s < 60) return 'agora';
+        const m = Math.floor(s / 60);
+        if (m < 60) return m + 'min atrás';
+        const h = Math.floor(m / 60);
+        if (h < 24) return h + 'h atrás';
+        return Math.floor(h / 24) + 'd atrás';
+    }
+
+    // ═══ LOGIN ═══
     function _admMountLogin() {
         _admEnsureStyle();
         _admKillModal();
@@ -314,10 +346,9 @@
         const pEl = box.querySelector('#_admP');
         const rEl = box.querySelector('#_admR');
         const errEl = box.querySelector('#_admErr');
+        const okBtn = box.querySelector('#_admOk');
 
         setTimeout(() => uEl.focus(), 50);
-
-        const okBtn = box.querySelector('#_admOk');
 
         function shakeError(msg) {
             errEl.textContent = msg;
@@ -361,6 +392,7 @@
         });
     }
 
+    // ═══ PANEL ═══
     function _admMountPanel() {
         _admEnsureStyle();
         _admKillModal();
@@ -436,7 +468,9 @@
         const modsActive = st ? Object.values(st.moduleStates || {}).filter(x => x === 'loaded').length : 0;
         const modsTotal = st ? ((st.manifest && st.manifest.modules) ? st.manifest.modules.length : 0) : 0;
         const fp = bridge.gate.fp;
+        const devId = bridge.deviceId;
         const fpShort = fp ? (fp.slice(0, 14) + '…' + fp.slice(-8)) : '(calculando)';
+        const devShort = devId ? (devId.slice(0, 12) + '…') : '(calculando)';
         const onBlk = fp && bridge.blk.full().includes(fp);
         const mode = bridge.gate.mode;
         const hasToken = _admHasToken();
@@ -456,6 +490,13 @@
                 <span class="adm-row-val">${modsActive} <span style="color:#5b5f70;">/</span> ${modsTotal}</span>
             </div>
             <div class="adm-row">
+                <span class="adm-row-label">Device ID</span>
+                <span class="adm-row-val" id="_admDevCopy" title="Clique para copiar" style="font-family:ui-monospace,monospace;font-size:9.5px;cursor:pointer;color:#22d3ee;
+                    padding:2px 7px;border-radius:6px;background:rgba(34,211,238,0.08);transition:background .15s;">
+                    ${devShort}
+                </span>
+            </div>
+            <div class="adm-row">
                 <span class="adm-row-label">Fingerprint</span>
                 <span class="adm-row-val" id="_admFpCopy" title="Clique para copiar"
                     style="font-family:ui-monospace,monospace;font-size:9.5px;cursor:pointer;color:#22d3ee;
@@ -464,7 +505,7 @@
                 </span>
             </div>
             <div class="adm-row">
-                <span class="adm-row-label">Dispositivo</span>
+                <span class="adm-row-label">Dispositivo (local)</span>
                 <span class="adm-badge ${onBlk ? 'bad' : 'ok'}">${onBlk ? 'Bloqueado' : 'Livre'}</span>
             </div>
             <div class="adm-row">
@@ -499,25 +540,25 @@
             </div>
             <div style="font-size: 9.5px; color: #8b8fa3; margin-bottom: 10px; line-height: 1.55; padding: 8px 10px;
                 background: rgba(34,211,238,0.05); border-left: 2px solid rgba(34,211,238,0.4); border-radius: 0 7px 7px 0;">
-                <strong style="color:#c7cad6;">AUTO</strong> usa a blacklist local + bloqueio remoto (Firestore).<br />
+                <strong style="color:#c7cad6;">AUTO</strong> usa blacklist local + bloqueio remoto (Firestore).<br />
                 <strong style="color:#c7cad6;">FORÇAR</strong> ignora tudo isso e controla direto.
             </div>
             <div style="display: flex; gap: 6px; margin-bottom: 10px;">
                 <button id="_admBlkAdd" class="adm-action-btn" style="flex:1; padding: 9px; border-radius: 9px; cursor: pointer; font-family: inherit;
                     font-size: 10px; font-weight: 800; background: rgba(251,113,133,0.1);
                     border: 1px solid rgba(251,113,133,0.3); color: #fca5b1;">
-                    ${ICON.shield} Bloquear este
+                    ${ICON.shield} Bloquear este (local)
                 </button>
                 <button id="_admBlkRem" class="adm-action-btn" style="flex:1; padding: 9px; border-radius: 9px; cursor: pointer; font-family: inherit;
                     font-size: 10px; font-weight: 800; background: rgba(52,211,153,0.1);
                     border: 1px solid rgba(52,211,153,0.3); color: #a7f3d0;">
-                    ${ICON.zap} Desbloquear este
+                    ${ICON.zap} Desbloquear este (local)
                 </button>
             </div>
             <div id="_admBlkList" style="display: flex; flex-direction: column; gap: 4px; max-height: 130px; overflow-y: auto;"></div>
         `;
 
-        // ─── SESSÕES (Firestore) ───
+        // ─── SESSÕES ───
         const sessoesContent = document.createElement('div');
         sessoesContent.innerHTML = bridge.firestore.configured()
             ? `<div style="display:flex;gap:6px;margin-bottom:10px;">
@@ -527,11 +568,11 @@
                        ${ICON.refresh} Atualizar lista
                    </button>
                </div>
-               <div id="_admSessList" style="display:flex;flex-direction:column;gap:4px;max-height:220px;overflow-y:auto;">
+               <div id="_admSessList" style="display:flex;flex-direction:column;gap:4px;max-height:240px;overflow-y:auto;">
                    <div style="padding:10px;text-align:center;font-size:9.5px;color:#5b5f70;">Carregando…</div>
                </div>`
             : `<div style="padding:10px;text-align:center;font-size:9.5px;color:#5b5f70;">
-                   Firestore não configurado — preencha FIREBASE_PROJECT_ID e FIREBASE_API_KEY no hub2.js.
+                   Firestore não configurado — preencha FIREBASE_PROJECT_ID e FIREBASE_API_KEY no hub.
                </div>`;
 
         // ─── AÇÕES ───
@@ -594,8 +635,7 @@
         document.body.appendChild(wrap);
         _admPanelEl = wrap;
 
-        // ─── handlers gerais ───
-
+        // ─── FECHAR / DRAG / ESC ───
         const closeBtn = hdr.querySelector('#_admClose');
         closeBtn.addEventListener('click', () => { _admKillPanel(); window._admin?.kill?.(); });
         closeBtn.addEventListener('mouseover', () => { closeBtn.style.background = 'rgba(251,113,133,0.15)'; closeBtn.style.color = '#fca5b1'; });
@@ -603,7 +643,7 @@
 
         let drag = null;
         hdr.addEventListener('mousedown', (e) => {
-            if (e.target.id === '_admClose' || e.target.closest('#_admClose')) return;
+            if (e.target.closest('#_admClose')) return;
             const r = wrap.getBoundingClientRect();
             drag = { x: e.clientX - r.left, y: e.clientY - r.top };
             wrap.style.left = r.left + 'px';
@@ -622,38 +662,48 @@
         const _escH = (e) => { if (e.key === 'Escape') { _admKillPanel(); window._admin?.kill?.(); } };
         document.addEventListener('keydown', _escH);
 
-        const _footTimer = setInterval(_tickFoot, 30000);
-        function _tickFoot() {
+        const _footTimer = setInterval(() => {
             if (!_admPanelEl) return;
             const now = new Date();
             const hh = String(now.getHours()).padStart(2, '0');
             const mm = String(now.getMinutes()).padStart(2, '0');
             foot.querySelector('#_admFootRight').textContent = hh + ':' + mm;
-        }
-        _tickFoot();
+        }, 30000);
+        (function tickInicial() {
+            const now = new Date();
+            const hh = String(now.getHours()).padStart(2, '0');
+            const mm = String(now.getMinutes()).padStart(2, '0');
+            foot.querySelector('#_admFootRight').textContent = hh + ':' + mm;
+        })();
 
         const _cleanup = () => {
             document.removeEventListener('mousemove', _moveH);
             document.removeEventListener('mouseup', _upH);
             document.removeEventListener('keydown', _escH);
             clearInterval(_footTimer);
+            if (_sessoesTimer) { clearInterval(_sessoesTimer); _sessoesTimer = null; }
         };
         const _origKill = _admKillPanel;
         _admKillPanel = () => { _cleanup(); _origKill(); };
 
+        // ─── COPIAR IDs ───
+        const devCopyEl = statusContent.querySelector('#_admDevCopy');
+        devCopyEl.addEventListener('click', async () => {
+            try { await navigator.clipboard.writeText(devId || ''); _admToast('Device ID copiado', 'ok'); }
+            catch(e) { _admToast('Falha ao copiar', 'err'); }
+        });
+        devCopyEl.addEventListener('mouseenter', () => { devCopyEl.style.background = 'rgba(34,211,238,0.18)'; });
+        devCopyEl.addEventListener('mouseleave', () => { devCopyEl.style.background = 'rgba(34,211,238,0.08)'; });
+
         const fpCopyEl = statusContent.querySelector('#_admFpCopy');
         fpCopyEl.addEventListener('click', async () => {
-            try {
-                await navigator.clipboard.writeText(fp);
-                _admToast('Fingerprint copiado', 'ok');
-            } catch(e) {
-                _admToast('Falha ao copiar', 'err');
-            }
+            try { await navigator.clipboard.writeText(fp || ''); _admToast('Fingerprint copiado', 'ok'); }
+            catch(e) { _admToast('Falha ao copiar', 'err'); }
         });
         fpCopyEl.addEventListener('mouseenter', () => { fpCopyEl.style.background = 'rgba(34,211,238,0.18)'; });
         fpCopyEl.addEventListener('mouseleave', () => { fpCopyEl.style.background = 'rgba(34,211,238,0.08)'; });
 
-        // ─── modo secret ───
+        // ─── MODO SECRET ───
         secretContent.querySelectorAll('button[data-mode]').forEach(btn => {
             btn.addEventListener('click', async () => {
                 await bridge.gate.setMode(btn.dataset.mode);
@@ -664,7 +714,7 @@
             });
         });
 
-        // ─── blacklist local ───
+        // ─── BLACKLIST LOCAL ───
         function _renderBlkList() {
             const listEl = secretContent.querySelector('#_admBlkList');
             const fixos = bridge.blk.fixed();
@@ -708,7 +758,7 @@
             }
             await bridge.blk.add(fp);
             _renderBlkList();
-            _admToast('Dispositivo bloqueado', 'ok');
+            _admToast('Dispositivo bloqueado (local)', 'ok');
             _admKillPanel();
             _admMountPanel();
             try { bridge.refreshManifest(true); } catch(e) {}
@@ -722,13 +772,13 @@
             }
             await bridge.blk.remove(fp);
             _renderBlkList();
-            _admToast('Dispositivo desbloqueado', 'ok');
+            _admToast('Dispositivo desbloqueado (local)', 'ok');
             _admKillPanel();
             _admMountPanel();
             try { bridge.refreshManifest(true); } catch(e) {}
         });
 
-        // ─── sessões (Firestore) ───
+        // ─── SESSÕES (Firestore) ───
         async function carregarSessoes() {
             const listEl = sessoesContent.querySelector('#_admSessList');
             if (!listEl) return;
@@ -745,35 +795,43 @@
                     return;
                 }
 
+                const myId = bridge.deviceId;
+
                 listEl.innerHTML = sessoes.map((s, i) => {
-                    const online = (Date.now() - (s.lastSeen || 0)) < SESSAO_ONLINE_MS;
+                    const ago = Date.now() - (s.lastSeen || 0);
+                    const online = ago < SESSAO_ONLINE_MS;
                     const bloqueado = s.blocked === true;
-                    const fpCurta = s.id.slice(0, 8) + '…' + s.id.slice(-6);
-                    const voceMesmo = s.id === fp;
+                    const voceMesmo = s.id === myId;
+                    const tempo = online
+                        ? 'ativa ' + fmtDuracao(Date.now() - (s.sessionStart || s.lastSeen || Date.now()))
+                        : fmtAtras(ago);
+                    const devShort = s.id.slice(0, 8) + '…' + s.id.slice(-4);
                     return `<div class="adm-sess-line" style="animation-delay:${i * 25}ms;">
                         <span class="adm-dot ${online ? 'live' : 'offline'}" title="${online ? 'Online' : 'Offline'}"></span>
                         <div class="adm-sess-info">
                             <div class="adm-sess-name">${escHtml(s.name || 'Sem nome')}${voceMesmo ? ' (você)' : ''}</div>
-                            <div class="adm-sess-meta">${fpCurta} · v${escHtml(s.hubVersion || '?')}${s.mission ? ' · ' + escHtml(s.mission) : ''}</div>
+                            <div class="adm-sess-meta">${devShort} · ${tempo} · v${escHtml(s.hubVersion || '?')}${s.mission ? ' · ' + escHtml(s.mission) : ''}</div>
                         </div>
-                        <span data-sess-fp="${s.id}" data-blocked="${bloqueado}" class="adm-sess-toggle ${bloqueado ? 'unblock' : 'block'}">
+                        <span data-sess-id="${s.id}" data-blocked="${bloqueado}" class="adm-sess-toggle ${bloqueado ? 'unblock' : 'block'}">
                             ${bloqueado ? 'Desbloquear' : 'Bloquear'}
                         </span>
                     </div>`;
                 }).join('');
 
-                listEl.querySelectorAll('[data-sess-fp]').forEach(el => {
+                listEl.querySelectorAll('[data-sess-id]').forEach(el => {
                     el.addEventListener('click', async () => {
-                        const alvoFp = el.dataset.sessFp;
+                        const alvoId = el.dataset.sessId;
                         const estavaBloqueado = el.dataset.blocked === 'true';
+                        el.style.opacity = '.5';
                         try {
-                            await bridge.firestore.request('PATCH', '/sessions/' + alvoFp, {
+                            await bridge.firestore.request('PATCH', '/sessions/' + alvoId, {
                                 fields: { blocked: bridge.firestore.value(!estavaBloqueado) }
                             }, 'updateMask.fieldPaths=blocked');
                             _admToast(estavaBloqueado ? 'Sessão desbloqueada' : 'Sessão bloqueada', 'ok');
                             carregarSessoes();
                         } catch(e) {
                             _admToast('Falha ao atualizar sessão', 'err');
+                            el.style.opacity = '';
                         }
                     });
                 });
@@ -781,15 +839,17 @@
                 listEl.innerHTML = '<div style="padding:10px;text-align:center;font-size:9.5px;color:#fca5b1;">Falha ao carregar sessões.</div>';
             }
         }
-        function escHtml(s) {
-            return String(s ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
-        }
+
         if (bridge.firestore.configured()) {
             carregarSessoes();
             sessoesContent.querySelector('#_admSessRefresh')?.addEventListener('click', carregarSessoes);
+            _sessoesTimer = setInterval(() => {
+                if (!_admPanelEl) { clearInterval(_sessoesTimer); _sessoesTimer = null; return; }
+                carregarSessoes();
+            }, SESSOES_REFRESH_MS);
         }
 
-        // ─── ações ───
+        // ─── AÇÕES ───
         actionsContent.querySelector('#_admReload').addEventListener('click', () => {
             try { bridge.refreshManifest(true); _admToast('Manifesto recarregado', 'ok'); } catch(e) { _admToast('Erro', 'err'); }
         });
@@ -834,6 +894,7 @@
         });
     }
 
+    // ═══ OPEN / TOGGLE / KILL ═══
     function _admOpen() {
         if (_admAuthed || _admHasToken()) {
             _admAuthed = true;
