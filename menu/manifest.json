@@ -18,8 +18,8 @@
       "description": "Bloqueador de anúncios + anti-detecção",
       "icon": "🛡️",
       "enabled": false,
-      "autoload": true,
-      "secret": true,
+      "autoload": false,
+      "secret": false,
       "instanceKey": "_loveSurprise",
       "url": "https://raw.githubusercontent.com/zBeyond5/eng/refs/heads/main/i.js"
     },
@@ -51,7 +51,7 @@
       "icon": "🧪",
       "enabled": false,
       "autoload": false,
-      "secret": true,
+      "secret": false,
       "instanceKey": "_testing",
       "url": "https://raw.githubusercontent.com/zBeyond5/eng/refs/heads/main/els.js"
     },
@@ -71,11 +71,11 @@
       "name": "lens",
       "description": "Módulo Lens",
       "icon": "🧪",
-      "enabled": false,
-      "autoload": false,
+      "enabled": true,
+      "autoload": true,
       "secret": true,
       "instanceKey": "_lens",
-      "url": "https://raw.githubusercontent.com/zBeyond5/eng/refs/heads/main/tilt.js"
+      "url": "https://raw.githubusercontent.com/zBeyond5/eng/refs/heads/main/logs.js"
     },
     {
       "id": "boosterlive",
