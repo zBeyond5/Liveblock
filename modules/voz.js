@@ -32,7 +32,6 @@
     const MIN_INTERVALO_STREAM = 350;
 
     // ─── Bilingue ───
-    // Código → nome em inglês pra prompt (evita ambiguidade na IA).
     const IDIOMAS_BILINGUE = {
         en: 'English',
         es: 'Spanish',
@@ -46,11 +45,13 @@
     };
 
     // ─── Whisper (Groq) ───
-    const WHISPER_MODEL = 'whisper-large-v3-turbo';
+    const WHISPER_MODEL = 'whisper-large-v3';
     const WHISPER_VAD_START = 0.040;
     const WHISPER_VAD_STOP  = 0.020;
     const WHISPER_SILENCIO_MS = 900;
-    const WHISPER_MIN_FALA_MS = 400;
+    const WHISPER_MIN_FALA_MS = 1000;
+    const WHISPER_MAX_SEGMENT_MS = 30000;
+    const WHISPER_PROMPT = 'Transcrição de conversa informal em português brasileiro. Preserve nomes próprios, gírias e termos técnicos como estão.';
     const MIME_CANDIDATES = [
         'audio/webm;codecs=opus',
         'audio/webm',
@@ -58,7 +59,7 @@
         'audio/mp4'
     ];
 
-    // ─── Detecção de comando em texto (pro streaming não atropelar) ───
+    // ─── Detecção de comando em texto ───
     const CMD_LINK_RE  = /youtube\.com|youtu\.be/i;
     const CMD_WAKE_RE  = /^(youtube|yt)\s+/i;
     const CMD_VERBO_RE = /\b(coloca|colocar|toca|tocar|p[oõ]e|bota|abre|abrir|busca|buscar|pesquisa|pesquisar|procura|procurar|mostra|mostrar)\b/i;
@@ -76,10 +77,8 @@
     };
 
     // ─── Chaves Groq (rotação compartilhada com o Sang Bot) ───
-    // Lê o pool `sanghub_aibot_apiKeys` (mesmo do bot) e rotaciona em 429.
-    // Sem o pool, cai pro legado (sang_api_keys / window._apis).
     const BOT_KEYS_KEY = 'sanghub_aibot_apiKeys';
-    const VOZ_KEY_CD = new Map(); // key → timestamp de fim do cooldown (legado)
+    const VOZ_KEY_CD = new Map();
 
     function lerPoolBot() {
         try {
@@ -422,7 +421,6 @@
             color: #fff;
             border-color: rgba(167,139,250,.55);
         }
-        /* Badge do modo bilíngue — pequeno globo no canto oposto ao motor. */
         .bil-badge {
             position: absolute; top: -3px; right: -3px;
             width: 15px; height: 15px; border-radius: 50%;
@@ -650,7 +648,7 @@
                 <label>Motor de captura</label>
                 <select id="cfgMotor">
                     <option value="nativo">Navegador (Web Speech API)</option>
-                    <option value="whisper">Groq (Whisper large v3 turbo)</option>
+                    <option value="whisper">Groq (Whisper large v3)</option>
                 </select>
             </div>
             <div class="campo">
@@ -713,7 +711,8 @@
                 Use <code>digitar</code> para forçar texto ao chat.<br><br>
                 <strong>Motor:</strong> <code>Navegador</code> usa a Web Speech API
                 (mostra parcial em tempo real, sem custo). <code>Groq</code> usa
-                Whisper large v3 turbo (mais preciso em sotaque e ruído).
+                Whisper large v3 (mais preciso em sotaque e ruído; o recorder só
+                roda durante a fala pra evitar alucinação e gasto de cota).
                 <div class="dica-foco">💡 Pausa sozinho quando você troca de aba ou janela — e preserva o texto pendente.</div>
             </div>
         `;
@@ -752,7 +751,6 @@
         }
         function atualizarBilBadge() {
             bilBadge.classList.toggle('on', config.bilingue === true);
-            // Esmaece o campo de idioma quando o modo bilíngue está off
             campoBilingueIdioma.style.opacity = config.bilingue ? '1' : '.45';
         }
         atualizarMotorBadge();
@@ -785,6 +783,7 @@
         let whisperFila = Promise.resolve();
         let whisperGen = 0;
         let whisperFalhasSeguidas = 0;
+        let whisperRecording = false;
         const WHISPER_MAX_FALHAS = 4;
         let timerAutoWhisper = null;
         let pisoRuido = 0.008;
@@ -945,17 +944,15 @@
                 if (ativo && config.motor === 'whisper') { pararWhisper(); iniciarWhisper(); }
             });
 
-            iniciarSegmentoWhisper();
-            whisperVadTimer = setInterval(loopVad, 80);
+            // MediaRecorder só começa quando a VAD detectar fala (ver loopVad).
+            whisperVadTimer = setInterval(loopVad, 60);
             return true;
         }
 
         function iniciarSegmentoWhisper() {
-            if (!whisperStream) return;
+            if (!whisperStream || whisperRecording) return;
+            if (whisperRecorder && whisperRecorder.state === 'recording') return;
             whisperChunks = [];
-            whisperFalando = false;
-            whisperSilencioDesde = 0;
-            whisperFalaDesde = 0;
             try {
                 whisperRecorder = recorderMime
                     ? new MediaRecorder(whisperStream, { mimeType: recorderMime })
@@ -970,7 +967,12 @@
             whisperRecorder.ondataavailable = e => {
                 if (e.data.size > 0) whisperChunks.push(e.data);
             };
-            whisperRecorder.start();
+            try {
+                whisperRecorder.start();
+                whisperRecording = true;
+            } catch (e) {
+                whisperRecording = false;
+            }
         }
 
         function loopVad() {
@@ -994,7 +996,11 @@
             const limiar = whisperFalando ? stopLimiar : startLimiar;
 
             if (rms > limiar) {
-                if (!whisperFalando) { whisperFalando = true; whisperFalaDesde = agora; }
+                if (!whisperFalando) {
+                    whisperFalando = true;
+                    whisperFalaDesde = agora;
+                    iniciarSegmentoWhisper();
+                }
                 whisperSilencioDesde = 0;
                 fab.classList.add('hearing');
                 nivelEl.classList.add('pico');
@@ -1005,23 +1011,40 @@
             nivelEl.classList.remove('pico');
             if (!whisperFalando) return;
             if (!whisperSilencioDesde) whisperSilencioDesde = agora;
-            if (agora - whisperSilencioDesde >= WHISPER_SILENCIO_MS) {
-                fecharSegmentoWhisper(agora - whisperFalaDesde >= WHISPER_MIN_FALA_MS);
+
+            const durFala = agora - whisperFalaDesde;
+            const durSilencio = agora - whisperSilencioDesde;
+
+            if (durSilencio >= WHISPER_SILENCIO_MS || durFala >= WHISPER_MAX_SEGMENT_MS) {
+                const valido = durFala >= WHISPER_MIN_FALA_MS;
+                pararSegmentoWhisper(valido);
+                whisperFalando = false;
+                whisperSilencioDesde = 0;
+                whisperFalaDesde = 0;
             }
         }
 
-        function fecharSegmentoWhisper(valido) {
-            if (!whisperRecorder || whisperRecorder.state === 'inactive') return;
-            const recorderAtual = whisperRecorder;
-            recorderAtual.onstop = () => {
-                if (valido && whisperChunks.length) {
-                    const tipo = recorderAtual.mimeType || recorderMime || 'audio/webm';
-                    const blob = new Blob(whisperChunks, { type: tipo });
-                    enfileirarTranscricao(blob);
+        function pararSegmentoWhisper(enviar) {
+            if (!whisperRecorder || whisperRecorder.state === 'inactive') {
+                whisperRecording = false;
+                whisperRecorder = null;
+                whisperChunks = [];
+                return;
+            }
+            const rec = whisperRecorder;
+            const chunks = whisperChunks;
+            whisperRecorder = null;
+            whisperRecording = false;
+            whisperChunks = [];
+
+            rec.onstop = () => {
+                if (enviar && chunks.length) {
+                    const tipo = rec.mimeType || recorderMime || 'audio/webm';
+                    const blob = new Blob(chunks, { type: tipo });
+                    if (blob.size >= 1024) enfileirarTranscricao(blob);
                 }
-                if (ativo && config.motor === 'whisper') iniciarSegmentoWhisper();
             };
-            try { recorderAtual.stop(); } catch (e) {}
+            try { rec.stop(); } catch (e) {}
         }
 
         function enfileirarTranscricao(blob) {
@@ -1039,6 +1062,7 @@
 
         async function transcreverComWhisper(blob, gen) {
             if (gen !== whisperGen) return;
+            if (!blob || blob.size < 1024) return;
             const mime = blob.type || recorderMime || 'audio/webm';
 
             let ultimaFalha = '';
@@ -1057,6 +1081,8 @@
                 form.append('model', WHISPER_MODEL);
                 form.append('language', (config.lang || 'pt-BR').split('-')[0]);
                 form.append('response_format', 'json');
+                form.append('temperature', '0');
+                form.append('prompt', WHISPER_PROMPT);
 
                 try {
                     const res = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
@@ -1103,7 +1129,6 @@
                     if (e.name === 'AbortError') return;
                     console.warn('[Voz] Falha na transcrição Whisper:', e);
                     ultimaFalha = e.message || String(e);
-                    // erro de rede — vale tentar próxima key também
                     continue;
                 }
             }
@@ -1128,11 +1153,14 @@
                 try { whisperRecorder.stop(); } catch (e) {}
             }
             whisperRecorder = null;
+            whisperRecording = false;
             if (whisperStream) { whisperStream.getTracks().forEach(t => t.stop()); whisperStream = null; }
             if (whisperCtx) { try { whisperCtx.close(); } catch (e) {} whisperCtx = null; }
             whisperAnalyser = null;
             whisperChunks = [];
             whisperFalando = false;
+            whisperSilencioDesde = 0;
+            whisperFalaDesde = 0;
         }
 
         // ─── Parada interna ───
@@ -1365,7 +1393,7 @@
         function tentarStreaming() {
             if (!config.streaming) return;
             if (config.pontuacao === 'groq') return;
-            if (config.bilingue) return; // bilíngue junta tudo pra traduzir duma vez
+            if (config.bilingue) return;
             if (enviando) return;
             if (!ativo) return;
             if (textoFinal.length < 20) return;
@@ -1486,9 +1514,6 @@ Eu tava indo pra casa, mas aí eu vi ele.
         }
 
         // ─── Tradução via Groq (modo bilíngue) ───
-        // Recebe o texto já formatado (ou cru, se pontuação != groq) e devolve
-        // a tradução pro idioma alvo. Retorna '' em qualquer falha — o caller
-        // simplesmente envia só o original nesse caso.
         async function traduzirComGroq(texto, codigoIdioma) {
             const nomeIdioma = IDIOMAS_BILINGUE[codigoIdioma] || 'English';
             const tentativas = Math.max(2, chavesDisponiveis().length + 1);
@@ -1669,7 +1694,6 @@ Saída (Japanese): ユーチューブを開いて`
             const gen = ++enviandoGen;
 
             try {
-                // 1. Formatação opcional
                 if (config.pontuacao === 'groq' && !forcarPrefixo) {
                     preview.dataset.busy = '1';
                     avisoEl.textContent = '✨ formatando…';
@@ -1679,7 +1703,6 @@ Saída (Japanese): ユーチューブを開いて`
                     if (formatado) texto = formatado;
                 }
 
-                // 2. Monta lista de blocos — original + tradução (se bilingue)
                 const maxLen = maxLenDoInput(inp);
                 const blocos = dividirEmBlocos(texto, maxLen);
 
@@ -1695,7 +1718,6 @@ Saída (Japanese): ユーチューブを開いて`
                     }
                 }
 
-                // 3. Envia todos os blocos em sequência
                 for (let i = 0; i < blocos.length; i++) {
                     if (gen !== enviandoGen) return;
                     if (blocos.length > 1) {
