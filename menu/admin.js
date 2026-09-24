@@ -1,4 +1,4 @@
-// modules/admin.js — Painel Admin do Sang Hub
+
 (function() {
     'use strict';
     const UID = '_admin';
@@ -380,14 +380,13 @@
         }
 
         okBtn.addEventListener('click', tryLogin);
-        box.querySelector('#_admCancel').addEventListener('click', () => { _admKillModal(); window._admin?.kill?.(); });
-
-        wrap.addEventListener('click', (e) => { if (e.target === wrap) { _admKillModal(); window._admin?.kill?.(); } });
+        box.querySelector('#_admCancel').addEventListener('click', _admKillModal);
+        wrap.addEventListener('click', (e) => { if (e.target === wrap) _admKillModal(); });
 
         [uEl, pEl].forEach(el => {
             el.addEventListener('keydown', (e) => {
                 if (e.key === 'Enter') { e.preventDefault(); tryLogin(); }
-                if (e.key === 'Escape') { e.preventDefault(); _admKillModal(); window._admin?.kill?.(); }
+                if (e.key === 'Escape') { e.preventDefault(); _admKillModal(); }
             });
         });
     }
@@ -637,7 +636,7 @@
 
         // ─── FECHAR / DRAG / ESC ───
         const closeBtn = hdr.querySelector('#_admClose');
-        closeBtn.addEventListener('click', () => { _admKillPanel(); window._admin?.kill?.(); });
+        closeBtn.addEventListener('click', _admKillPanel);
         closeBtn.addEventListener('mouseover', () => { closeBtn.style.background = 'rgba(251,113,133,0.15)'; closeBtn.style.color = '#fca5b1'; });
         closeBtn.addEventListener('mouseout',  () => { closeBtn.style.background = 'transparent'; closeBtn.style.color = '#8b8fa3'; });
 
@@ -659,7 +658,7 @@
         document.addEventListener('mousemove', _moveH);
         document.addEventListener('mouseup', _upH);
 
-        const _escH = (e) => { if (e.key === 'Escape') { _admKillPanel(); window._admin?.kill?.(); } };
+        const _escH = (e) => { if (e.key === 'Escape') _admKillPanel(); };
         document.addEventListener('keydown', _escH);
 
         const _footTimer = setInterval(() => {
@@ -882,7 +881,6 @@
             _admAuthed = false;
             _admKillPanel();
             _admToast('Sessão encerrada', 'ok');
-            window._admin?.kill?.();
         });
 
         forgetContent.querySelector('#_admForget').addEventListener('click', () => {
@@ -890,7 +888,6 @@
             _admAuthed = false;
             _admKillPanel();
             _admToast('Token removido', 'ok');
-            window._admin?.kill?.();
         });
     }
 
@@ -906,7 +903,8 @@
 
     function toggle() {
         if (_admPanelEl || _admModalEl) {
-            kill();
+            _admKillPanel();
+            _admKillModal();
             return;
         }
         _admOpen();
@@ -916,11 +914,10 @@
         _admKillPanel();
         _admKillModal();
         document.querySelectorAll('style[data-hub-admin]').forEach(el => el.remove());
+        _admStyleInjected = false;
         delete window[UID];
         try { window.dispatchEvent(new CustomEvent('sang:module-close', { detail: { id: 'admin' } })); } catch(e) {}
     }
 
     window[UID] = { kill, toggle };
-
-    _admOpen();
 })();
