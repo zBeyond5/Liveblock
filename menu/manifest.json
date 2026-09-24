@@ -188,7 +188,7 @@
       "name": "BOT",
       "description": "Transforme-se em bot.",
       "icon": "https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/assets/GIF/bot.gif",
-      "enabled": true,
+      "enabled": false,
       "autoload": false,
       "secret": false,
       "instanceKey": "_bot",
