@@ -1,4 +1,4 @@
-// modules/admin.js — Painel Admin do Sang Hub
+// modules/admin.js — Painel Admin do Sang Hub (horizontal)
 (function() {
     'use strict';
     const UID = '_admin';
@@ -29,7 +29,6 @@
         try { return u === atob(ADMIN_U_B64) && p === atob(ADMIN_P_B64); }
         catch(e) { return false; }
     }
-
     function _admHasToken() {
         try {
             const raw = localStorage.getItem(ADMIN_TOKEN_KEY);
@@ -43,11 +42,9 @@
             return true;
         } catch(e) { return false; }
     }
-
     function _admSaveToken() {
         try { localStorage.setItem(ADMIN_TOKEN_KEY, JSON.stringify({ t: Date.now() })); } catch(e) {}
     }
-
     function _admClearToken() {
         try { localStorage.removeItem(ADMIN_TOKEN_KEY); } catch(e) {}
     }
@@ -56,12 +53,10 @@
     function _admKillModal() {
         if (_admModalEl) { _admAnimateOutAndRemove(_admModalEl); _admModalEl = null; }
     }
-
     function _admKillPanel() {
         if (_admPanelEl) { _admAnimateOutAndRemove(_admPanelEl); _admPanelEl = null; }
         if (_sessoesTimer) { clearInterval(_sessoesTimer); _sessoesTimer = null; }
     }
-
     function _admAnimateOutAndRemove(el) {
         if (!el) return;
         el.style.transition = 'opacity .16s ease, transform .16s ease';
@@ -104,7 +99,6 @@
 
         .adm-box{position:relative;animation:admBoxIn .4s cubic-bezier(0.16,1,0.3,1)}
         .adm-box.adm-shake{animation:admShake .4s ease}
-
         .adm-panel{animation:admPanelIn .3s cubic-bezier(0.16,1,0.3,1)}
 
         .adm-title-shine{background:linear-gradient(100deg,#22d3ee 0%,#a78bfa 35%,#fff 50%,#a78bfa 65%,#22d3ee 100%);
@@ -117,12 +111,12 @@
         .adm-input:focus{border-color:rgba(34,211,238,.6);box-shadow:0 0 0 3px rgba(34,211,238,.15)}
 
         .adm-sec{background:rgba(255,255,255,0.022);border:1px solid rgba(255,255,255,0.055);
-            border-radius:10px;padding:10px 12px;margin-bottom:6px}
-        .adm-sec:last-child{margin-bottom:0}
-        .adm-sec-head{display:flex;align-items:center;gap:6px;
+            border-radius:10px;padding:10px 12px;display:flex;flex-direction:column;min-height:0}
+        .adm-sec-head{display:flex;align-items:center;justify-content:space-between;gap:6px;
             font-size:8.5px;font-weight:800;letter-spacing:.1em;text-transform:uppercase;
             color:#7d8194;margin-bottom:8px;padding-bottom:6px;
             border-bottom:1px solid rgba(255,255,255,0.045)}
+        .adm-sec-head > span{display:flex;align-items:center;gap:6px}
         .adm-sec-head svg{opacity:.7}
 
         .adm-dot{display:inline-block;width:6px;height:6px;border-radius:50%;vertical-align:middle;flex-shrink:0}
@@ -144,8 +138,8 @@
 
         .adm-row{display:flex;justify-content:space-between;align-items:center;
             font-size:10px;padding:5px 0;color:#c7cad6}
-        .adm-row + .adm-row { border-top:1px dashed rgba(255,255,255,.035) }
-        .adm-row-label{color:#8b8fa3;letter-spacing:.01em}
+        .adm-row + .adm-row{border-top:1px dashed rgba(255,255,255,.035)}
+        .adm-row-label{color:#8b8fa3}
         .adm-row-val{color:#f1f2f8;font-weight:700;font-variant-numeric:tabular-nums;font-size:10px}
 
         .adm-action-btn{transition:all .15s cubic-bezier(0.16,1,0.3,1);display:flex;align-items:center;gap:5px;justify-content:center;
@@ -154,8 +148,8 @@
         .adm-action-btn:active{transform:translateY(0) scale(.97)}
         .adm-action-btn svg{flex-shrink:0}
 
-        .adm-mode-btn{transition:all .15s cubic-bezier(0.16,1,0.3,1);cursor:pointer;font-family:inherit;border-radius:8px;
-            padding:7px 4px;font-size:9.5px;font-weight:800;letter-spacing:.05em}
+        .adm-mode-btn{transition:all .15s cubic-bezier(0.16,1,0.3,1);cursor:pointer;font-family:inherit;border-radius:7px;
+            padding:6px 4px;font-size:9px;font-weight:800;letter-spacing:.04em}
         .adm-mode-btn:hover:not(.active){background:rgba(255,255,255,0.07)!important}
         .adm-mode-btn:active{transform:scale(.97)}
 
@@ -169,20 +163,27 @@
             border-radius:4px;transition:background .15s}
         .adm-blk-rm:hover{background:rgba(251,113,133,.15)}
 
-        .adm-sess-line{display:flex;align-items:center;gap:8px;padding:8px 9px;border-radius:9px;
+        .adm-sess-list{flex:1; min-height:0; overflow-y:auto; display:flex; flex-direction:column; gap:3px; padding-right:2px;}
+        .adm-sess-line{display:flex;align-items:center;gap:10px;padding:7px 9px;border-radius:8px;
             background:rgba(255,255,255,0.022);border:1px solid rgba(255,255,255,0.045);
             transition:background .15s;animation:admSlideIn .22s cubic-bezier(0.16,1,0.3,1) backwards}
         .adm-sess-line:hover{background:rgba(255,255,255,0.045)}
-        .adm-sess-info{flex:1;min-width:0}
-        .adm-sess-name{font-weight:700;color:#f1f2f8;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-        .adm-sess-meta{font-size:8.5px;color:#7d8194;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px;
+        .adm-sess-name{font-weight:700;color:#f1f2f8;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+            flex-shrink:0; max-width:38%; min-width:60px;}
+        .adm-sess-meta{flex:1; min-width:0; font-size:9px;color:#7d8194;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
             font-family:ui-monospace,'SF Mono',Menlo,monospace}
-        .adm-sess-toggle{cursor:pointer;flex-shrink:0;font-size:8.5px;font-weight:800;padding:5px 9px;border-radius:6px;
-            letter-spacing:.03em;transition:all .15s;white-space:nowrap}
-        .adm-sess-toggle.block{background:rgba(251,113,133,.1);border:1px solid rgba(251,113,133,.3);color:#fca5b1}
-        .adm-sess-toggle.block:hover{background:rgba(251,113,133,.22)}
-        .adm-sess-toggle.unblock{background:rgba(52,211,153,.1);border:1px solid rgba(52,211,153,.3);color:#a7f3d0}
-        .adm-sess-toggle.unblock:hover{background:rgba(52,211,153,.22)}
+
+        .adm-switch{position:relative;display:inline-block;width:28px;height:15px;flex-shrink:0;cursor:pointer}
+        .adm-switch input{opacity:0;width:0;height:0;position:absolute}
+        .adm-switch-track{position:absolute;inset:0;background:rgba(52,211,153,0.14);
+            border:1px solid rgba(52,211,153,0.4);border-radius:20px;transition:.2s}
+        .adm-switch-track::before{content:'';position:absolute;width:11px;height:11px;left:1px;top:1px;
+            background:#34d399;border-radius:50%;transition:.2s;box-shadow:0 0 6px rgba(52,211,153,.6)}
+        .adm-switch input:checked + .adm-switch-track{background:rgba(251,113,133,0.14);
+            border-color:rgba(251,113,133,0.45)}
+        .adm-switch input:checked + .adm-switch-track::before{background:#fb7185;transform:translateX(13px);
+            box-shadow:0 0 6px rgba(251,113,133,.6)}
+        .adm-switch.busy{opacity:.5;pointer-events:none}
 
         .adm-foot{padding:8px 14px;background:rgba(0,0,0,0.22);border-top:1px solid rgba(255,255,255,0.045);
             display:flex;align-items:center;justify-content:space-between;gap:8px;
@@ -205,6 +206,7 @@
     // ═══ ICONS ═══
     const ICON = {
         lock:    `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#22d3ee" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V6a4 4 0 0 1 8 0v4"/></svg>`,
+        gear:    `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#22d3ee" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>`,
         shield:  `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>`,
         status:  `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>`,
         zap:     `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>`,
@@ -262,7 +264,6 @@
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
             animation: hubFade .2s ease-out;
         `;
-
         const box = document.createElement('div');
         box.className = 'adm-box';
         box.style.cssText = `
@@ -271,27 +272,21 @@
             border: 1px solid rgba(255,255,255,0.06);
             box-shadow: 0 24px 60px rgba(0,0,0,0.7);
         `;
-
         box.innerHTML = `
             <div style="display:flex; align-items:center; gap:8px; margin-bottom: 2px;">
                 ${ICON.lock}
                 <span class="adm-title-shine" style="font-size: 12.5px; font-weight: 800; letter-spacing: .08em;">ACESSO RESTRITO</span>
             </div>
             <div style="font-size: 9px; color: #7d8194; letter-spacing: .05em; text-transform: uppercase; margin-bottom: 16px;">Sang Hub · Painel Administrativo</div>
-
             <label style="display:block; font-size: 9px; color: #8b8fa3; text-transform: uppercase; letter-spacing: .06em; margin-bottom: 4px; font-weight: 700;">Usuário</label>
             <input id="_admU" class="adm-input" type="text" autocomplete="off" spellcheck="false" />
-
             <label style="display:block; font-size: 9px; color: #8b8fa3; text-transform: uppercase; letter-spacing: .06em; margin-bottom: 4px; font-weight: 700;">Senha</label>
             <input id="_admP" class="adm-input" type="password" autocomplete="off" spellcheck="false" />
-
             <label style="display: flex; align-items: center; gap: 8px; font-size: 10.5px; color: #c7cad6; margin-bottom: 14px; cursor: pointer; user-select: none;">
                 <input id="_admR" type="checkbox" style="accent-color: #22d3ee; width: 13px; height: 13px; cursor: pointer;" />
                 Lembrar de mim neste dispositivo
             </label>
-
             <div id="_admErr" style="font-size: 10px; color: #fca5b1; min-height: 13px; margin-bottom: 8px;"></div>
-
             <div style="display: flex; gap: 8px;">
                 <button id="_admCancel" class="adm-action-btn" style="flex: 1; padding: 10px; border-radius: 8px;
                     background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08);
@@ -302,7 +297,6 @@
                     letter-spacing: .03em;">ENTRAR</button>
             </div>
         `;
-
         wrap.appendChild(box);
         document.body.appendChild(wrap);
         _admModalEl = wrap;
@@ -312,7 +306,6 @@
         const rEl = box.querySelector('#_admR');
         const errEl = box.querySelector('#_admErr');
         const okBtn = box.querySelector('#_admOk');
-
         setTimeout(() => uEl.focus(), 50);
 
         function shakeError(msg) {
@@ -321,7 +314,6 @@
             void box.offsetWidth;
             box.classList.add('adm-shake');
         }
-
         function tryLogin() {
             const u = uEl.value.trim();
             const p = pEl.value;
@@ -337,7 +329,6 @@
             _admKillModal();
             _admMountPanel();
         }
-
         okBtn.addEventListener('click', tryLogin);
         box.querySelector('#_admCancel').addEventListener('click', _admKillModal);
         wrap.addEventListener('click', (e) => { if (e.target === wrap) _admKillModal(); });
@@ -360,7 +351,7 @@
         wrap.setAttribute('data-hub', '1');
         wrap.setAttribute('data-sang-ui', '');
         wrap.style.cssText = `
-            position: fixed; top: 16px; left: 16px; width: 344px; max-height: 92vh;
+            position: fixed; top: 16px; left: 16px; width: 720px; max-width: 96vw; max-height: 92vh;
             z-index: 2147483647; display: flex; flex-direction: column;
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
             color: #f1f2f8; user-select: none;
@@ -375,23 +366,23 @@
         // ─── HEADER ───
         const hdr = document.createElement('div');
         hdr.style.cssText = `
-            padding: 11px 13px; display: flex; align-items: center; justify-content: space-between;
+            padding: 11px 14px; display: flex; align-items: center; justify-content: space-between;
             cursor: grab; flex-shrink: 0;
             background: linear-gradient(120deg, rgba(34,211,238,0.1), rgba(167,139,250,0.1));
             border-bottom: 1px solid rgba(255,255,255,0.055);
         `;
         hdr.innerHTML = `
-            <div style="display: flex; align-items: center; gap: 8px;">
-                <span style="display:inline-flex; align-items:center; justify-content:center; width:22px; height:22px;
+            <div style="display: flex; align-items: center; gap: 9px;">
+                <span style="display:inline-flex; align-items:center; justify-content:center; width:24px; height:24px;
                     border-radius:7px; background:rgba(34,211,238,0.14); border:1px solid rgba(34,211,238,0.32);">
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#22d3ee" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+                    ${ICON.gear}
                 </span>
                 <div>
-                    <div class="adm-title-shine" style="font-size: 11.5px; font-weight: 800; letter-spacing: .1em;">PAINEL ADMIN</div>
+                    <div class="adm-title-shine" style="font-size: 12px; font-weight: 800; letter-spacing: .1em;">PAINEL ADMIN</div>
                     <div style="font-size: 8.5px; color: #7d8194; letter-spacing: .05em; text-transform: uppercase; margin-top: 1px;">Sang Hub · v${bridge.HUB_VERSION}</div>
                 </div>
             </div>
-            <div style="display: flex; align-items: center; gap: 6px;">
+            <div style="display: flex; align-items: center; gap: 8px;">
                 <span class="adm-dot live" title="Sessão ativa"></span>
                 <span id="_admClose" title="Fechar (Esc)" style="cursor: pointer; font-size: 13px; color: #8b8fa3;
                     width: 24px; height: 24px; display: flex; align-items: center; justify-content: center;
@@ -399,9 +390,15 @@
             </div>
         `;
 
-        // ─── BODY ───
+        // ─── BODY (2 colunas) ───
         const body = document.createElement('div');
-        body.style.cssText = `padding: 10px; overflow-y: auto; flex: 1; min-height: 0;`;
+        body.style.cssText = `display:flex; gap:10px; padding:10px; flex:1; min-height:0;`;
+
+        const colMain = document.createElement('div');
+        colMain.style.cssText = 'flex:1; min-width:0; display:flex; flex-direction:column; gap:8px;';
+
+        const colSide = document.createElement('div');
+        colSide.style.cssText = 'width:260px; flex-shrink:0; display:flex; flex-direction:column; gap:8px; overflow-y:auto; padding-right:2px;';
 
         // ─── FOOT ───
         const foot = document.createElement('div');
@@ -415,73 +412,63 @@
         `;
 
         // ─── SEC HELPER ───
-        function sec(label, iconSvg, contentEl) {
+        function sec(label, iconSvg, contentEl, extraHead) {
             const s = document.createElement('div');
             s.className = 'adm-sec';
             const head = document.createElement('div');
             head.className = 'adm-sec-head';
-            head.innerHTML = `${iconSvg}<span>${label}</span>`;
+            head.innerHTML = `<span>${iconSvg}${label}</span>${extraHead || ''}`;
             s.appendChild(head);
             s.appendChild(contentEl);
             return s;
         }
 
-        // ═══ COLETA DE ESTADO ═══
-        const st = bridge.state;
-        const fp = bridge.gate.fp;
-        const devId = bridge.deviceId;
-        const onBlk = fp && bridge.blk.full().includes(fp);
-        const mode = bridge.gate.mode;
+        // ═══ COLUNA PRINCIPAL: SESSÕES AO VIVO ═══
         const fsOk = bridge.firestore.configured();
 
-        // ═══ 1. SESSÕES AO VIVO ═══
         const sessContent = document.createElement('div');
+        sessContent.style.cssText = 'display:flex; flex-direction:column; flex:1; min-height:0;';
         sessContent.innerHTML = fsOk
-            ? `<div id="_admSessList" style="display:flex;flex-direction:column;gap:4px;max-height:280px;overflow-y:auto;">
-                   <div style="padding:10px;text-align:center;font-size:9.5px;color:#5b5f70;">Carregando…</div>
-               </div>
-               <button id="_admSessRefresh" class="adm-action-btn" style="width:100%; margin-top:6px; padding:6px; font-size:9.5px; font-weight:700;
-                   background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.07); color:#c7cad6;">
-                   ${ICON.refresh} <span>Atualizar lista</span>
-               </button>`
-            : `<div style="padding:10px;text-align:center;font-size:9.5px;color:#7d8194;">
+            ? `<div class="adm-sess-list" id="_admSessList">
+                   <div style="padding:14px;text-align:center;font-size:9.5px;color:#5b5f70;">Carregando…</div>
+               </div>`
+            : `<div style="padding:14px;text-align:center;font-size:9.5px;color:#7d8194;">
                    Firestore não configurado no hub.
                </div>`;
 
-        // ═══ 2. STATUS (separado: remoto vs local) ═══
+        const sessRefreshBtn = fsOk
+            ? `<button id="_admSessRefresh" title="Atualizar" style="cursor:pointer; background:transparent;
+                   border:1px solid rgba(255,255,255,0.08); border-radius:6px; width:22px; height:22px;
+                   color:#c7cad6; display:flex; align-items:center; justify-content:center; transition:all .15s;">${ICON.refresh}</button>`
+            : '';
+
+        const sessSec = sec('Sessões ao vivo', ICON.users, sessContent, sessRefreshBtn);
+        sessSec.style.flex = '1';
+        colMain.appendChild(sessSec);
+
+        // ═══ SIDEBAR: STATUS ═══
         const statusContent = document.createElement('div');
-
-        // Sessão remota: pode estar bloqueada pelo admin em OUTRO device ou aqui mesmo
-        const sessaoRemotaTxt = 'verificando…';
-        const sessaoRemotaCls = 'neutral';
-
         statusContent.innerHTML = `
             <div class="adm-row">
-                <span class="adm-row-label">Sessão remota</span>
-                <span class="adm-row-val" id="_admRemotaVal">
-                    <span class="adm-badge ${sessaoRemotaCls}">${sessaoRemotaTxt}</span>
+                <span class="adm-row-label">Sua sessão</span>
+                <span class="adm-row-val" id="_admSuaSessao">
+                    <span class="adm-badge ${bridge.gate.blocked ? 'bad' : 'ok'}">${bridge.gate.blocked ? 'Bloqueada' : 'Livre'}</span>
                 </span>
             </div>
             <div class="adm-row">
-                <span class="adm-row-label">Blacklist local</span>
-                <span class="adm-badge ${onBlk ? 'bad' : 'ok'}">${onBlk ? 'Bloqueado' : 'Limpo'}</span>
-            </div>
-            <div class="adm-row">
-                <span class="adm-row-label">Modo</span>
-                <span class="adm-badge ${mode === 'auto' ? 'neutral' : mode === 'on' ? 'ok' : 'bad'}">${mode.toUpperCase()}</span>
-            </div>
-            <div class="adm-row">
                 <span class="adm-row-label">Firestore</span>
-                <span class="adm-badge ${fsOk ? 'ok' : 'neutral'}">${fsOk ? 'Conectado' : 'Off'}</span>
+                <span class="adm-badge ${fsOk ? 'ok' : 'neutral'}">${fsOk ? 'OK' : 'Off'}</span>
             </div>
             <div class="adm-row">
                 <span class="adm-row-label">Device ID</span>
                 <span class="adm-row-val" id="_admDevCopy" title="Clique para copiar"
-                    style="font-family:ui-monospace,monospace;font-size:9px;cursor:pointer;color:#22d3ee;">${shortHash(devId, 8, 4)}</span>
+                    style="font-family:ui-monospace,monospace;font-size:9px;cursor:pointer;color:#22d3ee;">${shortHash(bridge.deviceId, 8, 4)}</span>
             </div>
         `;
+        colSide.appendChild(sec('Status', ICON.status, statusContent));
 
-        // ═══ 3. MODO SECRET ═══
+        // ═══ SIDEBAR: MODO SECRET ═══
+        const mode = bridge.gate.mode;
         const modoContent = document.createElement('div');
         const modeBtnStyle = (isActive) => `
             flex:1;
@@ -490,72 +477,70 @@
             border: 1px solid ${isActive ? 'transparent' : 'rgba(255,255,255,0.07)'};
         `;
         modoContent.innerHTML = `
-            <div style="display:flex; gap:5px;">
+            <div style="display:flex; gap:4px;">
                 <button data-mode="auto" class="adm-mode-btn ${mode==='auto'?'active':''}" style="${modeBtnStyle(mode==='auto')}">AUTO</button>
-                <button data-mode="on" class="adm-mode-btn ${mode==='on'?'active':''}" style="${modeBtnStyle(mode==='on')}">FORÇAR ON</button>
-                <button data-mode="off" class="adm-mode-btn ${mode==='off'?'active':''}" style="${modeBtnStyle(mode==='off')}">FORÇAR OFF</button>
+                <button data-mode="on" class="adm-mode-btn ${mode==='on'?'active':''}" style="${modeBtnStyle(mode==='on')}">ON</button>
+                <button data-mode="off" class="adm-mode-btn ${mode==='off'?'active':''}" style="${modeBtnStyle(mode==='off')}">OFF</button>
             </div>
-            <div style="font-size:9px; color:#7d8194; margin-top:8px; line-height:1.5;">
-                <b style="color:#a8adbf;">AUTO</b> respeita blacklist local + bloqueio remoto.<br>
-                <b style="color:#a8adbf;">FORÇAR</b> ignora ambos (só este device).
+            <div style="font-size:8.5px; color:#7d8194; margin-top:7px; line-height:1.45;">
+                Controla apenas <b style="color:#a8adbf;">módulos secret</b> do manifest — não afeta o hub.
             </div>
         `;
+        colSide.appendChild(sec('Módulos secret', ICON.zap, modoContent));
 
-        // ═══ 4. BLACKLIST LOCAL ═══
+        // ═══ SIDEBAR: BLACKLIST LOCAL ═══
         const blkContent = document.createElement('div');
         blkContent.innerHTML = `
-            <div style="display:flex; gap:5px; margin-bottom:8px;">
-                <button id="_admBlkAdd" class="adm-action-btn" style="flex:1; padding:7px; font-size:9.5px; font-weight:700;
+            <div style="display:flex; gap:5px; margin-bottom:7px;">
+                <button id="_admBlkAdd" class="adm-action-btn" style="flex:1; padding:6px; font-size:9px; font-weight:700;
                     background:rgba(251,113,133,0.08); border:1px solid rgba(251,113,133,0.28); color:#fca5b1;">
-                    ${ICON.shield} <span>Bloquear este</span>
+                    ${ICON.shield} <span>Bloquear</span>
                 </button>
-                <button id="_admBlkRem" class="adm-action-btn" style="flex:1; padding:7px; font-size:9.5px; font-weight:700;
+                <button id="_admBlkRem" class="adm-action-btn" style="flex:1; padding:6px; font-size:9px; font-weight:700;
                     background:rgba(52,211,153,0.08); border:1px solid rgba(52,211,153,0.28); color:#a7f3d0;">
-                    ${ICON.zap} <span>Desbloquear</span>
+                    ${ICON.zap} <span>Liberar</span>
                 </button>
             </div>
-            <div id="_admBlkList" style="display:flex; flex-direction:column; gap:3px; max-height:110px; overflow-y:auto;"></div>
+            <div id="_admBlkList" style="display:flex; flex-direction:column; gap:3px; max-height:100px; overflow-y:auto;"></div>
         `;
+        colSide.appendChild(sec('Blacklist local', ICON.shield, blkContent));
 
-        // ═══ 5. AÇÕES ═══
+        // ═══ SIDEBAR: AÇÕES ═══
         const acoesContent = document.createElement('div');
         acoesContent.style.cssText = 'display:grid; grid-template-columns:1fr 1fr; gap:5px;';
-        const actBtns = [
-            { id: '_admReload', icon: ICON.refresh, label: 'Manifesto',   color: '#22d3ee' },
-            { id: '_admKillMod', icon: ICON.stop,   label: 'Desativar',   color: '#a78bfa' },
-            { id: '_admClean',  icon: ICON.broom,   label: 'Limpar cache', color: '#a78bfa' },
-            { id: '_admRePage', icon: ICON.reload,  label: 'Recarregar',  color: '#fb7185' }
-        ];
-        actBtns.forEach(a => {
+        [
+            { id: '_admReload',  icon: ICON.refresh, label: 'Manifesto',   color: '#22d3ee' },
+            { id: '_admKillMod', icon: ICON.stop,    label: 'Desativar',   color: '#a78bfa' },
+            { id: '_admClean',   icon: ICON.broom,   label: 'Caches',      color: '#a78bfa' },
+            { id: '_admRePage',  icon: ICON.reload,  label: 'Recarregar',  color: '#fb7185' }
+        ].forEach(a => {
             const b = document.createElement('button');
             b.id = a.id;
             b.className = 'adm-action-btn';
             b.innerHTML = `${a.icon} <span>${a.label}</span>`;
-            b.style.cssText = `padding:7px 6px; font-size:9.5px; font-weight:700;
+            b.style.cssText = `padding:6px; font-size:9px; font-weight:700;
                 background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.07);
                 color:${a.color};`;
             acoesContent.appendChild(b);
         });
+        colSide.appendChild(sec('Ações', ICON.refresh, acoesContent));
 
-        // ═══ 6. SESSÃO ADMIN ═══
+        // ═══ SIDEBAR: SESSÃO ADMIN ═══
         const adminContent = document.createElement('div');
         adminContent.innerHTML = `
-            <button id="_admLogout" class="adm-action-btn" style="width:100%; padding:8px; font-size:9.5px; font-weight:700;
+            <button id="_admLogout" class="adm-action-btn" style="width:100%; padding:7px; font-size:9px; font-weight:700;
                 background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.07); color:#c7cad6; margin-bottom:5px;">
-                ${ICON.exit} <span>Sair (sem token)</span>
+                ${ICON.exit} <span>Sair</span>
             </button>
-            <button id="_admForget" class="adm-action-btn" style="width:100%; padding:8px; font-size:9.5px; font-weight:700;
+            <button id="_admForget" class="adm-action-btn" style="width:100%; padding:7px; font-size:9px; font-weight:700;
                 background:rgba(251,113,133,0.08); border:1px solid rgba(251,113,133,0.28); color:#fca5b1;">
-                ${ICON.trash} <span>Esquecer dispositivo</span>
+                ${ICON.trash} <span>Esquecer device</span>
             </button>
         `;
+        colSide.appendChild(sec('Sessão admin', ICON.user, adminContent));
 
-        body.appendChild(sec('Sessões ao vivo', ICON.users, sessContent));
-        body.appendChild(sec('Status', ICON.status, statusContent));
-        body.appendChild(sec('Modo secret', ICON.zap, modoContent));
-        body.appendChild(sec('Blacklist local', ICON.shield, blkContent));
-        body.appendChild(sec('Ações', ICON.refresh, acoesContent));
-        body.appendChild(sec('Sessão admin', ICON.user, adminContent));
+        body.appendChild(colMain);
+        body.appendChild(colSide);
 
         wrap.appendChild(hdr);
         wrap.appendChild(body);
@@ -593,15 +578,13 @@
         const _footTimer = setInterval(() => {
             if (!_admPanelEl) return;
             const now = new Date();
-            const hh = String(now.getHours()).padStart(2, '0');
-            const mm = String(now.getMinutes()).padStart(2, '0');
-            foot.querySelector('#_admFootRight').textContent = hh + ':' + mm;
+            foot.querySelector('#_admFootRight').textContent =
+                String(now.getHours()).padStart(2,'0') + ':' + String(now.getMinutes()).padStart(2,'0');
         }, 30000);
-        (function tickInicial() {
+        (function tick() {
             const now = new Date();
-            const hh = String(now.getHours()).padStart(2, '0');
-            const mm = String(now.getMinutes()).padStart(2, '0');
-            foot.querySelector('#_admFootRight').textContent = hh + ':' + mm;
+            foot.querySelector('#_admFootRight').textContent =
+                String(now.getHours()).padStart(2,'0') + ':' + String(now.getMinutes()).padStart(2,'0');
         })();
 
         const _cleanup = () => {
@@ -617,7 +600,7 @@
         // ─── COPIAR DEVICE ID ───
         const devCopyEl = statusContent.querySelector('#_admDevCopy');
         devCopyEl.addEventListener('click', async () => {
-            try { await navigator.clipboard.writeText(devId || ''); _admToast('Device ID copiado', 'ok'); }
+            try { await navigator.clipboard.writeText(bridge.deviceId || ''); _admToast('Device ID copiado', 'ok'); }
             catch(e) { _admToast('Falha ao copiar', 'err'); }
         });
 
@@ -633,24 +616,25 @@
         });
 
         // ─── BLACKLIST LOCAL ───
+        const fp = bridge.gate.fp;
         function _renderBlkList() {
             const listEl = blkContent.querySelector('#_admBlkList');
             const fixos = bridge.blk.fixed();
             const extras = bridge.blk.extra();
             if (extras.length === 0 && fixos.length === 0) {
-                listEl.innerHTML = '<div style="padding:8px;text-align:center;font-size:9px;color:#5b5f70;">Nenhum hash.</div>';
+                listEl.innerHTML = '<div style="padding:6px;text-align:center;font-size:8.5px;color:#5b5f70;">Vazia.</div>';
                 return;
             }
             const parts = [];
             fixos.forEach(h => {
                 parts.push(`<div class="adm-blk-line fixed">
-                    <span class="adm-blk-hash">${shortHash(h, 10, 6)}</span>
-                    <span style="font-size:7.5px; padding:1px 5px; border-radius:4px; background:rgba(139,143,163,0.14); color:#7d8194; font-weight:800; letter-spacing:.04em;">FIXO</span>
+                    <span class="adm-blk-hash">${shortHash(h, 8, 5)}</span>
+                    <span style="font-size:7px; padding:1px 5px; border-radius:4px; background:rgba(139,143,163,0.14); color:#7d8194; font-weight:800;">FIXO</span>
                 </div>`);
             });
             extras.forEach((h, i) => {
                 parts.push(`<div class="adm-blk-line">
-                    <span class="adm-blk-hash">${shortHash(h, 10, 6)}</span>
+                    <span class="adm-blk-hash">${shortHash(h, 8, 5)}</span>
                     <span data-rm="${i}" class="adm-blk-rm" title="Remover">✕</span>
                 </div>`);
             });
@@ -669,23 +653,20 @@
         blkContent.querySelector('#_admBlkAdd').addEventListener('click', async () => {
             if (!fp) { _admToast('Fingerprint não calculado', 'err'); return; }
             if (bridge.blk.extra().includes(fp) || bridge.blk.fixed().includes(fp)) {
-                _admToast('Já está na lista', 'err');
-                return;
+                _admToast('Já está na lista', 'err'); return;
             }
             await bridge.blk.add(fp);
             _renderBlkList();
-            _admToast('Fingerprint bloqueado (local)', 'ok');
+            _admToast('Fingerprint bloqueado', 'ok');
         });
-
         blkContent.querySelector('#_admBlkRem').addEventListener('click', async () => {
             if (!fp) { _admToast('Fingerprint não calculado', 'err'); return; }
             if (!bridge.blk.extra().includes(fp)) {
-                _admToast(bridge.blk.fixed().includes(fp) ? 'Na lista fixa — não removível' : 'Não está na lista', 'err');
-                return;
+                _admToast(bridge.blk.fixed().includes(fp) ? 'Na lista fixa' : 'Não está na lista', 'err'); return;
             }
             await bridge.blk.remove(fp);
             _renderBlkList();
-            _admToast('Fingerprint desbloqueado (local)', 'ok');
+            _admToast('Fingerprint liberado', 'ok');
         });
 
         // ─── SESSÕES (Firestore) ───
@@ -702,21 +683,17 @@
 
                 const myId = bridge.deviceId;
 
-                // Atualiza badge da própria sessão remota no Status
+                // Atualiza badge da própria sessão
                 const eu = sessoes.find(s => s.id === myId);
-                const remEl = statusContent.querySelector('#_admRemotaVal');
-                if (remEl) {
-                    if (!eu) {
-                        remEl.innerHTML = `<span class="adm-badge neutral">sem registro</span>`;
-                    } else if (eu.blocked === true) {
-                        remEl.innerHTML = `<span class="adm-badge bad">Bloqueada</span>`;
-                    } else {
-                        remEl.innerHTML = `<span class="adm-badge ok">Livre</span>`;
-                    }
+                const suaEl = statusContent.querySelector('#_admSuaSessao');
+                if (suaEl) {
+                    if (!eu) suaEl.innerHTML = `<span class="adm-badge neutral">sem registro</span>`;
+                    else if (eu.blocked === true) suaEl.innerHTML = `<span class="adm-badge bad">Bloqueada</span>`;
+                    else suaEl.innerHTML = `<span class="adm-badge ok">Livre</span>`;
                 }
 
                 if (!sessoes.length) {
-                    listEl.innerHTML = '<div style="padding:10px;text-align:center;font-size:9.5px;color:#5b5f70;">Nenhuma sessão registrada.</div>';
+                    listEl.innerHTML = '<div style="padding:14px;text-align:center;font-size:9.5px;color:#5b5f70;">Nenhuma sessão registrada.</div>';
                     return;
                 }
 
@@ -730,41 +707,42 @@
                         : fmtAtras(ago);
                     return `<div class="adm-sess-line" style="animation-delay:${i * 20}ms;">
                         <span class="adm-dot ${online ? 'live' : 'offline'}" title="${online ? 'Online' : 'Offline'}"></span>
-                        <div class="adm-sess-info">
-                            <div class="adm-sess-name">${escHtml(s.name || 'Sem nome')}${voceMesmo ? ' (você)' : ''}</div>
-                            <div class="adm-sess-meta">${shortHash(s.id, 7, 4)} · ${tempo} · v${escHtml(s.hubVersion || '?')}</div>
-                        </div>
-                        <span data-sess-id="${s.id}" data-blocked="${bloqueado}" class="adm-sess-toggle ${bloqueado ? 'unblock' : 'block'}">
-                            ${bloqueado ? 'Desbloquear' : 'Bloquear'}
-                        </span>
+                        <span class="adm-sess-name">${escHtml(s.name || 'Sem nome')}${voceMesmo ? ' (você)' : ''}</span>
+                        <span class="adm-sess-meta">${shortHash(s.id, 7, 4)} · ${tempo} · v${escHtml(s.hubVersion || '?')}</span>
+                        <label class="adm-switch" title="${bloqueado ? 'Bloqueado — clique para liberar' : 'Livre — clique para bloquear'}">
+                            <input type="checkbox" ${bloqueado ? 'checked' : ''} data-toggle-id="${s.id}" data-blocked="${bloqueado}" />
+                            <span class="adm-switch-track"></span>
+                        </label>
                     </div>`;
                 }).join('');
 
-                listEl.querySelectorAll('[data-sess-id]').forEach(el => {
-                    el.addEventListener('click', async () => {
-                        const alvoId = el.dataset.sessId;
-                        const estavaBloqueado = el.dataset.blocked === 'true';
-                        el.style.opacity = '.5';
+                listEl.querySelectorAll('input[data-toggle-id]').forEach(inp => {
+                    inp.addEventListener('change', async () => {
+                        const alvoId = inp.dataset.toggleId;
+                        const novoEstado = inp.checked;
+                        const sw = inp.closest('.adm-switch');
+                        sw.classList.add('busy');
                         try {
                             await bridge.firestore.request('PATCH', '/sessions/' + alvoId, {
-                                fields: { blocked: bridge.firestore.value(!estavaBloqueado) }
+                                fields: { blocked: bridge.firestore.value(novoEstado) }
                             }, 'updateMask.fieldPaths=blocked');
-                            _admToast(estavaBloqueado ? 'Desbloqueado' : 'Bloqueado', 'ok');
+                            _admToast(novoEstado ? 'Sessão bloqueada' : 'Sessão liberada', 'ok');
                             carregarSessoes();
                         } catch(e) {
                             _admToast('Falha ao atualizar', 'err');
-                            el.style.opacity = '';
+                            inp.checked = !novoEstado;
+                            sw.classList.remove('busy');
                         }
                     });
                 });
             } catch(e) {
-                listEl.innerHTML = '<div style="padding:10px;text-align:center;font-size:9.5px;color:#fca5b1;">Falha ao carregar.</div>';
+                listEl.innerHTML = '<div style="padding:14px;text-align:center;font-size:9.5px;color:#fca5b1;">Falha ao carregar sessões.</div>';
             }
         }
 
         if (fsOk) {
             carregarSessoes();
-            sessContent.querySelector('#_admSessRefresh')?.addEventListener('click', carregarSessoes);
+            sessSec.querySelector('#_admSessRefresh')?.addEventListener('click', carregarSessoes);
             _sessoesTimer = setInterval(() => {
                 if (!_admPanelEl) { clearInterval(_sessoesTimer); _sessoesTimer = null; return; }
                 carregarSessoes();
@@ -821,7 +799,6 @@
             _admMountLogin();
         }
     }
-
     function toggle() {
         if (_admPanelEl || _admModalEl) {
             _admKillPanel();
@@ -830,7 +807,6 @@
         }
         _admOpen();
     }
-
     function kill() {
         _admKillPanel();
         _admKillModal();
