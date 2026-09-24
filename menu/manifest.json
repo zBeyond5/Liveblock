@@ -182,6 +182,17 @@
       "misc": true,
       "instanceKey": "_groq",
       "url": "https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/modules/groq.js"
-    }
+    },
+    {
+      "id": "bot",
+      "name": "BOT",
+      "description": "Transforme-se em bot.",
+      "icon": "https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/assets/GIF/bot.gif",
+      "enabled": true,
+      "autoload": false,
+      "secret": false,
+      "misc": true,
+      "instanceKey": "_bot",
+      "url": "https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/modules/bot.js"
   ]
 }
