@@ -167,7 +167,6 @@
     "enabled": true,
     "autoload": false,
     "secret": false,
-    "misc": true,   
     "instanceKey": "_voz",
     "url": "https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/modules/voz.js"
     },
@@ -191,7 +190,6 @@
       "enabled": true,
       "autoload": false,
       "secret": false,
-      "misc": true,
       "instanceKey": "_bot",
       "url": "https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/modules/bot.js"
     }
