@@ -75,7 +75,35 @@
         try { localStorage.setItem(STATE_KEY, JSON.stringify(c)); } catch {}
     };
 
-    function getGroqKey() {
+    // ─── Chaves Groq (rotação compartilhada com o Sang Bot) ───
+    // Lê o pool `sanghub_aibot_apiKeys` (mesmo do bot) e rotaciona em 429.
+    // Sem o pool, cai pro legado (sang_api_keys / window._apis).
+    const BOT_KEYS_KEY = 'sanghub_aibot_apiKeys';
+    const VOZ_KEY_CD = new Map(); // key → timestamp de fim do cooldown (legado)
+
+    function lerPoolBot() {
+        try {
+            const raw = localStorage.getItem(BOT_KEYS_KEY);
+            if (!raw) return [];
+            const arr = JSON.parse(raw);
+            if (!Array.isArray(arr)) return [];
+            return arr
+                .filter(k => k && typeof k.key === 'string' && k.key.trim())
+                .map(k => ({
+                    key: k.key.trim(),
+                    cooldownUntil: Number(k.cooldownUntil) || 0,
+                    resetAt: Number(k.resetAt) || 0,
+                    limit: Number(k.limit) || 200000,
+                    usedToday: Number(k.usedToday) || 0
+                }));
+        } catch { return []; }
+    }
+
+    function salvarPoolBot(pool) {
+        try { localStorage.setItem(BOT_KEYS_KEY, JSON.stringify(pool)); } catch {}
+    }
+
+    function lerChaveLegado() {
         try {
             const viaApis = window._apis?.getKey?.('groq');
             if (viaApis) return viaApis;
@@ -89,6 +117,37 @@
             if (v && typeof v === 'object' && typeof v.key === 'string') return v.key;
         } catch (_) {}
         return '';
+    }
+
+    function chavesDisponiveis() {
+        const agora = Date.now();
+        const pool = lerPoolBot();
+        if (pool.length) {
+            return pool
+                .filter(k => !k.cooldownUntil || k.cooldownUntil < agora)
+                .map(k => k.key);
+        }
+        const leg = lerChaveLegado();
+        if (!leg) return [];
+        return (VOZ_KEY_CD.get(leg) || 0) > agora ? [] : [leg];
+    }
+
+    function getGroqKey() {
+        const d = chavesDisponiveis();
+        return d.length ? d[0] : '';
+    }
+
+    function marcarKeyCooldown(key, ms) {
+        if (!key) return;
+        const ate = Date.now() + Math.max(60000, ms);
+        const pool = lerPoolBot();
+        const idx = pool.findIndex(k => k.key === key);
+        if (idx >= 0) {
+            pool[idx].cooldownUntil = ate;
+            salvarPoolBot(pool);
+        } else {
+            VOZ_KEY_CD.set(key, ate);
+        }
     }
 
     // ─── Utilidades ───
@@ -980,60 +1039,85 @@
 
         async function transcreverComWhisper(blob, gen) {
             if (gen !== whisperGen) return;
-            const key = getGroqKey();
-            if (!key) {
-                avisarFalhaWhisper('⚠ sem chave Groq configurada');
-                return;
-            }
-            const form = new FormData();
             const mime = blob.type || recorderMime || 'audio/webm';
-            form.append('file', blob, 'audio.' + extDoMime(mime));
-            form.append('model', WHISPER_MODEL);
-            form.append('language', (config.lang || 'pt-BR').split('-')[0]);
-            form.append('response_format', 'json');
-            try {
-                const res = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
-                    method: 'POST',
-                    headers: { Authorization: 'Bearer ' + key },
-                    body: form
-                });
-                if (!res.ok) {
-                    const fatal = res.status === 401 || res.status === 429;
-                    throw Object.assign(new Error('HTTP ' + res.status), { fatal });
-                }
-                const data = await res.json();
-                if (gen !== whisperGen) return;
-                whisperFalhasSeguidas = 0;
-                const trecho = (data.text || '').trim();
-                if (!trecho) return;
 
-                if (textoFinal && !textoFinal.endsWith(' ')) textoFinal += ' ';
-                textoFinal += trecho;
-                ultimoResultadoEm = Date.now();
-                renderPreview();
-                posicionarPreview();
-                tentarStreaming();
+            let ultimaFalha = '';
+            const tentativas = Math.max(2, chavesDisponiveis().length + 1);
 
-                if (config.modo === 'auto') {
-                    if (timerAutoWhisper) clearTimeout(timerAutoWhisper);
-                    timerAutoWhisper = setTimeout(() => {
-                        timerAutoWhisper = null;
-                        if (ativo && !enviando && !whisperFalando) enviar(false);
-                    }, 400);
-                }
-            } catch (e) {
-                console.warn('[Voz] Falha na transcrição Whisper:', e);
+            for (let tent = 0; tent < tentativas; tent++) {
                 if (gen !== whisperGen) return;
-                whisperFalhasSeguidas++;
-                if (e.fatal || whisperFalhasSeguidas >= WHISPER_MAX_FALHAS) {
-                    avisarFalhaWhisper(e.fatal ? '⚠ chave Groq inválida/limite atingido' : '⚠ Groq indisponível — voz desativada');
-                    habilitado = false;
-                    pausado = false;
-                    _parar();
-                    dispararEstadoVoz();
-                } else {
-                    avisarFalhaWhisper('⚠ falha na transcrição, tentando de novo');
+                const key = getGroqKey();
+                if (!key) {
+                    avisarFalhaWhisper('⚠ sem chave Groq disponível');
+                    return;
                 }
+
+                const form = new FormData();
+                form.append('file', blob, 'audio.' + extDoMime(mime));
+                form.append('model', WHISPER_MODEL);
+                form.append('language', (config.lang || 'pt-BR').split('-')[0]);
+                form.append('response_format', 'json');
+
+                try {
+                    const res = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
+                        method: 'POST',
+                        headers: { Authorization: 'Bearer ' + key },
+                        body: form
+                    });
+
+                    if (res.status === 429) {
+                        const ra = parseInt(res.headers.get('retry-after') || '0', 10);
+                        marcarKeyCooldown(key, ra > 0 ? ra * 1000 : 60000);
+                        ultimaFalha = 'rate limit';
+                        continue;
+                    }
+                    if (res.status === 401) {
+                        marcarKeyCooldown(key, 24 * 60 * 60 * 1000);
+                        ultimaFalha = 'chave inválida';
+                        continue;
+                    }
+                    if (!res.ok) throw new Error('HTTP ' + res.status);
+
+                    const data = await res.json();
+                    if (gen !== whisperGen) return;
+                    whisperFalhasSeguidas = 0;
+                    const trecho = (data.text || '').trim();
+                    if (!trecho) return;
+
+                    if (textoFinal && !textoFinal.endsWith(' ')) textoFinal += ' ';
+                    textoFinal += trecho;
+                    ultimoResultadoEm = Date.now();
+                    renderPreview();
+                    posicionarPreview();
+                    tentarStreaming();
+
+                    if (config.modo === 'auto') {
+                        if (timerAutoWhisper) clearTimeout(timerAutoWhisper);
+                        timerAutoWhisper = setTimeout(() => {
+                            timerAutoWhisper = null;
+                            if (ativo && !enviando && !whisperFalando) enviar(false);
+                        }, 400);
+                    }
+                    return;
+                } catch (e) {
+                    if (e.name === 'AbortError') return;
+                    console.warn('[Voz] Falha na transcrição Whisper:', e);
+                    ultimaFalha = e.message || String(e);
+                    // erro de rede — vale tentar próxima key também
+                    continue;
+                }
+            }
+
+            if (gen !== whisperGen) return;
+            whisperFalhasSeguidas++;
+            if (whisperFalhasSeguidas >= WHISPER_MAX_FALHAS) {
+                avisarFalhaWhisper('⚠ Groq indisponível — voz desativada');
+                habilitado = false;
+                pausado = false;
+                _parar();
+                dispararEstadoVoz();
+            } else {
+                avisarFalhaWhisper(ultimaFalha ? ('⚠ ' + ultimaFalha + ' — tentando de novo') : '⚠ falha na transcrição');
             }
         }
 
@@ -1406,25 +1490,28 @@ Eu tava indo pra casa, mas aí eu vi ele.
         // a tradução pro idioma alvo. Retorna '' em qualquer falha — o caller
         // simplesmente envia só o original nesse caso.
         async function traduzirComGroq(texto, codigoIdioma) {
-            const key = getGroqKey();
-            if (!key) return '';
             const nomeIdioma = IDIOMAS_BILINGUE[codigoIdioma] || 'English';
+            const tentativas = Math.max(2, chavesDisponiveis().length + 1);
 
-            const ctrl = new AbortController();
-            const timer = setTimeout(() => ctrl.abort(), 8000);
-            try {
-                const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-                    method: 'POST',
-                    headers: {
-                        'Authorization': 'Bearer ' + key,
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify({
-                        model: 'openai/gpt-oss-20b',
-                        messages: [
-                            {
-                                role: 'system',
-                                content: `Você é um tradutor direto. Traduza o texto do usuário para ${nomeIdioma}.
+            for (let tent = 0; tent < tentativas; tent++) {
+                const key = getGroqKey();
+                if (!key) return '';
+
+                const ctrl = new AbortController();
+                const timer = setTimeout(() => ctrl.abort(), 8000);
+                try {
+                    const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+                        method: 'POST',
+                        headers: {
+                            'Authorization': 'Bearer ' + key,
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({
+                            model: 'openai/gpt-oss-20b',
+                            messages: [
+                                {
+                                    role: 'system',
+                                    content: `Você é um tradutor direto. Traduza o texto do usuário para ${nomeIdioma}.
 
 Regras:
 1. Responda SOMENTE com a tradução, sem aspas, sem markdown, sem explicações.
@@ -1443,32 +1530,47 @@ Saída (Spanish): ¿qué pasa tío, todo bien?
 Entrada: abre o youtube pra mim
 Saída (English): open youtube for me
 Saída (Japanese): ユーチューブを開いて`
-                            },
-                            { role: 'user', content: texto }
-                        ],
-                        max_tokens: 400,
-                        temperature: 0.2,
-                        top_p: 0.9
-                    }),
-                    signal: ctrl.signal
-                });
-                if (!res.ok) throw new Error('HTTP ' + res.status);
-                const data = await res.json();
-                const bruto = data?.choices?.[0]?.message?.content || '';
-                const limpo = String(bruto).trim()
-                    .replace(/^["'`]+|["'`]+$/g, '')
-                    .replace(/^[-–—]\s*/, '')
-                    .replace(/\n+/g, ' ')
-                    .trim();
-                return limpo;
-            } catch (e) {
-                if (e.name !== 'AbortError') {
-                    console.warn('[Voz] Tradução bilíngue falhou:', e);
+                                },
+                                { role: 'user', content: texto }
+                            ],
+                            max_tokens: 400,
+                            temperature: 0.2,
+                            top_p: 0.9
+                        }),
+                        signal: ctrl.signal
+                    });
+
+                    if (res.status === 429) {
+                        const ra = parseInt(res.headers.get('retry-after') || '0', 10);
+                        marcarKeyCooldown(key, ra > 0 ? ra * 1000 : 60000);
+                        clearTimeout(timer);
+                        continue;
+                    }
+                    if (res.status === 401) {
+                        marcarKeyCooldown(key, 24 * 60 * 60 * 1000);
+                        clearTimeout(timer);
+                        continue;
+                    }
+                    if (!res.ok) throw new Error('HTTP ' + res.status);
+
+                    const data = await res.json();
+                    const bruto = data?.choices?.[0]?.message?.content || '';
+                    return String(bruto).trim()
+                        .replace(/^["'`]+|["'`]+$/g, '')
+                        .replace(/^[-–—]\s*/, '')
+                        .replace(/\n+/g, ' ')
+                        .trim();
+                } catch (e) {
+                    if (e.name !== 'AbortError') {
+                        console.warn('[Voz] Tradução bilíngue falhou:', e);
+                    }
+                    clearTimeout(timer);
+                    return '';
+                } finally {
+                    clearTimeout(timer);
                 }
-                return '';
-            } finally {
-                clearTimeout(timer);
             }
+            return '';
         }
 
         // ─── Envio de um bloco ───
