@@ -1,4 +1,4 @@
-// modules/admin.js — Painel Admin do Sang Hub (horizontal)
+// modules/admin.js — Painel Admin do Sang Hub · Aurora Glass
 (function() {
     'use strict';
     const UID = '_admin';
@@ -6,7 +6,7 @@
 
     const bridge = window._hubBridge;
     if (!bridge) {
-        console.warn('[Admin] _hubBridge não encontrado — carregue via o hub.');
+        console.warn('[Admin] _hubBridge não encontrado.');
         return;
     }
 
@@ -16,7 +16,7 @@
     const ADMIN_TOKEN_KEY = 'sanghub_admin_token';
     const ADMIN_TTL = 30 * 24 * 60 * 60 * 1000;
     const SESSAO_ONLINE_MS = 5 * 60 * 1000;
-    const SESSOES_REFRESH_MS = 30 * 1000;
+    const SESSOES_REFRESH_MS = 20 * 1000;
 
     // ═══ STATE ═══
     let _admAuthed = false;
@@ -25,39 +25,26 @@
     let _sessoesTimer = null;
 
     // ═══ AUTH ═══
-    function _admCheck(u, p) {
-        try { return u === atob(ADMIN_U_B64) && p === atob(ADMIN_P_B64); }
-        catch(e) { return false; }
-    }
+    function _admCheck(u, p) { try { return u === atob(ADMIN_U_B64) && p === atob(ADMIN_P_B64); } catch(e) { return false; } }
     function _admHasToken() {
         try {
             const raw = localStorage.getItem(ADMIN_TOKEN_KEY);
             if (!raw) return false;
-            const obj = JSON.parse(raw);
-            if (!obj || !obj.t) return false;
-            if (Date.now() - obj.t > ADMIN_TTL) {
-                localStorage.removeItem(ADMIN_TOKEN_KEY);
-                return false;
-            }
+            const o = JSON.parse(raw);
+            if (!o || !o.t || Date.now() - o.t > ADMIN_TTL) { localStorage.removeItem(ADMIN_TOKEN_KEY); return false; }
             return true;
         } catch(e) { return false; }
     }
-    function _admSaveToken() {
-        try { localStorage.setItem(ADMIN_TOKEN_KEY, JSON.stringify({ t: Date.now() })); } catch(e) {}
-    }
-    function _admClearToken() {
-        try { localStorage.removeItem(ADMIN_TOKEN_KEY); } catch(e) {}
-    }
+    function _admSaveToken() { try { localStorage.setItem(ADMIN_TOKEN_KEY, JSON.stringify({ t: Date.now() })); } catch(e) {} }
+    function _admClearToken() { try { localStorage.removeItem(ADMIN_TOKEN_KEY); } catch(e) {} }
 
     // ═══ KILL ═══
-    function _admKillModal() {
-        if (_admModalEl) { _admAnimateOutAndRemove(_admModalEl); _admModalEl = null; }
-    }
+    function _admKillModal() { if (_admModalEl) { _admAnimateOut(_admModalEl); _admModalEl = null; } }
     function _admKillPanel() {
-        if (_admPanelEl) { _admAnimateOutAndRemove(_admPanelEl); _admPanelEl = null; }
+        if (_admPanelEl) { _admAnimateOut(_admPanelEl); _admPanelEl = null; }
         if (_sessoesTimer) { clearInterval(_sessoesTimer); _sessoesTimer = null; }
     }
-    function _admAnimateOutAndRemove(el) {
+    function _admAnimateOut(el) {
         if (!el) return;
         el.style.transition = 'opacity .16s ease, transform .16s ease';
         el.style.opacity = '0';
@@ -69,15 +56,12 @@
     function _admToast(msg, kind) {
         _admEnsureStyle();
         const t = document.createElement('div');
-        t.setAttribute('data-hub', '1');
         t.className = 'adm-toast' + (kind ? ' ' + kind : '');
+        t.setAttribute('data-hub-admin', '1');
         t.textContent = msg;
         document.body.appendChild(t);
         requestAnimationFrame(() => t.classList.add('show'));
-        setTimeout(() => {
-            t.classList.remove('show');
-            setTimeout(() => t.remove(), 250);
-        }, 2200);
+        setTimeout(() => { t.classList.remove('show'); setTimeout(() => t.remove(), 250); }, 2400);
     }
 
     // ═══ STYLE ═══
@@ -88,71 +72,116 @@
         const st = document.createElement('style');
         st.setAttribute('data-hub-admin', '1');
         st.textContent = `
-        @keyframes hubFade{from{opacity:0;transform:translateY(-8px) scale(0.98)}to{opacity:1;transform:none}}
-        @keyframes admBoxIn{from{opacity:0;transform:translateY(14px) scale(.96)}to{opacity:1;transform:none}}
-        @keyframes admPanelIn{from{opacity:0;transform:translateY(-10px) scale(.98)}to{opacity:1;transform:none}}
-        @keyframes admShine{to{background-position:-200% center}}
-        @keyframes admShake{10%,90%{transform:translateX(-1px)}20%,80%{transform:translateX(2px)}30%,50%,70%{transform:translateX(-4px)}40%,60%{transform:translateX(4px)}}
-        @keyframes admPulse{0%,100%{opacity:1}50%{opacity:.35}}
-        @keyframes admSlideIn{from{opacity:0;transform:translateX(-4px)}to{opacity:1;transform:none}}
-        @keyframes admLive{0%,100%{opacity:1;box-shadow:0 0 0 0 rgba(52,211,153,.6)}50%{opacity:.7;box-shadow:0 0 0 4px rgba(52,211,153,0)}}
+        /* ═══ AURORA GLASS ═══ */
+        @property --aur-angle{syntax:'<angle>';inherits:false;initial-value:0deg}
+        @keyframes aurSpin{to{--aur-angle:360deg}}
+        @keyframes aurShine{to{background-position:-200% center}}
+        @keyframes aurFade{from{opacity:0}to{opacity:1}}
+        @keyframes aurPopIn{from{opacity:0;transform:translateY(14px) scale(.96)}to{opacity:1;transform:none}}
+        @keyframes aurPanelIn{from{opacity:0;transform:translateY(-10px) scale(.98)}to{opacity:1;transform:none}}
+        @keyframes aurShake{10%,90%{transform:translateX(-1px)}20%,80%{transform:translateX(2px)}30%,50%,70%{transform:translateX(-4px)}40%,60%{transform:translateX(4px)}}
+        @keyframes aurPulse{0%,100%{opacity:1}50%{opacity:.35}}
+        @keyframes aurLive{0%,100%{opacity:1;box-shadow:0 0 0 0 rgba(52,211,153,.6)}50%{opacity:.75;box-shadow:0 0 0 4px rgba(52,211,153,0)}}
+        @keyframes aurSlideIn{from{opacity:0;transform:translateX(-4px)}to{opacity:1;transform:none}}
+        @keyframes aurFloat{0%,100%{transform:translate(0,0) scale(1)}50%{transform:translate(8px,-6px) scale(1.05)}}
 
-        .adm-box{position:relative;animation:admBoxIn .4s cubic-bezier(0.16,1,0.3,1)}
-        .adm-box.adm-shake{animation:admShake .4s ease}
-        .adm-panel{animation:admPanelIn .3s cubic-bezier(0.16,1,0.3,1)}
+        .adm-box{position:relative;animation:aurPopIn .4s cubic-bezier(0.16,1,0.3,1)}
+        .adm-box.adm-shake{animation:aurShake .4s ease}
 
-        .adm-title-shine{background:linear-gradient(100deg,#22d3ee 0%,#a78bfa 35%,#fff 50%,#a78bfa 65%,#22d3ee 100%);
+        .adm-panel{animation:aurPanelIn .3s cubic-bezier(0.16,1,0.3,1);
+            position:relative;isolation:isolate}
+
+        /* Aurora background glows */
+        .adm-panel::before{
+            content:'';position:absolute;inset:0;z-index:-1;border-radius:inherit;overflow:hidden;
+            background:
+                radial-gradient(circle at 12% 0%, rgba(34,211,238,0.14), transparent 42%),
+                radial-gradient(circle at 88% 100%, rgba(167,139,250,0.14), transparent 42%),
+                radial-gradient(circle at 50% 50%, rgba(74,222,128,0.05), transparent 60%),
+                radial-gradient(circle at 100% 0%, rgba(244,114,182,0.06), transparent 45%),
+                linear-gradient(175deg, rgba(14,18,28,0.82), rgba(8,10,16,0.92));
+            animation:aurFloat 18s ease-in-out infinite;
+        }
+        /* Iridescent border */
+        .adm-panel::after{
+            content:'';position:absolute;inset:0;z-index:-1;border-radius:inherit;pointer-events:none;
+            padding:1px;
+            background:linear-gradient(135deg, rgba(34,211,238,0.35), rgba(167,139,250,0.3) 40%, rgba(244,114,182,0.25) 70%, rgba(52,211,153,0.3));
+            -webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);
+            -webkit-mask-composite:xor;mask-composite:exclude;
+        }
+
+        .adm-title-shine{
+            background:linear-gradient(100deg,#22d3ee 0%,#a78bfa 35%,#fff 50%,#f472b6 65%,#22d3ee 100%);
             background-size:220% auto;-webkit-background-clip:text;background-clip:text;color:transparent;
-            animation:admShine 3.2s linear infinite}
+            animation:aurShine 3.4s linear infinite;
+        }
 
         .adm-input{width:100%;box-sizing:border-box;padding:10px 12px;margin-bottom:12px;
-            background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.1);border-radius:9px;
-            color:#f1f2f8;font-size:12.5px;outline:none;font-family:inherit;transition:border-color .18s,box-shadow .18s}
-        .adm-input:focus{border-color:rgba(34,211,238,.6);box-shadow:0 0 0 3px rgba(34,211,238,.15)}
+            background:rgba(255,255,255,0.045);border:1px solid rgba(255,255,255,0.1);border-radius:9px;
+            color:#f1f2f8;font-size:12.5px;outline:none;font-family:inherit;
+            transition:border-color .18s,box-shadow .18s,background .18s}
+        .adm-input:focus{border-color:rgba(34,211,238,.55);
+            box-shadow:0 0 0 3px rgba(34,211,238,.14),0 0 24px rgba(34,211,238,.1);
+            background:rgba(255,255,255,0.06)}
 
-        .adm-sec{background:rgba(255,255,255,0.022);border:1px solid rgba(255,255,255,0.055);
-            border-radius:10px;padding:10px 12px;display:flex;flex-direction:column;min-height:0}
+        /* Sections with glass effect */
+        .adm-sec{position:relative;background:rgba(255,255,255,0.024);
+            border:1px solid rgba(255,255,255,0.06);
+            border-radius:12px;padding:10px 12px;display:flex;flex-direction:column;min-height:0;
+            backdrop-filter:blur(6px);
+            transition:border-color .25s,background .25s,box-shadow .25s}
+        .adm-sec:hover{border-color:rgba(34,211,238,0.16);
+            background:rgba(255,255,255,0.032);
+            box-shadow:0 0 24px rgba(34,211,238,0.04)}
         .adm-sec-head{display:flex;align-items:center;justify-content:space-between;gap:6px;
             font-size:8.5px;font-weight:800;letter-spacing:.1em;text-transform:uppercase;
-            color:#7d8194;margin-bottom:8px;padding-bottom:6px;
-            border-bottom:1px solid rgba(255,255,255,0.045)}
+            color:#8b8fa3;margin-bottom:8px;padding-bottom:6px;
+            border-bottom:1px solid rgba(255,255,255,0.05)}
         .adm-sec-head > span{display:flex;align-items:center;gap:6px}
-        .adm-sec-head svg{opacity:.7}
+        .adm-sec-head svg{opacity:.75}
 
+        /* Dots */
         .adm-dot{display:inline-block;width:6px;height:6px;border-radius:50%;vertical-align:middle;flex-shrink:0}
-        .adm-dot.loading{background:#22d3ee;animation:admPulse 1s infinite}
-        .adm-dot.synced{background:#34d399;box-shadow:0 0 6px rgba(52,211,153,.7)}
+        .adm-dot.loading{background:#22d3ee;animation:aurPulse 1s infinite}
+        .adm-dot.synced{background:#34d399;box-shadow:0 0 8px rgba(52,211,153,.75)}
         .adm-dot.error{background:#fb7185}
-        .adm-dot.live{background:#34d399;animation:admLive 2s ease-in-out infinite}
+        .adm-dot.live{background:#34d399;animation:aurLive 2s ease-in-out infinite}
         .adm-dot.offline{background:#4b4f60}
 
+        /* Badges */
         .adm-badge{display:inline-flex;align-items:center;gap:5px;padding:2px 8px;border-radius:14px;font-size:8.5px;
             font-weight:800;letter-spacing:.04em;text-transform:uppercase;border:1px solid transparent}
         .adm-badge::before{content:'';width:4px;height:4px;border-radius:50%;flex-shrink:0}
         .adm-badge.ok{background:rgba(52,211,153,.1);color:#a7f3d0;border-color:rgba(52,211,153,.28)}
-        .adm-badge.ok::before{background:#34d399}
+        .adm-badge.ok::before{background:#34d399;box-shadow:0 0 5px rgba(52,211,153,.7)}
         .adm-badge.bad{background:rgba(251,113,133,.1);color:#fca5b1;border-color:rgba(251,113,133,.28)}
         .adm-badge.bad::before{background:#fb7185}
-        .adm-badge.neutral{background:rgba(255,255,255,.04);color:#c7cad6;border-color:rgba(255,255,255,.08)}
+        .adm-badge.neutral{background:rgba(255,255,255,.045);color:#c7cad6;border-color:rgba(255,255,255,.08)}
         .adm-badge.neutral::before{background:#5b5f70}
 
+        /* Rows */
         .adm-row{display:flex;justify-content:space-between;align-items:center;
             font-size:10px;padding:5px 0;color:#c7cad6}
-        .adm-row + .adm-row{border-top:1px dashed rgba(255,255,255,.035)}
+        .adm-row + .adm-row{border-top:1px dashed rgba(255,255,255,.04)}
         .adm-row-label{color:#8b8fa3}
         .adm-row-val{color:#f1f2f8;font-weight:700;font-variant-numeric:tabular-nums;font-size:10px}
 
-        .adm-action-btn{transition:all .15s cubic-bezier(0.16,1,0.3,1);display:flex;align-items:center;gap:5px;justify-content:center;
-            cursor:pointer;font-family:inherit;border-radius:8px}
-        .adm-action-btn:hover{background:rgba(255,255,255,0.07)!important;transform:translateY(-1px)}
+        /* Buttons */
+        .adm-action-btn{transition:all .15s cubic-bezier(0.16,1,0.3,1);
+            display:flex;align-items:center;gap:5px;justify-content:center;cursor:pointer;font-family:inherit;border-radius:8px}
+        .adm-action-btn:hover{background:rgba(255,255,255,0.08)!important;transform:translateY(-1px);
+            box-shadow:0 4px 14px rgba(0,0,0,.25)}
         .adm-action-btn:active{transform:translateY(0) scale(.97)}
         .adm-action-btn svg{flex-shrink:0}
 
-        .adm-mode-btn{transition:all .15s cubic-bezier(0.16,1,0.3,1);cursor:pointer;font-family:inherit;border-radius:7px;
-            padding:6px 4px;font-size:9px;font-weight:800;letter-spacing:.04em}
-        .adm-mode-btn:hover:not(.active){background:rgba(255,255,255,0.07)!important}
+        .adm-mode-btn{transition:all .18s cubic-bezier(0.16,1,0.3,1);cursor:pointer;font-family:inherit;border-radius:7px;
+            padding:6px 4px;font-size:9px;font-weight:800;letter-spacing:.04em;
+            position:relative;overflow:hidden}
+        .adm-mode-btn:hover:not(.active){background:rgba(255,255,255,0.07)!important;transform:translateY(-1px)}
         .adm-mode-btn:active{transform:scale(.97)}
 
+        /* Blacklist */
         .adm-blk-line{display:flex;align-items:center;gap:6px;padding:4px 7px;border-radius:6px;
             font-family:ui-monospace,'SF Mono',Menlo,monospace;font-size:8.5px;color:#b8bcca;
             background:rgba(255,255,255,0.018);border:1px solid rgba(255,255,255,0.035)}
@@ -163,42 +192,66 @@
             border-radius:4px;transition:background .15s}
         .adm-blk-rm:hover{background:rgba(251,113,133,.15)}
 
-        .adm-sess-list{flex:1; min-height:0; overflow-y:auto; display:flex; flex-direction:column; gap:3px; padding-right:2px;}
-        .adm-sess-line{display:flex;align-items:center;gap:10px;padding:7px 9px;border-radius:8px;
-            background:rgba(255,255,255,0.022);border:1px solid rgba(255,255,255,0.045);
-            transition:background .15s;animation:admSlideIn .22s cubic-bezier(0.16,1,0.3,1) backwards}
-        .adm-sess-line:hover{background:rgba(255,255,255,0.045)}
-        .adm-sess-name{font-weight:700;color:#f1f2f8;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
-            flex-shrink:0; max-width:38%; min-width:60px;}
-        .adm-sess-meta{flex:1; min-width:0; font-size:9px;color:#7d8194;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
-            font-family:ui-monospace,'SF Mono',Menlo,monospace}
+        /* Sessions (main content) */
+        .adm-sess-list{flex:1;min-height:0;overflow-y:auto;display:flex;flex-direction:column;gap:4px;padding-right:2px}
+        .adm-sess-list::-webkit-scrollbar{width:5px}
+        .adm-sess-list::-webkit-scrollbar-thumb{background:linear-gradient(#22d3ee,#a78bfa);border-radius:3px}
+        .adm-sess-line{display:flex;align-items:center;gap:10px;padding:9px 11px;border-radius:10px;
+            background:rgba(255,255,255,0.024);border:1px solid rgba(255,255,255,0.05);
+            transition:all .18s cubic-bezier(0.16,1,0.3,1);
+            animation:aurSlideIn .22s cubic-bezier(0.16,1,0.3,1) backwards;
+            backdrop-filter:blur(4px)}
+        .adm-sess-line:hover{background:rgba(255,255,255,0.05);
+            border-color:rgba(34,211,238,0.18);
+            box-shadow:0 4px 16px rgba(0,0,0,.2),0 0 24px rgba(34,211,238,0.03)}
+        .adm-sess-name{font-weight:700;color:#f1f2f8;font-size:11.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+            flex-shrink:0;max-width:34%;min-width:70px}
+        .adm-sess-meta{flex:1;min-width:0;font-size:9px;color:#8b8fa3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+            font-family:ui-monospace,'SF Mono',Menlo,monospace;letter-spacing:.01em}
 
-        .adm-switch{position:relative;display:inline-block;width:28px;height:15px;flex-shrink:0;cursor:pointer}
+        /* Switch — block/unblock */
+        .adm-switch{position:relative;display:inline-block;width:30px;height:16px;flex-shrink:0;cursor:pointer}
         .adm-switch input{opacity:0;width:0;height:0;position:absolute}
-        .adm-switch-track{position:absolute;inset:0;background:rgba(52,211,153,0.14);
-            border:1px solid rgba(52,211,153,0.4);border-radius:20px;transition:.2s}
-        .adm-switch-track::before{content:'';position:absolute;width:11px;height:11px;left:1px;top:1px;
-            background:#34d399;border-radius:50%;transition:.2s;box-shadow:0 0 6px rgba(52,211,153,.6)}
-        .adm-switch input:checked + .adm-switch-track{background:rgba(251,113,133,0.14);
-            border-color:rgba(251,113,133,0.45)}
-        .adm-switch input:checked + .adm-switch-track::before{background:#fb7185;transform:translateX(13px);
-            box-shadow:0 0 6px rgba(251,113,133,.6)}
+        .adm-switch-track{position:absolute;inset:0;background:linear-gradient(120deg,rgba(52,211,153,0.18),rgba(34,211,238,0.18));
+            border:1px solid rgba(52,211,153,0.42);border-radius:20px;transition:.22s cubic-bezier(0.16,1,0.3,1);
+            box-shadow:inset 0 0 6px rgba(52,211,153,.08)}
+        .adm-switch-track::before{content:'';position:absolute;width:12px;height:12px;left:1px;top:1px;
+            background:linear-gradient(135deg,#34d399,#22d3ee);border-radius:50%;transition:.22s cubic-bezier(0.16,1,0.3,1);
+            box-shadow:0 0 8px rgba(52,211,153,.7)}
+        .adm-switch input:checked + .adm-switch-track{
+            background:linear-gradient(120deg,rgba(251,113,133,0.2),rgba(244,114,182,0.2));
+            border-color:rgba(251,113,133,0.48);
+            box-shadow:inset 0 0 6px rgba(251,113,133,.1)}
+        .adm-switch input:checked + .adm-switch-track::before{
+            background:linear-gradient(135deg,#fb7185,#f472b6);
+            transform:translateX(14px);box-shadow:0 0 8px rgba(251,113,133,.75)}
         .adm-switch.busy{opacity:.5;pointer-events:none}
 
-        .adm-foot{padding:8px 14px;background:rgba(0,0,0,0.22);border-top:1px solid rgba(255,255,255,0.045);
+        /* Footer */
+        .adm-foot{padding:9px 14px;background:rgba(0,0,0,0.22);
+            border-top:1px solid rgba(255,255,255,0.05);
             display:flex;align-items:center;justify-content:space-between;gap:8px;
-            font-size:9px;color:#7d8194;flex-shrink:0}
+            font-size:9px;color:#8b8fa3;flex-shrink:0;
+            border-radius:0 0 14px 14px}
 
+        /* Toast */
         .adm-toast{position:fixed;top:24px;left:50%;transform:translateX(-50%) translateY(-10px);
             z-index:2147483647;padding:10px 18px;border-radius:10px;
             font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
             font-size:11.5px;font-weight:700;color:#cffafe;
-            background:rgba(14,14,20,0.97);border:1px solid rgba(34,211,238,0.5);
-            box-shadow:0 10px 30px rgba(0,0,0,0.5);backdrop-filter:blur(10px);
+            background:linear-gradient(175deg,rgba(14,18,24,0.97),rgba(8,10,14,0.98));
+            border:1px solid rgba(34,211,238,0.5);
+            box-shadow:0 10px 30px rgba(0,0,0,0.5),0 0 40px rgba(34,211,238,0.1);
+            backdrop-filter:blur(10px);
             transition:opacity .25s ease,transform .25s ease;opacity:0;pointer-events:none}
         .adm-toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
-        .adm-toast.ok{color:#a7f3d0;border-color:rgba(52,211,153,0.5)}
-        .adm-toast.err{color:#fecdd3;border-color:rgba(251,113,133,0.5)}
+        .adm-toast.ok{color:#a7f3d0;border-color:rgba(52,211,153,0.5);box-shadow:0 10px 30px rgba(0,0,0,0.5),0 0 40px rgba(52,211,153,0.12)}
+        .adm-toast.err{color:#fecdd3;border-color:rgba(251,113,133,0.5);box-shadow:0 10px 30px rgba(0,0,0,0.5),0 0 40px rgba(251,113,133,0.12)}
+
+        .adm-icon-box{display:inline-flex;align-items:center;justify-content:center;
+            width:24px;height:24px;border-radius:8px;
+            background:linear-gradient(135deg,rgba(34,211,238,0.14),rgba(167,139,250,0.14));
+            border:1px solid rgba(34,211,238,0.32);flex-shrink:0}
         `;
         document.head.appendChild(st);
     }
@@ -207,8 +260,8 @@
     const ICON = {
         lock:    `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#22d3ee" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V6a4 4 0 0 1 8 0v4"/></svg>`,
         gear:    `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#22d3ee" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>`,
-        shield:  `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>`,
         status:  `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>`,
+        shield:  `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>`,
         zap:     `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>`,
         user:    `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>`,
         refresh: `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 12a8 8 0 1 1-2.34-5.66M20 4v5h-5"/></svg>`,
@@ -224,7 +277,7 @@
     function escHtml(s) {
         return String(s ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
     }
-    function fmtDuracao(ms) {
+    function fmtDur(ms) {
         const s = Math.floor(ms / 1000);
         const m = Math.floor(s / 60);
         if (m < 60) return m + 'min';
@@ -236,10 +289,10 @@
         const s = Math.floor(ms / 1000);
         if (s < 60) return 'agora';
         const m = Math.floor(s / 60);
-        if (m < 60) return m + 'min atrás';
+        if (m < 60) return m + 'min';
         const h = Math.floor(m / 60);
-        if (h < 24) return h + 'h atrás';
-        return Math.floor(h / 24) + 'd atrás';
+        if (h < 24) return h + 'h';
+        return Math.floor(h / 24) + 'd';
     }
     function shortHash(h, head, tail) {
         if (!h) return '—';
@@ -255,46 +308,50 @@
         _admKillPanel();
 
         const wrap = document.createElement('div');
-        wrap.setAttribute('data-hub', '1');
+        wrap.setAttribute('data-hub-admin', '1');
         wrap.setAttribute('data-sang-ui', '');
         wrap.style.cssText = `
             position: fixed; inset: 0; z-index: 2147483647;
             display: flex; align-items: center; justify-content: center;
-            background: rgba(0,0,0,0.55); backdrop-filter: blur(6px);
+            background: radial-gradient(circle at 50% 40%, rgba(34,211,238,0.06), transparent 60%),
+                        radial-gradient(circle at 20% 80%, rgba(167,139,250,0.06), transparent 50%),
+                        rgba(0,0,0,0.62);
+            backdrop-filter: blur(8px);
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-            animation: hubFade .2s ease-out;
+            animation:aurFade .2s ease-out;
         `;
+
         const box = document.createElement('div');
         box.className = 'adm-box';
         box.style.cssText = `
-            width: 320px; border-radius: 14px; padding: 20px;
-            background: linear-gradient(175deg, rgba(20,20,28,0.98), rgba(9,9,14,0.99));
-            border: 1px solid rgba(255,255,255,0.06);
-            box-shadow: 0 24px 60px rgba(0,0,0,0.7);
+            width: 320px; border-radius: 14px; padding: 20px; position:relative; isolation:isolate;
+            background: linear-gradient(175deg, rgba(16,20,30,0.9), rgba(8,10,16,0.96));
+            backdrop-filter: blur(24px) saturate(160%);
+            border: 1px solid transparent;
+            box-shadow: 0 24px 60px rgba(0,0,0,0.7), 0 0 60px rgba(34,211,238,0.06);
         `;
         box.innerHTML = `
-            <div style="display:flex; align-items:center; gap:8px; margin-bottom: 2px;">
+            <div style="display:flex; align-items:center; gap:8px; margin-bottom:2px;">
                 ${ICON.lock}
-                <span class="adm-title-shine" style="font-size: 12.5px; font-weight: 800; letter-spacing: .08em;">ACESSO RESTRITO</span>
+                <span class="adm-title-shine" style="font-size:12.5px; font-weight:800; letter-spacing:.08em;">ACESSO RESTRITO</span>
             </div>
-            <div style="font-size: 9px; color: #7d8194; letter-spacing: .05em; text-transform: uppercase; margin-bottom: 16px;">Sang Hub · Painel Administrativo</div>
-            <label style="display:block; font-size: 9px; color: #8b8fa3; text-transform: uppercase; letter-spacing: .06em; margin-bottom: 4px; font-weight: 700;">Usuário</label>
+            <div style="font-size:9px; color:#7d8194; letter-spacing:.05em; text-transform:uppercase; margin-bottom:16px;">Sang Hub · Painel Administrativo</div>
+            <label style="display:block; font-size:9px; color:#8b8fa3; text-transform:uppercase; letter-spacing:.06em; margin-bottom:4px; font-weight:700;">Usuário</label>
             <input id="_admU" class="adm-input" type="text" autocomplete="off" spellcheck="false" />
-            <label style="display:block; font-size: 9px; color: #8b8fa3; text-transform: uppercase; letter-spacing: .06em; margin-bottom: 4px; font-weight: 700;">Senha</label>
+            <label style="display:block; font-size:9px; color:#8b8fa3; text-transform:uppercase; letter-spacing:.06em; margin-bottom:4px; font-weight:700;">Senha</label>
             <input id="_admP" class="adm-input" type="password" autocomplete="off" spellcheck="false" />
-            <label style="display: flex; align-items: center; gap: 8px; font-size: 10.5px; color: #c7cad6; margin-bottom: 14px; cursor: pointer; user-select: none;">
-                <input id="_admR" type="checkbox" style="accent-color: #22d3ee; width: 13px; height: 13px; cursor: pointer;" />
-                Lembrar de mim neste dispositivo
+            <label style="display:flex; align-items:center; gap:8px; font-size:10.5px; color:#c7cad6; margin-bottom:14px; cursor:pointer; user-select:none;">
+                <input id="_admR" type="checkbox" style="accent-color:#22d3ee; width:13px; height:13px; cursor:pointer;" />
+                Lembrar de mim
             </label>
-            <div id="_admErr" style="font-size: 10px; color: #fca5b1; min-height: 13px; margin-bottom: 8px;"></div>
-            <div style="display: flex; gap: 8px;">
-                <button id="_admCancel" class="adm-action-btn" style="flex: 1; padding: 10px; border-radius: 8px;
-                    background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08);
-                    color: #c7cad6; font-size: 10.5px; font-weight: 700;">Cancelar</button>
-                <button id="_admOk" class="adm-action-btn" style="flex: 1; padding: 10px; border-radius: 8px;
-                    background: linear-gradient(120deg, #22d3ee, #a78bfa); border: none;
-                    color: #0b0b10; font-size: 10.5px; font-weight: 800;
-                    letter-spacing: .03em;">ENTRAR</button>
+            <div id="_admErr" style="font-size:10px; color:#fca5b1; min-height:13px; margin-bottom:8px;"></div>
+            <div style="display:flex; gap:8px;">
+                <button id="_admCancel" class="adm-action-btn" style="flex:1; padding:10px; border-radius:8px;
+                    background:rgba(255,255,255,0.04); border:1px solid rgba(255,255,255,0.08);
+                    color:#c7cad6; font-size:10.5px; font-weight:700;">Cancelar</button>
+                <button id="_admOk" class="adm-action-btn" style="flex:1; padding:10px; border-radius:8px;
+                    background:linear-gradient(120deg,#22d3ee,#a78bfa); border:none;
+                    color:#0b0b10; font-size:10.5px; font-weight:800; letter-spacing:.03em;">ENTRAR</button>
             </div>
         `;
         wrap.appendChild(box);
@@ -317,13 +374,8 @@
         function tryLogin() {
             const u = uEl.value.trim();
             const p = pEl.value;
-            if (!u || !p) { shakeError('Preencha usuário e senha.'); return; }
-            if (!_admCheck(u, p)) {
-                shakeError('Credenciais inválidas.');
-                pEl.value = '';
-                pEl.focus();
-                return;
-            }
+            if (!u || !p) return shakeError('Preencha usuário e senha.');
+            if (!_admCheck(u, p)) { shakeError('Credenciais inválidas.'); pEl.value = ''; pEl.focus(); return; }
             _admAuthed = true;
             if (rEl.checked) _admSaveToken();
             _admKillModal();
@@ -332,12 +384,10 @@
         okBtn.addEventListener('click', tryLogin);
         box.querySelector('#_admCancel').addEventListener('click', _admKillModal);
         wrap.addEventListener('click', (e) => { if (e.target === wrap) _admKillModal(); });
-        [uEl, pEl].forEach(el => {
-            el.addEventListener('keydown', (e) => {
-                if (e.key === 'Enter') { e.preventDefault(); tryLogin(); }
-                if (e.key === 'Escape') { e.preventDefault(); _admKillModal(); }
-            });
-        });
+        [uEl, pEl].forEach(el => el.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') { e.preventDefault(); tryLogin(); }
+            if (e.key === 'Escape') { e.preventDefault(); _admKillModal(); }
+        }));
     }
 
     // ═══ PANEL ═══
@@ -348,59 +398,55 @@
 
         const wrap = document.createElement('div');
         wrap.className = 'adm-panel';
-        wrap.setAttribute('data-hub', '1');
+        wrap.setAttribute('data-hub-admin', '1');
         wrap.setAttribute('data-sang-ui', '');
         wrap.style.cssText = `
-            position: fixed; top: 16px; left: 16px; width: 720px; max-width: 96vw; max-height: 92vh;
+            position: fixed; top: 16px; left: 16px; width: 880px; max-width: 96vw; max-height: 92vh;
             z-index: 2147483647; display: flex; flex-direction: column;
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
             color: #f1f2f8; user-select: none;
-            background: linear-gradient(175deg, rgba(18,18,26,0.97), rgba(8,8,13,0.99));
-            backdrop-filter: blur(16px) saturate(140%);
-            border: 1px solid rgba(255,255,255,0.07);
+            backdrop-filter: blur(28px) saturate(180%);
             border-radius: 14px;
-            box-shadow: 0 22px 55px rgba(0,0,0,0.65);
+            box-shadow: 0 24px 60px rgba(0,0,0,0.7), inset 0 1px 0 rgba(255,255,255,0.06);
             overflow: hidden;
         `;
 
         // ─── HEADER ───
         const hdr = document.createElement('div');
         hdr.style.cssText = `
-            padding: 11px 14px; display: flex; align-items: center; justify-content: space-between;
+            padding: 12px 16px; display: flex; align-items: center; justify-content: space-between;
             cursor: grab; flex-shrink: 0;
-            background: linear-gradient(120deg, rgba(34,211,238,0.1), rgba(167,139,250,0.1));
+            background: linear-gradient(120deg, rgba(34,211,238,0.08), rgba(167,139,250,0.08) 50%, rgba(244,114,182,0.06));
             border-bottom: 1px solid rgba(255,255,255,0.055);
         `;
         hdr.innerHTML = `
-            <div style="display: flex; align-items: center; gap: 9px;">
-                <span style="display:inline-flex; align-items:center; justify-content:center; width:24px; height:24px;
-                    border-radius:7px; background:rgba(34,211,238,0.14); border:1px solid rgba(34,211,238,0.32);">
-                    ${ICON.gear}
-                </span>
+            <div style="display:flex; align-items:center; gap:10px;">
+                <span class="adm-icon-box">${ICON.gear}</span>
                 <div>
-                    <div class="adm-title-shine" style="font-size: 12px; font-weight: 800; letter-spacing: .1em;">PAINEL ADMIN</div>
-                    <div style="font-size: 8.5px; color: #7d8194; letter-spacing: .05em; text-transform: uppercase; margin-top: 1px;">Sang Hub · v${bridge.HUB_VERSION}</div>
+                    <div class="adm-title-shine" style="font-size:12px; font-weight:800; letter-spacing:.1em;">PAINEL ADMIN</div>
+                    <div style="font-size:8.5px; color:#7d8194; letter-spacing:.05em; text-transform:uppercase; margin-top:1px;">Sang Hub · v${bridge.HUB_VERSION} · Aurora</div>
                 </div>
             </div>
-            <div style="display: flex; align-items: center; gap: 8px;">
+            <div style="display:flex; align-items:center; gap:8px;">
                 <span class="adm-dot live" title="Sessão ativa"></span>
-                <span id="_admClose" title="Fechar (Esc)" style="cursor: pointer; font-size: 13px; color: #8b8fa3;
-                    width: 24px; height: 24px; display: flex; align-items: center; justify-content: center;
-                    border-radius: 6px; transition: all .15s;">✕</span>
+                <span id="_admClose" title="Fechar (Esc)" style="cursor:pointer; font-size:13px; color:#8b8fa3;
+                    width:24px; height:24px; display:flex; align-items:center; justify-content:center;
+                    border-radius:6px; transition:all .15s;">✕</span>
             </div>
         `;
 
-        // ─── BODY (2 colunas) ───
+        // ─── BODY: 2 colunas ───
         const body = document.createElement('div');
         body.style.cssText = `display:flex; gap:10px; padding:10px; flex:1; min-height:0;`;
 
         const colMain = document.createElement('div');
-        colMain.style.cssText = 'flex:1; min-width:0; display:flex; flex-direction:column; gap:8px;';
+        colMain.style.cssText = 'flex:1; min-width:0; display:flex; flex-direction:column;';
 
         const colSide = document.createElement('div');
-        colSide.style.cssText = 'width:260px; flex-shrink:0; display:flex; flex-direction:column; gap:8px; overflow-y:auto; padding-right:2px;';
+        colSide.style.cssText = 'width:280px; flex-shrink:0; display:flex; flex-direction:column; gap:8px; overflow-y:auto; padding-right:2px;';
+        colSide.className = 'adm-sess-list';
 
-        // ─── FOOT ───
+        // ─── FOOTER ───
         const foot = document.createElement('div');
         foot.className = 'adm-foot';
         foot.innerHTML = `
@@ -408,45 +454,43 @@
                 <span class="adm-dot live" style="width:6px; height:6px;"></span>
                 <span>Sessão ativa</span>
             </div>
-            <span id="_admFootRight" style="font-variant-numeric: tabular-nums;">—</span>
+            <span id="_admFootRight" style="font-variant-numeric:tabular-nums;">—</span>
         `;
 
         // ─── SEC HELPER ───
         function sec(label, iconSvg, contentEl, extraHead) {
             const s = document.createElement('div');
             s.className = 'adm-sec';
-            const head = document.createElement('div');
-            head.className = 'adm-sec-head';
-            head.innerHTML = `<span>${iconSvg}${label}</span>${extraHead || ''}`;
-            s.appendChild(head);
+            const h = document.createElement('div');
+            h.className = 'adm-sec-head';
+            h.innerHTML = `<span>${iconSvg}${label}</span>${extraHead || ''}`;
+            s.appendChild(h);
             s.appendChild(contentEl);
             return s;
         }
 
-        // ═══ COLUNA PRINCIPAL: SESSÕES AO VIVO ═══
+        // ═══ COLUNA PRINCIPAL: SESSÕES ═══
         const fsOk = bridge.firestore.configured();
-
         const sessContent = document.createElement('div');
         sessContent.style.cssText = 'display:flex; flex-direction:column; flex:1; min-height:0;';
         sessContent.innerHTML = fsOk
             ? `<div class="adm-sess-list" id="_admSessList">
-                   <div style="padding:14px;text-align:center;font-size:9.5px;color:#5b5f70;">Carregando…</div>
+                   <div style="padding:16px;text-align:center;font-size:9.5px;color:#5b5f70;">Carregando…</div>
                </div>`
-            : `<div style="padding:14px;text-align:center;font-size:9.5px;color:#7d8194;">
-                   Firestore não configurado no hub.
-               </div>`;
+            : `<div style="padding:16px;text-align:center;font-size:9.5px;color:#7d8194;">Firestore não configurado.</div>`;
 
-        const sessRefreshBtn = fsOk
-            ? `<button id="_admSessRefresh" title="Atualizar" style="cursor:pointer; background:transparent;
+        const sessRefresh = fsOk
+            ? `<button id="_admSessRefresh" title="Atualizar agora" style="cursor:pointer; background:transparent;
                    border:1px solid rgba(255,255,255,0.08); border-radius:6px; width:22px; height:22px;
                    color:#c7cad6; display:flex; align-items:center; justify-content:center; transition:all .15s;">${ICON.refresh}</button>`
             : '';
 
-        const sessSec = sec('Sessões ao vivo', ICON.users, sessContent, sessRefreshBtn);
+        const sessSec = sec('Sessões ao vivo', ICON.users, sessContent, sessRefresh);
         sessSec.style.flex = '1';
         colMain.appendChild(sessSec);
 
-        // ═══ SIDEBAR: STATUS ═══
+        // ═══ SIDEBAR ═══
+        // — Status
         const statusContent = document.createElement('div');
         statusContent.innerHTML = `
             <div class="adm-row">
@@ -467,14 +511,14 @@
         `;
         colSide.appendChild(sec('Status', ICON.status, statusContent));
 
-        // ═══ SIDEBAR: MODO SECRET ═══
+        // — Módulos secret
         const mode = bridge.gate.mode;
         const modoContent = document.createElement('div');
-        const modeBtnStyle = (isActive) => `
+        const modeBtnStyle = (on) => `
             flex:1;
-            background: ${isActive ? 'linear-gradient(120deg,#22d3ee,#a78bfa)' : 'rgba(255,255,255,0.035)'};
-            color: ${isActive ? '#0b0b10' : '#c7cad6'};
-            border: 1px solid ${isActive ? 'transparent' : 'rgba(255,255,255,0.07)'};
+            background: ${on ? 'linear-gradient(120deg,#22d3ee,#a78bfa)' : 'rgba(255,255,255,0.035)'};
+            color: ${on ? '#0b0b10' : '#c7cad6'};
+            border: 1px solid ${on ? 'transparent' : 'rgba(255,255,255,0.07)'};
         `;
         modoContent.innerHTML = `
             <div style="display:flex; gap:4px;">
@@ -483,12 +527,12 @@
                 <button data-mode="off" class="adm-mode-btn ${mode==='off'?'active':''}" style="${modeBtnStyle(mode==='off')}">OFF</button>
             </div>
             <div style="font-size:8.5px; color:#7d8194; margin-top:7px; line-height:1.45;">
-                Controla apenas <b style="color:#a8adbf;">módulos secret</b> do manifest — não afeta o hub.
+                Afeta apenas <b style="color:#a8adbf;">módulos secret</b>. Não bloqueia o hub.
             </div>
         `;
         colSide.appendChild(sec('Módulos secret', ICON.zap, modoContent));
 
-        // ═══ SIDEBAR: BLACKLIST LOCAL ═══
+        // — Blacklist local
         const blkContent = document.createElement('div');
         blkContent.innerHTML = `
             <div style="display:flex; gap:5px; margin-bottom:7px;">
@@ -505,7 +549,7 @@
         `;
         colSide.appendChild(sec('Blacklist local', ICON.shield, blkContent));
 
-        // ═══ SIDEBAR: AÇÕES ═══
+        // — Ações
         const acoesContent = document.createElement('div');
         acoesContent.style.cssText = 'display:grid; grid-template-columns:1fr 1fr; gap:5px;';
         [
@@ -525,7 +569,7 @@
         });
         colSide.appendChild(sec('Ações', ICON.refresh, acoesContent));
 
-        // ═══ SIDEBAR: SESSÃO ADMIN ═══
+        // — Sessão admin
         const adminContent = document.createElement('div');
         adminContent.innerHTML = `
             <button id="_admLogout" class="adm-action-btn" style="width:100%; padding:7px; font-size:9px; font-weight:700;
@@ -578,13 +622,11 @@
         const _footTimer = setInterval(() => {
             if (!_admPanelEl) return;
             const now = new Date();
-            foot.querySelector('#_admFootRight').textContent =
-                String(now.getHours()).padStart(2,'0') + ':' + String(now.getMinutes()).padStart(2,'0');
+            foot.querySelector('#_admFootRight').textContent = String(now.getHours()).padStart(2,'0') + ':' + String(now.getMinutes()).padStart(2,'0');
         }, 30000);
         (function tick() {
             const now = new Date();
-            foot.querySelector('#_admFootRight').textContent =
-                String(now.getHours()).padStart(2,'0') + ':' + String(now.getMinutes()).padStart(2,'0');
+            foot.querySelector('#_admFootRight').textContent = String(now.getHours()).padStart(2,'0') + ':' + String(now.getMinutes()).padStart(2,'0');
         })();
 
         const _cleanup = () => {
@@ -597,9 +639,8 @@
         const _origKill = _admKillPanel;
         _admKillPanel = () => { _cleanup(); _origKill(); };
 
-        // ─── COPIAR DEVICE ID ───
-        const devCopyEl = statusContent.querySelector('#_admDevCopy');
-        devCopyEl.addEventListener('click', async () => {
+        // ─── COPIAR ID ───
+        statusContent.querySelector('#_admDevCopy')?.addEventListener('click', async () => {
             try { await navigator.clipboard.writeText(bridge.deviceId || ''); _admToast('Device ID copiado', 'ok'); }
             catch(e) { _admToast('Falha ao copiar', 'err'); }
         });
@@ -626,50 +667,41 @@
                 return;
             }
             const parts = [];
-            fixos.forEach(h => {
-                parts.push(`<div class="adm-blk-line fixed">
-                    <span class="adm-blk-hash">${shortHash(h, 8, 5)}</span>
-                    <span style="font-size:7px; padding:1px 5px; border-radius:4px; background:rgba(139,143,163,0.14); color:#7d8194; font-weight:800;">FIXO</span>
-                </div>`);
-            });
-            extras.forEach((h, i) => {
-                parts.push(`<div class="adm-blk-line">
-                    <span class="adm-blk-hash">${shortHash(h, 8, 5)}</span>
-                    <span data-rm="${i}" class="adm-blk-rm" title="Remover">✕</span>
-                </div>`);
-            });
+            fixos.forEach(h => parts.push(`<div class="adm-blk-line fixed">
+                <span class="adm-blk-hash">${shortHash(h, 8, 5)}</span>
+                <span style="font-size:7px; padding:1px 5px; border-radius:4px; background:rgba(139,143,163,0.14); color:#7d8194; font-weight:800;">FIXO</span>
+            </div>`));
+            extras.forEach((h, i) => parts.push(`<div class="adm-blk-line">
+                <span class="adm-blk-hash">${shortHash(h, 8, 5)}</span>
+                <span data-rm="${i}" class="adm-blk-rm" title="Remover">✕</span>
+            </div>`));
             listEl.innerHTML = parts.join('');
-            listEl.querySelectorAll('[data-rm]').forEach(el => {
-                el.addEventListener('click', async () => {
-                    const i = parseInt(el.dataset.rm, 10);
-                    const arr = bridge.blk.extra();
-                    await bridge.blk.remove(arr[i]);
-                    _renderBlkList();
-                });
-            });
+            listEl.querySelectorAll('[data-rm]').forEach(el => el.addEventListener('click', async () => {
+                const i = parseInt(el.dataset.rm, 10);
+                await bridge.blk.remove(bridge.blk.extra()[i]);
+                _renderBlkList();
+            }));
         }
         _renderBlkList();
 
         blkContent.querySelector('#_admBlkAdd').addEventListener('click', async () => {
-            if (!fp) { _admToast('Fingerprint não calculado', 'err'); return; }
-            if (bridge.blk.extra().includes(fp) || bridge.blk.fixed().includes(fp)) {
-                _admToast('Já está na lista', 'err'); return;
-            }
+            if (!fp) return _admToast('Fingerprint não calculado', 'err');
+            if (bridge.blk.extra().includes(fp) || bridge.blk.fixed().includes(fp)) return _admToast('Já está na lista', 'err');
             await bridge.blk.add(fp);
             _renderBlkList();
             _admToast('Fingerprint bloqueado', 'ok');
         });
         blkContent.querySelector('#_admBlkRem').addEventListener('click', async () => {
-            if (!fp) { _admToast('Fingerprint não calculado', 'err'); return; }
+            if (!fp) return _admToast('Fingerprint não calculado', 'err');
             if (!bridge.blk.extra().includes(fp)) {
-                _admToast(bridge.blk.fixed().includes(fp) ? 'Na lista fixa' : 'Não está na lista', 'err'); return;
+                return _admToast(bridge.blk.fixed().includes(fp) ? 'Na lista fixa' : 'Não está na lista', 'err');
             }
             await bridge.blk.remove(fp);
             _renderBlkList();
             _admToast('Fingerprint liberado', 'ok');
         });
 
-        // ─── SESSÕES (Firestore) ───
+        // ─── SESSÕES ───
         async function carregarSessoes() {
             const listEl = sessContent.querySelector('#_admSessList');
             if (!listEl) return;
@@ -682,8 +714,6 @@
                 }).sort((a, b) => (b.lastSeen || 0) - (a.lastSeen || 0));
 
                 const myId = bridge.deviceId;
-
-                // Atualiza badge da própria sessão
                 const eu = sessoes.find(s => s.id === myId);
                 const suaEl = statusContent.querySelector('#_admSuaSessao');
                 if (suaEl) {
@@ -693,24 +723,24 @@
                 }
 
                 if (!sessoes.length) {
-                    listEl.innerHTML = '<div style="padding:14px;text-align:center;font-size:9.5px;color:#5b5f70;">Nenhuma sessão registrada.</div>';
+                    listEl.innerHTML = '<div style="padding:16px;text-align:center;font-size:9.5px;color:#5b5f70;">Nenhuma sessão registrada.</div>';
                     return;
                 }
 
                 listEl.innerHTML = sessoes.map((s, i) => {
                     const ago = Date.now() - (s.lastSeen || 0);
                     const online = ago < SESSAO_ONLINE_MS;
-                    const bloqueado = s.blocked === true;
-                    const voceMesmo = s.id === myId;
+                    const bloq = s.blocked === true;
+                    const euMesmo = s.id === myId;
                     const tempo = online
-                        ? 'ativa ' + fmtDuracao(Date.now() - (s.sessionStart || s.lastSeen || Date.now()))
-                        : fmtAtras(ago);
+                        ? 'ativa ' + fmtDur(Date.now() - (s.sessionStart || s.lastSeen || Date.now()))
+                        : 'há ' + fmtAtras(ago);
                     return `<div class="adm-sess-line" style="animation-delay:${i * 20}ms;">
                         <span class="adm-dot ${online ? 'live' : 'offline'}" title="${online ? 'Online' : 'Offline'}"></span>
-                        <span class="adm-sess-name">${escHtml(s.name || 'Sem nome')}${voceMesmo ? ' (você)' : ''}</span>
+                        <span class="adm-sess-name">${escHtml(s.name || 'Sem nome')}${euMesmo ? ' (você)' : ''}</span>
                         <span class="adm-sess-meta">${shortHash(s.id, 7, 4)} · ${tempo} · v${escHtml(s.hubVersion || '?')}</span>
-                        <label class="adm-switch" title="${bloqueado ? 'Bloqueado — clique para liberar' : 'Livre — clique para bloquear'}">
-                            <input type="checkbox" ${bloqueado ? 'checked' : ''} data-toggle-id="${s.id}" data-blocked="${bloqueado}" />
+                        <label class="adm-switch" title="${bloq ? 'Bloqueado — clique para liberar' : 'Livre — clique para bloquear'}">
+                            <input type="checkbox" ${bloq ? 'checked' : ''} data-toggle-id="${s.id}" />
                             <span class="adm-switch-track"></span>
                         </label>
                     </div>`;
@@ -719,24 +749,24 @@
                 listEl.querySelectorAll('input[data-toggle-id]').forEach(inp => {
                     inp.addEventListener('change', async () => {
                         const alvoId = inp.dataset.toggleId;
-                        const novoEstado = inp.checked;
+                        const novo = inp.checked;
                         const sw = inp.closest('.adm-switch');
                         sw.classList.add('busy');
                         try {
                             await bridge.firestore.request('PATCH', '/sessions/' + alvoId, {
-                                fields: { blocked: bridge.firestore.value(novoEstado) }
+                                fields: { blocked: bridge.firestore.value(novo) }
                             }, 'updateMask.fieldPaths=blocked');
-                            _admToast(novoEstado ? 'Sessão bloqueada' : 'Sessão liberada', 'ok');
+                            _admToast(novo ? 'Sessão bloqueada' : 'Sessão liberada', 'ok');
                             carregarSessoes();
                         } catch(e) {
                             _admToast('Falha ao atualizar', 'err');
-                            inp.checked = !novoEstado;
+                            inp.checked = !novo;
                             sw.classList.remove('busy');
                         }
                     });
                 });
             } catch(e) {
-                listEl.innerHTML = '<div style="padding:14px;text-align:center;font-size:9.5px;color:#fca5b1;">Falha ao carregar sessões.</div>';
+                listEl.innerHTML = '<div style="padding:16px;text-align:center;font-size:9.5px;color:#fca5b1;">Falha ao carregar.</div>';
             }
         }
 
@@ -757,10 +787,7 @@
             try {
                 let n = 0;
                 (bridge.state.manifest.modules || []).forEach(mod => {
-                    if (bridge.state.moduleStates[mod.id] === 'loaded') {
-                        bridge.deactivateModule(mod);
-                        n++;
-                    }
+                    if (bridge.state.moduleStates[mod.id] === 'loaded') { bridge.deactivateModule(mod); n++; }
                 });
                 _admToast(n + ' módulos desativados', 'ok');
             } catch(e) { _admToast('Erro', 'err'); }
@@ -772,9 +799,7 @@
                 _admToast('Caches limpos', 'ok');
             } catch(e) { _admToast('Erro', 'err'); }
         });
-        acoesContent.querySelector('#_admRePage').addEventListener('click', () => {
-            location.reload();
-        });
+        acoesContent.querySelector('#_admRePage').addEventListener('click', () => location.reload());
 
         // ─── ADMIN ───
         adminContent.querySelector('#_admLogout').addEventListener('click', () => {
@@ -792,19 +817,11 @@
 
     // ═══ OPEN / TOGGLE / KILL ═══
     function _admOpen() {
-        if (_admAuthed || _admHasToken()) {
-            _admAuthed = true;
-            _admMountPanel();
-        } else {
-            _admMountLogin();
-        }
+        if (_admAuthed || _admHasToken()) { _admAuthed = true; _admMountPanel(); }
+        else _admMountLogin();
     }
     function toggle() {
-        if (_admPanelEl || _admModalEl) {
-            _admKillPanel();
-            _admKillModal();
-            return;
-        }
+        if (_admPanelEl || _admModalEl) { _admKillPanel(); _admKillModal(); return; }
         _admOpen();
     }
     function kill() {
