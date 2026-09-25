@@ -97,6 +97,44 @@
         return n;
     }
 
+    // ═══ SFX ═══
+    let _actx = null;
+    function _audioCtx() {
+        if (_actx) return _actx;
+        try { _actx = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) { _actx = null; }
+        return _actx;
+    }
+    function _tone(freq, dur, type, peak) {
+        const ctx = _audioCtx();
+        if (!ctx) return;
+        if (ctx.state === 'suspended') ctx.resume().catch(() => {});
+        const now = ctx.currentTime;
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = type || 'sine';
+        osc.frequency.setValueAtTime(freq, now);
+        gain.gain.setValueAtTime(0, now);
+        gain.gain.linearRampToValueAtTime(peak || 0.04, now + 0.006);
+        gain.gain.exponentialRampToValueAtTime(0.0001, now + dur);
+        osc.connect(gain).connect(ctx.destination);
+        osc.start(now);
+        osc.stop(now + dur + 0.02);
+    }
+    let _lastHoverSfx = 0;
+    const SFX = {
+        hover() {
+            const t = performance.now();
+            if (t - _lastHoverSfx < 35) return;
+            _lastHoverSfx = t;
+            _tone(1180, 0.045, 'sine', 0.03);
+        }
+    };
+    function _bindHover(nodes, signal) {
+        (nodes.length !== undefined ? nodes : [nodes]).forEach(n => {
+            if (n) n.addEventListener('mouseenter', SFX.hover, signal ? { signal } : undefined);
+        });
+    }
+
     // ═══ SHADOW HOST ═══
     function _ensureHost() {
         if (_host && _shadow) return;
@@ -428,6 +466,7 @@
                 setTimeout(() => overlay.remove(), 150);
                 resolve(v);
             }
+            _bindHover([box.querySelector('#no'), box.querySelector('#yes')]);
             box.querySelector('#no').addEventListener('click', () => finish(false));
             box.querySelector('#yes').addEventListener('click', () => finish(true));
             overlay.addEventListener('click', (e) => { if (e.target === overlay) finish(false); });
@@ -458,6 +497,7 @@
         menu.style.left = x + 'px';
         menu.style.top = y + 'px';
 
+        _bindHover(menu.querySelectorAll('.adm-temp-menu-item'));
         menu.querySelectorAll('.adm-temp-menu-item').forEach(item => {
             item.addEventListener('click', async () => {
                 const min = parseInt(item.dataset.dur, 10);
@@ -578,6 +618,7 @@
             _killModal();
             _mountPanel();
         }
+        _bindHover([okBtn, box.querySelector('#cancel')]);
         okBtn.addEventListener('click', tryLogin);
         box.querySelector('#cancel').addEventListener('click', _killModal);
         wrap.addEventListener('click', (e) => { if (e.target === wrap) _killModal(); });
@@ -723,6 +764,8 @@
         wrap.appendChild(hdr); wrap.appendChild(body); wrap.appendChild(foot);
         _root.appendChild(wrap);
 
+        _bindHover(wrap.querySelectorAll('.adm-btn, .adm-mode-btn, .adm-close'), signal);
+
         // ═══ FECHAR / DRAG ═══
         hdr.querySelector('#close').addEventListener('click', _killPanel, { signal });
         let drag = null;
@@ -755,6 +798,7 @@
 
         // ═══ COPIAR DEVICE ID ═══
         const devCopyEl = statusContent.querySelector('#devCopy');
+        _bindHover([devCopyEl], signal);
         devCopyEl.addEventListener('click', async () => {
             try { await navigator.clipboard.writeText(bridge.deviceId || ''); _toast('Device ID copiado', 'ok'); }
             catch (e) { _toast('Falha ao copiar', 'err'); }
@@ -789,6 +833,7 @@
             extras.forEach((h, i) => parts.push(`<div class="adm-blk-line"><span class="adm-blk-hash">${shortHash(h, 8, 5)}</span>
                 <span data-rm="${i}" class="adm-blk-rm" title="Remover">✕</span></div>`));
             listEl.innerHTML = parts.join('');
+            _bindHover(listEl.querySelectorAll('.adm-blk-rm'), signal);
             listEl.querySelectorAll('[data-rm]').forEach(node => node.addEventListener('click', async () => {
                 await bridge.blk.remove(bridge.blk.extra()[parseInt(node.dataset.rm, 10)]);
                 _renderBlkList();
@@ -902,6 +947,7 @@
                 if (showOffline) html += offline.map(s => renderRow(s, idx++, now)).join('');
             }
             listEl.innerHTML = html;
+            _bindHover(listEl.querySelectorAll('.adm-sess-group.clickable, .adm-sess-item [data-head], .adm-switch, .adm-temp-btn, .adm-sess-detail-btn'), signal);
 
             const grp = listEl.querySelector('[data-toggle-offline]');
             if (grp) grp.addEventListener('click', () => { _offlineExpanded = !_offlineExpanded; _lastSig = ''; _renderSessoes(); }, { signal });
@@ -1010,6 +1056,7 @@
         else _mountLogin();
     }
     function toggle() {
+        _audioCtx();
         if (_panelEl || _modalEl) { _killPanel(); _killModal(); return; }
         _open();
     }
@@ -1031,6 +1078,7 @@
             ['confirm', () => _fecharConfirm()],
             ['tempMenu', () => _fecharTempMenu()],
             ['host', () => _host?.remove()],
+            ['audio', () => { _actx?.close(); _actx = null; }],
             ['global', () => delete window[UID]]
         ];
         for (const [name, step] of steps) {
