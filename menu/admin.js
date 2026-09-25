@@ -29,17 +29,19 @@
     let _offlineExpanded = false;
     const _expandedRows = new Set();
     let _renderSessoes = null;
+    let _tickDisplay = null;
 
     let _host = null;
     let _shadow = null;
     let _root = null;
     let _panelEl = null;
+    let _backdropEl = null;
     let _modalEl = null;
     let _confirmEl = null;
     let _tempMenuEl = null;
     let _toastLayer = null;
 
-    let _scopedAc = null;   // drag / esc / visibility — vive enquanto o painel existe
+    let _scopedAc = null;
 
     // ═══ AUTH ═══
     function _checkCreds(u, p) { try { return u === atob(ADMIN_U_B64) && p === atob(ADMIN_P_B64); } catch (e) { return false; } }
@@ -167,8 +169,16 @@
         @keyframes aurDrift { to { --aur-a: 360deg; } }
         @keyframes aurShine { to { background-position: -200% center; } }
         @keyframes aurFade { from { opacity: 0; } to { opacity: 1; } }
+        @keyframes aurFadeOut { to { opacity: 0; } }
         @keyframes aurPop { from { opacity: 0; transform: translateY(10px) scale(.96); } to { opacity: 1; transform: none; } }
-        @keyframes aurPanelIn { from { opacity: 0; transform: translateY(-8px) scale(.98); } to { opacity: 1; transform: none; } }
+        @keyframes aurSlideDown {
+            from { opacity: 0; transform: translate(-50%, -120%); }
+            to   { opacity: 1; transform: translate(-50%, -50%); }
+        }
+        @keyframes aurSlideUp {
+            from { opacity: 1; transform: translate(-50%, -50%); }
+            to   { opacity: 0; transform: translate(-50%, -120%); }
+        }
         @keyframes aurShake { 10%,90%{transform:translateX(-1px)} 20%,80%{transform:translateX(2px)} 30%,50%,70%{transform:translateX(-4px)} 40%,60%{transform:translateX(4px)} }
         @keyframes aurPulse { 0%,100%{opacity:1} 50%{opacity:.35} }
         @keyframes aurLive { 0%,100%{opacity:1;box-shadow:0 0 0 0 rgba(52,211,153,.55)} 50%{opacity:.75;box-shadow:0 0 0 4px rgba(52,211,153,0)} }
@@ -180,28 +190,56 @@
         .adm-box { position: relative; animation: aurPop .32s cubic-bezier(.16,1,.3,1); }
         .adm-box.shake { animation: aurShake .4s ease; }
 
-        /* ═══ PANEL ═══ */
+        /* ═══ BACKDROP ═══ */
+        .adm-backdrop {
+            position: fixed; inset: 0;
+            background: rgba(0, 0, 0, 0.42);
+            backdrop-filter: blur(10px) saturate(120%);
+            -webkit-backdrop-filter: blur(10px) saturate(120%);
+            animation: aurFade .32s ease;
+            pointer-events: auto;
+        }
+        .adm-backdrop.closing { animation: aurFadeOut .3s ease forwards; }
+
+        /* ═══ PANEL — Aurora Glass, centralizado, slide-down ═══ */
         .adm-panel {
-            animation: aurPanelIn .28s cubic-bezier(.16,1,.3,1);
-            position: fixed; top: 16px; left: 16px; width: 900px; max-width: 96vw; max-height: 92vh;
+            position: fixed;
+            top: 50%; left: 50%;
+            transform: translate(-50%, -50%);
+            width: 900px;
+            max-width: calc(100vw - 32px);
+            max-height: calc(100vh - 32px);
             display: flex; flex-direction: column;
             font-family: 'Geist', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            color: #f1f2f8; user-select: none; border-radius: 18px; overflow: hidden; isolation: isolate;
-            background: linear-gradient(175deg, rgba(20,20,28,.92) 0%, rgba(9,9,14,.97) 100%);
-            backdrop-filter: blur(20px) saturate(150%); -webkit-backdrop-filter: blur(20px) saturate(150%);
-            box-shadow: 0 30px 80px rgba(0,0,0,.6), 0 0 60px rgba(34,211,238,.06), inset 0 1px 0 rgba(255,255,255,.06);
+            color: #f1f2f8;
+            user-select: none;
+            border-radius: 20px;
+            overflow: hidden;
+            isolation: isolate;
+            background: linear-gradient(175deg, rgba(20,20,28,.42) 0%, rgba(9,9,14,.58) 100%);
+            backdrop-filter: blur(24px) saturate(180%);
+            -webkit-backdrop-filter: blur(24px) saturate(180%);
+            box-shadow:
+                0 40px 100px rgba(0,0,0,.7),
+                0 0 90px rgba(34,211,238,.08),
+                inset 0 1px 0 rgba(255,255,255,.1);
+            animation: aurSlideDown .5s cubic-bezier(.16,1,.3,1);
+            will-change: transform, opacity;
+        }
+        .adm-panel.closing {
+            animation: aurSlideUp .3s cubic-bezier(.16,1,.3,1) forwards;
         }
         .adm-panel::before {
             content: ''; position: absolute; inset: 0; z-index: -2; border-radius: inherit;
             background:
-                radial-gradient(circle at 10% 0%, rgba(34,211,238,.14), transparent 42%),
-                radial-gradient(circle at 92% 100%, rgba(167,139,250,.14), transparent 44%),
-                radial-gradient(circle at 55% 45%, rgba(74,222,128,.04), transparent 55%);
+                radial-gradient(circle at 10% 0%, rgba(34,211,238,.1), transparent 45%),
+                radial-gradient(circle at 92% 100%, rgba(167,139,250,.1), transparent 46%),
+                radial-gradient(circle at 55% 45%, rgba(74,222,128,.035), transparent 55%);
         }
         .adm-panel::after {
             content: ''; position: absolute; inset: -1px; z-index: -1; border-radius: inherit; padding: 1px; pointer-events: none;
             background: linear-gradient(120deg, rgba(34,211,238,.5), rgba(167,139,250,.35) 25%, rgba(244,114,182,.3) 50%, rgba(52,211,153,.4) 75%, rgba(34,211,238,.5));
-            background-size: 200% 200%; animation: aurBorderSpin 14s linear infinite;
+            background-size: 200% 200%; animation: aurBorderSpin 16s linear infinite;
             -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
             -webkit-mask-composite: xor; mask-composite: exclude;
         }
@@ -211,15 +249,15 @@
             animation: aurShine 3.6s linear infinite;
         }
 
-        /* ═══ HEADER ═══ */
+        /* ═══ HEADER — sem drag ═══ */
         .adm-hdr {
-            padding: 13px 16px; display: flex; align-items: center; justify-content: space-between; cursor: grab; flex-shrink: 0;
-            background: linear-gradient(120deg, rgba(34,211,238,.08), rgba(167,139,250,.08) 50%, rgba(244,114,182,.06));
-            border-bottom: 1px solid rgba(255,255,255,.055);
+            padding: 13px 16px; display: flex; align-items: center; justify-content: space-between; flex-shrink: 0;
+            background: linear-gradient(120deg, rgba(34,211,238,.07), rgba(167,139,250,.07) 50%, rgba(244,114,182,.05));
+            border-bottom: 1px solid rgba(255,255,255,.06);
+            cursor: default;
         }
-        .adm-hdr:active { cursor: grabbing; }
         .adm-icon-box { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; border-radius: 9px;
-            background: linear-gradient(135deg, rgba(34,211,238,.16), rgba(167,139,250,.16)); border: 1px solid rgba(34,211,238,.32); flex-shrink: 0; }
+            background: linear-gradient(135deg, rgba(34,211,238,.18), rgba(167,139,250,.18)); border: 1px solid rgba(34,211,238,.36); flex-shrink: 0; }
         .adm-close { cursor: pointer; font-size: 13px; color: #8b8fa3; width: 26px; height: 26px; display: flex; align-items: center;
             justify-content: center; border-radius: 7px; transition: all .15s; background: transparent; border: none; }
         .adm-close:hover { background: rgba(251,113,133,.15); color: #fca5b1; }
@@ -230,16 +268,19 @@
         .adm-col-side { width: 288px; flex-shrink: 0; display: flex; flex-direction: column; gap: 8px; overflow-y: auto; padding-right: 2px; }
 
         /* ═══ SECTIONS ═══ */
-        .adm-sec { position: relative; background: rgba(255,255,255,.028); border: 1px solid rgba(255,255,255,.06);
+        .adm-sec { position: relative;
+            background: rgba(255,255,255,.045);
+            border: 1px solid rgba(255,255,255,.08);
             border-radius: 13px; padding: 10px 12px; display: flex; flex-direction: column; min-height: 0;
+            backdrop-filter: blur(6px);
             transition: border-color .25s, background .25s, box-shadow .25s; }
-        .adm-sec:hover { border-color: rgba(34,211,238,.2); background: rgba(255,255,255,.036); box-shadow: 0 0 26px rgba(34,211,238,.04); }
+        .adm-sec:hover { border-color: rgba(34,211,238,.24); background: rgba(255,255,255,.06); box-shadow: 0 0 30px rgba(34,211,238,.05); }
         .adm-sec-head { display: flex; align-items: center; justify-content: space-between; gap: 6px; font-size: 8.5px; font-weight: 800;
-            letter-spacing: .1em; text-transform: uppercase; color: #8b8fa3; margin-bottom: 8px; padding-bottom: 6px; border-bottom: 1px solid rgba(255,255,255,.05); }
+            letter-spacing: .1em; text-transform: uppercase; color: #9ca3b3; margin-bottom: 8px; padding-bottom: 6px; border-bottom: 1px solid rgba(255,255,255,.07); }
         .adm-sec-head > span:first-child { display: flex; align-items: center; gap: 6px; }
 
         /* ═══ COUNTERS ═══ */
-        .adm-counters { display: flex; align-items: center; gap: 9px; font-size: 9px; font-weight: 800; color: #8b8fa3; }
+        .adm-counters { display: flex; align-items: center; gap: 9px; font-size: 9px; font-weight: 800; color: #9ca3b3; }
         .adm-counters .c-on::before, .adm-counters .c-bl::before {
             content: ''; display: inline-block; width: 5px; height: 5px; border-radius: 50%; margin-right: 4px; vertical-align: middle; }
         .adm-counters .c-on { color: #a7f3d0; } .adm-counters .c-on::before { background: #34d399; box-shadow: 0 0 6px rgba(52,211,153,.7); }
@@ -252,49 +293,49 @@
         .adm-badge { display: inline-flex; align-items: center; gap: 5px; padding: 2px 8px; border-radius: 14px; font-size: 8.5px;
             font-weight: 800; letter-spacing: .04em; text-transform: uppercase; border: 1px solid transparent; }
         .adm-badge::before { content: ''; width: 4px; height: 4px; border-radius: 50%; flex-shrink: 0; }
-        .adm-badge.ok { background: rgba(52,211,153,.1); color: #a7f3d0; border-color: rgba(52,211,153,.3); }
+        .adm-badge.ok { background: rgba(52,211,153,.12); color: #a7f3d0; border-color: rgba(52,211,153,.34); }
         .adm-badge.ok::before { background: #34d399; box-shadow: 0 0 5px rgba(52,211,153,.7); }
-        .adm-badge.bad { background: rgba(251,113,133,.1); color: #fca5b1; border-color: rgba(251,113,133,.3); }
+        .adm-badge.bad { background: rgba(251,113,133,.12); color: #fca5b1; border-color: rgba(251,113,133,.34); }
         .adm-badge.bad::before { background: #fb7185; }
-        .adm-badge.neutral { background: rgba(255,255,255,.045); color: #c7cad6; border-color: rgba(255,255,255,.08); }
+        .adm-badge.neutral { background: rgba(255,255,255,.06); color: #c7cad6; border-color: rgba(255,255,255,.1); }
         .adm-badge.neutral::before { background: #5b5f70; }
 
         /* ═══ INPUTS ═══ */
-        .adm-input { width: 100%; padding: 10px 12px; margin-bottom: 12px; background: rgba(255,255,255,.05);
-            border: 1px solid rgba(255,255,255,.1); border-radius: 9px; color: #f1f2f8; font-size: 12.5px; outline: none;
+        .adm-input { width: 100%; padding: 10px 12px; margin-bottom: 12px; background: rgba(255,255,255,.07);
+            border: 1px solid rgba(255,255,255,.12); border-radius: 9px; color: #f1f2f8; font-size: 12.5px; outline: none;
             font-family: inherit; transition: border-color .2s, box-shadow .2s, background .2s; }
-        .adm-input:focus { border-color: rgba(34,211,238,.6); box-shadow: 0 0 0 3px rgba(34,211,238,.15), 0 0 24px rgba(34,211,238,.12); background: rgba(255,255,255,.07); }
-        .adm-search { width: 100%; padding: 7px 10px 7px 30px; margin-bottom: 8px; background: rgba(255,255,255,.04);
-            border: 1px solid rgba(255,255,255,.08); border-radius: 8px; color: #f1f2f8; font-size: 11px; outline: none; font-family: inherit;
+        .adm-input:focus { border-color: rgba(34,211,238,.6); box-shadow: 0 0 0 3px rgba(34,211,238,.15), 0 0 24px rgba(34,211,238,.12); background: rgba(255,255,255,.1); }
+        .adm-search { width: 100%; padding: 7px 10px 7px 30px; margin-bottom: 8px; background: rgba(255,255,255,.06);
+            border: 1px solid rgba(255,255,255,.1); border-radius: 8px; color: #f1f2f8; font-size: 11px; outline: none; font-family: inherit;
             background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='11' height='11' viewBox='0 0 24 24' fill='none' stroke='%237d8194' stroke-width='2.4' stroke-linecap='round'><circle cx='11' cy='11' r='7'/><line x1='21' y1='21' x2='16.5' y2='16.5'/></svg>");
             background-repeat: no-repeat; background-position: 10px center; transition: border-color .2s, background-color .2s; }
-        .adm-search:focus { border-color: rgba(34,211,238,.5); background-color: rgba(255,255,255,.06); }
+        .adm-search:focus { border-color: rgba(34,211,238,.5); background-color: rgba(255,255,255,.08); }
 
         /* ═══ ROWS ═══ */
         .adm-row { display: flex; justify-content: space-between; align-items: center; font-size: 10px; padding: 5px 0; color: #c7cad6; }
-        .adm-row + .adm-row { border-top: 1px dashed rgba(255,255,255,.045); }
-        .adm-row-label { color: #8b8fa3; }
+        .adm-row + .adm-row { border-top: 1px dashed rgba(255,255,255,.06); }
+        .adm-row-label { color: #9ca3b3; }
         .adm-row-val { color: #f1f2f8; font-weight: 700; font-variant-numeric: tabular-nums; font-size: 10px; }
 
         /* ═══ BUTTONS ═══ */
         .adm-btn { transition: all .16s cubic-bezier(.16,1,.3,1); display: flex; align-items: center; gap: 5px;
             justify-content: center; cursor: pointer; font-family: inherit; border-radius: 8px; }
-        .adm-btn:hover { background: rgba(255,255,255,.09) !important; transform: translateY(-1px); box-shadow: 0 4px 14px rgba(0,0,0,.3); }
+        .adm-btn:hover { background: rgba(255,255,255,.12) !important; transform: translateY(-1px); box-shadow: 0 4px 14px rgba(0,0,0,.3); }
         .adm-btn:active { transform: translateY(0) scale(.96); }
         .adm-mode-btn { transition: all .18s cubic-bezier(.16,1,.3,1); cursor: pointer; font-family: inherit; border-radius: 7px;
             padding: 6px 4px; font-size: 9px; font-weight: 800; letter-spacing: .04em; flex: 1; }
-        .adm-mode-btn:hover:not(.active) { background: rgba(255,255,255,.08) !important; transform: translateY(-1px); }
+        .adm-mode-btn:hover:not(.active) { background: rgba(255,255,255,.1) !important; transform: translateY(-1px); }
         .adm-mode-btn:active { transform: scale(.96); }
 
         /* ═══ BLACKLIST ═══ */
         .adm-blk-line { display: flex; align-items: center; gap: 6px; padding: 4px 7px; border-radius: 6px;
             font-family: ui-monospace, 'SF Mono', Menlo, monospace; font-size: 8.5px; color: #b8bcca;
-            background: rgba(255,255,255,.018); border: 1px solid rgba(255,255,255,.035); }
-        .adm-blk-line.fixed { color: #7d8194; }
+            background: rgba(255,255,255,.03); border: 1px solid rgba(255,255,255,.05); }
+        .adm-blk-line.fixed { color: #8b8fa3; }
         .adm-blk-hash { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .adm-blk-rm { cursor: pointer; color: #fb7185; font-size: 10px; font-weight: 800; flex-shrink: 0; width: 16px; height: 16px;
             display: flex; align-items: center; justify-content: center; border-radius: 4px; transition: background .15s; }
-        .adm-blk-rm:hover { background: rgba(251,113,133,.15); }
+        .adm-blk-rm:hover { background: rgba(251,113,133,.18); }
 
         /* ═══ SESSION LIST ═══ */
         .adm-sess-list { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 4px; padding-right: 2px; }
@@ -302,75 +343,75 @@
         .adm-sess-list::-webkit-scrollbar-thumb { background: linear-gradient(#22d3ee, #a78bfa); border-radius: 3px; }
         .adm-sess-list::-webkit-scrollbar-track { background: transparent; }
         .adm-sess-group { display: flex; align-items: center; justify-content: space-between; padding: 6px 8px 4px; margin-top: 2px;
-            font-size: 8.5px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; color: #7d8194; }
+            font-size: 8.5px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; color: #8b8fa3; }
         .adm-sess-group.clickable { cursor: pointer; transition: color .15s; }
-        .adm-sess-group.clickable:hover { color: #c7cad6; }
-        .adm-sess-item { border-radius: 10px; background: rgba(255,255,255,.026); border: 1px solid rgba(255,255,255,.05);
+        .adm-sess-group.clickable:hover { color: #d1d5db; }
+        .adm-sess-item { border-radius: 10px; background: rgba(255,255,255,.04); border: 1px solid rgba(255,255,255,.07);
             transition: background .18s cubic-bezier(.16,1,.3,1), border-color .18s cubic-bezier(.16,1,.3,1), box-shadow .18s cubic-bezier(.16,1,.3,1), transform .18s cubic-bezier(.16,1,.3,1);
             animation: aurSlideIn .22s cubic-bezier(.16,1,.3,1) backwards; overflow: hidden; }
-        .adm-sess-item:hover { background: rgba(255,255,255,.05); border-color: rgba(34,211,238,.22); box-shadow: 0 4px 18px rgba(0,0,0,.25), 0 0 24px rgba(34,211,238,.04); transform: translateY(-1px); }
-        .adm-sess-item.self { border-color: rgba(167,139,250,.4); box-shadow: 0 0 20px rgba(167,139,250,.06), inset 0 0 12px rgba(167,139,250,.04); }
-        .adm-sess-item.expanded { background: rgba(255,255,255,.045); border-color: rgba(34,211,238,.3); }
+        .adm-sess-item:hover { background: rgba(255,255,255,.07); border-color: rgba(34,211,238,.28); box-shadow: 0 4px 18px rgba(0,0,0,.25), 0 0 24px rgba(34,211,238,.05); transform: translateY(-1px); }
+        .adm-sess-item.self { border-color: rgba(167,139,250,.45); box-shadow: 0 0 20px rgba(167,139,250,.08), inset 0 0 12px rgba(167,139,250,.05); }
+        .adm-sess-item.expanded { background: rgba(255,255,255,.07); border-color: rgba(34,211,238,.34); }
         .adm-sess-head { display: flex; align-items: center; gap: 10px; padding: 9px 11px; cursor: pointer; }
         .adm-sess-name { font-weight: 700; color: #f1f2f8; font-size: 11.5px; white-space: nowrap; overflow: hidden;
             text-overflow: ellipsis; flex-shrink: 0; max-width: 34%; min-width: 70px; }
-        .adm-sess-meta { flex: 1; min-width: 0; font-size: 9px; color: #8b8fa3; white-space: nowrap; overflow: hidden;
+        .adm-sess-meta { flex: 1; min-width: 0; font-size: 9px; color: #9ca3b3; white-space: nowrap; overflow: hidden;
             text-overflow: ellipsis; font-family: ui-monospace, 'SF Mono', Menlo, monospace; letter-spacing: .01em; }
         .adm-sess-version { flex-shrink: 0; font-size: 8.5px; font-weight: 800; padding: 2px 6px; border-radius: 5px;
-            background: rgba(255,255,255,.04); color: #8b8fa3; letter-spacing: .02em; }
-        .adm-sess-version.outdated { background: rgba(251,113,133,.1); color: #fca5b1; }
-        .adm-sess-version.current { background: rgba(52,211,153,.1); color: #a7f3d0; }
-        .adm-sess-detail { padding: 0 11px 10px; font-size: 9.5px; color: #8b8fa3; display: flex; flex-direction: column; gap: 5px; animation: aurExpand .26s cubic-bezier(.16,1,.3,1); }
+            background: rgba(255,255,255,.06); color: #9ca3b3; letter-spacing: .02em; }
+        .adm-sess-version.outdated { background: rgba(251,113,133,.14); color: #fca5b1; }
+        .adm-sess-version.current { background: rgba(52,211,153,.14); color: #a7f3d0; }
+        .adm-sess-detail { padding: 0 11px 10px; font-size: 9.5px; color: #9ca3b3; display: flex; flex-direction: column; gap: 5px; animation: aurExpand .26s cubic-bezier(.16,1,.3,1); }
         .adm-sess-detail-row { display: flex; justify-content: space-between; gap: 10px; font-family: ui-monospace, 'SF Mono', Menlo, monospace; font-size: 9px; }
-        .adm-sess-detail-row span:first-child { color: #5b5f70; flex-shrink: 0; }
-        .adm-sess-detail-row span:last-child { color: #c7cad6; text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-        .adm-sess-detail-btn { margin-top: 6px; padding: 5px 10px; border-radius: 6px; cursor: pointer; background: rgba(34,211,238,.08);
-            border: 1px solid rgba(34,211,238,.28); color: #67e8f9; font-size: 8.5px; font-weight: 800; letter-spacing: .04em; font-family: inherit; transition: all .15s; }
-        .adm-sess-detail-btn:hover { background: rgba(34,211,238,.15); }
+        .adm-sess-detail-row span:first-child { color: #6b7280; flex-shrink: 0; }
+        .adm-sess-detail-row span:last-child { color: #e5e7eb; text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .adm-sess-detail-btn { margin-top: 6px; padding: 5px 10px; border-radius: 6px; cursor: pointer; background: rgba(34,211,238,.1);
+            border: 1px solid rgba(34,211,238,.34); color: #67e8f9; font-size: 8.5px; font-weight: 800; letter-spacing: .04em; font-family: inherit; transition: all .15s; }
+        .adm-sess-detail-btn:hover { background: rgba(34,211,238,.18); }
 
         /* ═══ SWITCH / TEMP MENU ═══ */
         .adm-switch-wrap { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
         .adm-switch { position: relative; display: inline-block; width: 30px; height: 16px; cursor: pointer; }
         .adm-switch input { opacity: 0; width: 0; height: 0; position: absolute; }
-        .adm-switch-track { position: absolute; inset: 0; background: linear-gradient(120deg, rgba(52,211,153,.22), rgba(34,211,238,.22));
-            border: 1px solid rgba(52,211,153,.45); border-radius: 20px; transition: .24s cubic-bezier(.16,1,.3,1); box-shadow: inset 0 0 6px rgba(52,211,153,.1); }
+        .adm-switch-track { position: absolute; inset: 0; background: linear-gradient(120deg, rgba(52,211,153,.28), rgba(34,211,238,.28));
+            border: 1px solid rgba(52,211,153,.5); border-radius: 20px; transition: .24s cubic-bezier(.16,1,.3,1); box-shadow: inset 0 0 6px rgba(52,211,153,.12); }
         .adm-switch-track::before { content: ''; position: absolute; width: 12px; height: 12px; left: 1px; top: 1px;
             background: linear-gradient(135deg, #34d399, #22d3ee); border-radius: 50%; transition: .24s cubic-bezier(.16,1,.3,1); box-shadow: 0 0 8px rgba(52,211,153,.75); }
-        .adm-switch input:checked + .adm-switch-track { background: linear-gradient(120deg, rgba(251,113,133,.24), rgba(244,114,182,.24)); border-color: rgba(251,113,133,.5); box-shadow: inset 0 0 6px rgba(251,113,133,.12); }
+        .adm-switch input:checked + .adm-switch-track { background: linear-gradient(120deg, rgba(251,113,133,.3), rgba(244,114,182,.3)); border-color: rgba(251,113,133,.55); box-shadow: inset 0 0 6px rgba(251,113,133,.14); }
         .adm-switch input:checked + .adm-switch-track::before { background: linear-gradient(135deg, #fb7185, #f472b6); transform: translateX(14px); box-shadow: 0 0 8px rgba(251,113,133,.8); }
         .adm-switch.busy { opacity: .5; pointer-events: none; }
-        .adm-temp-btn { cursor: pointer; background: transparent; border: 1px solid rgba(255,255,255,.08); border-radius: 5px;
-            width: 18px; height: 16px; padding: 0; color: #7d8194; display: flex; align-items: center; justify-content: center; transition: all .15s; font-family: inherit; font-size: 9px; }
-        .adm-temp-btn:hover { color: #fca5b1; border-color: rgba(251,113,133,.4); background: rgba(251,113,133,.06); }
-        .adm-temp-menu { position: fixed; background: linear-gradient(175deg, rgba(20,22,30,.98), rgba(10,12,18,.99));
-            border: 1px solid rgba(251,113,133,.35); border-radius: 9px; padding: 4px; min-width: 110px;
-            box-shadow: 0 12px 32px rgba(0,0,0,.7), 0 0 40px rgba(251,113,133,.08); backdrop-filter: blur(12px); animation: aurPop .2s cubic-bezier(.16,1,.3,1); }
+        .adm-temp-btn { cursor: pointer; background: transparent; border: 1px solid rgba(255,255,255,.12); border-radius: 5px;
+            width: 18px; height: 16px; padding: 0; color: #9ca3b3; display: flex; align-items: center; justify-content: center; transition: all .15s; font-family: inherit; font-size: 9px; }
+        .adm-temp-btn:hover { color: #fca5b1; border-color: rgba(251,113,133,.45); background: rgba(251,113,133,.08); }
+        .adm-temp-menu { position: fixed; background: linear-gradient(175deg, rgba(20,22,30,.96), rgba(10,12,18,.98));
+            border: 1px solid rgba(251,113,133,.4); border-radius: 9px; padding: 4px; min-width: 110px;
+            box-shadow: 0 12px 32px rgba(0,0,0,.7), 0 0 40px rgba(251,113,133,.1); backdrop-filter: blur(14px); animation: aurPop .2s cubic-bezier(.16,1,.3,1); }
         .adm-temp-menu-item { padding: 6px 10px; border-radius: 6px; cursor: pointer; font-size: 10px; font-weight: 700; color: #c7cad6;
             display: flex; align-items: center; justify-content: space-between; gap: 8px; transition: background .12s; }
-        .adm-temp-menu-item:hover { background: rgba(251,113,133,.1); color: #fca5b1; }
-        .adm-temp-menu-item span:last-child { font-size: 8.5px; color: #7d8194; font-weight: 600; }
-        .adm-temp-menu-head { padding: 5px 10px 4px; font-size: 8px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; color: #5b5f70; }
+        .adm-temp-menu-item:hover { background: rgba(251,113,133,.14); color: #fca5b1; }
+        .adm-temp-menu-item span:last-child { font-size: 8.5px; color: #8b8fa3; font-weight: 600; }
+        .adm-temp-menu-head { padding: 5px 10px 4px; font-size: 8px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; color: #6b7280; }
 
         /* ═══ FOOTER ═══ */
-        .adm-foot { padding: 9px 16px; background: rgba(0,0,0,.25); border-top: 1px solid rgba(255,255,255,.05);
-            display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 9px; color: #8b8fa3; flex-shrink: 0; }
+        .adm-foot { padding: 9px 16px; background: rgba(0,0,0,.2); border-top: 1px solid rgba(255,255,255,.07);
+            display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 9px; color: #9ca3b3; flex-shrink: 0; }
 
         /* ═══ TOAST ═══ */
         .adm-toast-layer { position: fixed; top: 20px; left: 50%; transform: translateX(-50%); z-index: 2147483647;
             display: flex; flex-direction: column; gap: 8px; align-items: center; pointer-events: none; }
         .adm-toast { padding: 10px 16px; border-radius: 10px; font-size: 11.5px; font-weight: 700; color: #cffafe;
-            background: linear-gradient(175deg, rgba(14,18,24,.97), rgba(8,10,14,.98)); border: 1px solid rgba(34,211,238,.5);
-            box-shadow: 0 10px 30px rgba(0,0,0,.5), 0 0 40px rgba(34,211,238,.12); backdrop-filter: blur(12px);
+            background: linear-gradient(175deg, rgba(14,18,24,.95), rgba(8,10,14,.97)); border: 1px solid rgba(34,211,238,.55);
+            box-shadow: 0 10px 30px rgba(0,0,0,.55), 0 0 40px rgba(34,211,238,.15); backdrop-filter: blur(14px);
             display: flex; align-items: center; gap: 12px; pointer-events: auto; animation: aurToastIn .22s cubic-bezier(.16,1,.3,1); transition: opacity .2s, transform .2s; }
         .adm-toast.out { opacity: 0; transform: translateY(-10px); }
-        .adm-toast.ok { color: #a7f3d0; border-color: rgba(52,211,153,.5); box-shadow: 0 10px 30px rgba(0,0,0,.5), 0 0 40px rgba(52,211,153,.15); }
-        .adm-toast.err { color: #fecdd3; border-color: rgba(251,113,133,.5); box-shadow: 0 10px 30px rgba(0,0,0,.5), 0 0 40px rgba(251,113,133,.15); }
-        .adm-toast-undo { background: rgba(34,211,238,.14); border: 1px solid rgba(34,211,238,.4); color: #67e8f9;
+        .adm-toast.ok { color: #a7f3d0; border-color: rgba(52,211,153,.55); box-shadow: 0 10px 30px rgba(0,0,0,.55), 0 0 40px rgba(52,211,153,.18); }
+        .adm-toast.err { color: #fecdd3; border-color: rgba(251,113,133,.55); box-shadow: 0 10px 30px rgba(0,0,0,.55), 0 0 40px rgba(251,113,133,.18); }
+        .adm-toast-undo { background: rgba(34,211,238,.16); border: 1px solid rgba(34,211,238,.44); color: #67e8f9;
             padding: 3px 10px; border-radius: 6px; font-size: 10px; font-weight: 800; letter-spacing: .04em; cursor: pointer; font-family: inherit; transition: background .15s; }
-        .adm-toast-undo:hover { background: rgba(34,211,238,.24); }
+        .adm-toast-undo:hover { background: rgba(34,211,238,.28); }
 
         @media (prefers-reduced-motion: reduce) {
-            .adm-panel::after, .adm-title-shine, .adm-dot.live, .adm-sess-item { animation: none !important; }
+            .adm-panel, .adm-panel::after, .adm-title-shine, .adm-dot.live, .adm-sess-item { animation: none !important; }
         }
         `;
         _shadow.appendChild(st);
@@ -545,14 +586,20 @@
                 const id = d.name.split('/').pop();
                 novos.set(id, { id, ...bridge.firestore.parseDoc(d) });
             });
+            // Sig foca apenas em campos estruturais. lastSeen muda a cada heartbeat
+            // e forçava rebuild do DOM → flicker.
             const sig = Array.from(novos.values())
                 .sort((a, b) => a.id.localeCompare(b.id))
-                .map(s => `${s.id}|${s.name || ''}|${s.blocked ? 1 : 0}|${s.lastSeen || 0}|${s.hubVersion || ''}|${s.mission || ''}`)
+                .map(s => `${s.id}|${s.name || ''}|${s.blocked ? 1 : 0}|${s.hubVersion || ''}|${s.mission || ''}|${s.fingerprint || ''}`)
                 .join('#');
             _sessionsMap.clear();
             novos.forEach((v, k) => _sessionsMap.set(k, v));
-            if (sig !== _lastSig) { _lastSig = sig; _renderSessoes?.(); }
-            else _renderSessoes?.(true);
+            if (sig !== _lastSig) {
+                _lastSig = sig;
+                _renderSessoes?.();
+            } else {
+                _tickDisplay?.();
+            }
         } catch (e) { /* silencioso — mantém último estado */ }
     }
     function _iniciarPoll() { _pararPoll(); _pollSessoes(); _pollTimer = setInterval(_pollSessoes, POLL_MS); }
@@ -642,6 +689,12 @@
         _scopedAc = new AbortController();
         const { signal } = _scopedAc;
 
+        // ─── BACKDROP (blur na página atrás) ───
+        const backdrop = el('div', { class: 'adm-backdrop' });
+        _root.appendChild(backdrop);
+        _backdropEl = backdrop;
+
+        // ─── PANEL ───
         const wrap = el('div', { class: 'adm-panel adm-layer' });
         _panelEl = wrap;
 
@@ -701,15 +754,15 @@
             <div class="adm-row"><span class="adm-row-label">Firestore</span><span class="adm-badge ${fsOk ? 'ok' : 'neutral'}">${fsOk ? 'OK' : 'Off'}</span></div>
             <div class="adm-row"><span class="adm-row-label">Device ID</span>
                 <span class="adm-row-val" id="devCopy" title="Clique para copiar" style="font-family:ui-monospace,monospace;font-size:9px;cursor:pointer;
-                    color:#22d3ee;padding:2px 6px;border-radius:5px;background:rgba(34,211,238,.06);transition:background .15s;">${shortHash(bridge.deviceId, 8, 4)}</span>
+                    color:#22d3ee;padding:2px 6px;border-radius:5px;background:rgba(34,211,238,.08);transition:background .15s;">${shortHash(bridge.deviceId, 8, 4)}</span>
             </div>`
         });
         colSide.appendChild(sec('Status', ICON.status, statusContent));
 
         // ═══ SIDEBAR — Modo secret ═══
         const mode = bridge.gate.mode;
-        const modeBtnStyle = (on) => `background:${on ? 'linear-gradient(120deg,#22d3ee,#a78bfa)' : 'rgba(255,255,255,.035)'};
-            color:${on ? '#0b0b10' : '#c7cad6'};border:1px solid ${on ? 'transparent' : 'rgba(255,255,255,.07)'};`;
+        const modeBtnStyle = (on) => `background:${on ? 'linear-gradient(120deg,#22d3ee,#a78bfa)' : 'rgba(255,255,255,.05)'};
+            color:${on ? '#0b0b10' : '#c7cad6'};border:1px solid ${on ? 'transparent' : 'rgba(255,255,255,.1)'};`;
         const modoContent = el('div', {
             html: `
             <div style="display:flex;gap:4px;">
@@ -717,7 +770,7 @@
                 <button data-mode="on" class="adm-mode-btn ${mode === 'on' ? 'active' : ''}" style="${modeBtnStyle(mode === 'on')}">ON</button>
                 <button data-mode="off" class="adm-mode-btn ${mode === 'off' ? 'active' : ''}" style="${modeBtnStyle(mode === 'off')}">OFF</button>
             </div>
-            <div style="font-size:8.5px;color:#7d8194;margin-top:7px;line-height:1.45;">Afeta apenas <b style="color:#a8adbf;">módulos secret</b>. Não bloqueia o hub.</div>`
+            <div style="font-size:8.5px;color:#8b8fa3;margin-top:7px;line-height:1.45;">Afeta apenas <b style="color:#c7cad6;">módulos secret</b>. Não bloqueia o hub.</div>`
         });
         colSide.appendChild(sec('Módulos secret', ICON.zap, modoContent));
 
@@ -726,9 +779,9 @@
             html: `
             <div style="display:flex;gap:5px;margin-bottom:7px;">
                 <button id="blkAdd" class="adm-btn" style="flex:1;padding:6px;font-size:9px;font-weight:700;
-                    background:rgba(251,113,133,.08);border:1px solid rgba(251,113,133,.28);color:#fca5b1;">${ICON.shield}<span>Bloquear</span></button>
+                    background:rgba(251,113,133,.1);border:1px solid rgba(251,113,133,.32);color:#fca5b1;">${ICON.shield}<span>Bloquear</span></button>
                 <button id="blkRem" class="adm-btn" style="flex:1;padding:6px;font-size:9px;font-weight:700;
-                    background:rgba(52,211,153,.08);border:1px solid rgba(52,211,153,.28);color:#a7f3d0;">${ICON.zap}<span>Liberar</span></button>
+                    background:rgba(52,211,153,.1);border:1px solid rgba(52,211,153,.32);color:#a7f3d0;">${ICON.zap}<span>Liberar</span></button>
             </div>
             <div id="blkList" style="display:flex;flex-direction:column;gap:3px;max-height:100px;overflow-y:auto;"></div>`
         });
@@ -744,7 +797,7 @@
         ].forEach(a => {
             acoesContent.appendChild(el('button', {
                 id: a.id, class: 'adm-btn',
-                style: `padding:6px;font-size:9px;font-weight:700;background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.07);color:${a.color};`,
+                style: `padding:6px;font-size:9px;font-weight:700;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.1);color:${a.color};`,
                 html: `${a.icon}<span>${a.label}</span>`
             }));
         });
@@ -754,9 +807,9 @@
         const adminContent = el('div', {
             html: `
             <button id="logout" class="adm-btn" style="width:100%;padding:7px;font-size:9px;font-weight:700;
-                background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.07);color:#c7cad6;margin-bottom:5px;">${ICON.exit}<span>Sair</span></button>
+                background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.1);color:#c7cad6;margin-bottom:5px;">${ICON.exit}<span>Sair</span></button>
             <button id="forget" class="adm-btn" style="width:100%;padding:7px;font-size:9px;font-weight:700;
-                background:rgba(251,113,133,.08);border:1px solid rgba(251,113,133,.28);color:#fca5b1;">${ICON.trash}<span>Esquecer device</span></button>`
+                background:rgba(251,113,133,.1);border:1px solid rgba(251,113,133,.32);color:#fca5b1;">${ICON.trash}<span>Esquecer device</span></button>`
         });
         colSide.appendChild(sec('Sessão admin', ICON.user, adminContent));
 
@@ -765,22 +818,8 @@
 
         _bindHover(wrap.querySelectorAll('.adm-btn, .adm-mode-btn, .adm-close'), signal);
 
-        // ═══ FECHAR / DRAG ═══
+        // ═══ FECHAR / ESC (sem drag) ═══
         hdr.querySelector('#close').addEventListener('click', _killPanel, { signal });
-        let drag = null;
-        hdr.addEventListener('mousedown', (e) => {
-            if (e.target.closest('#close')) return;
-            const r = wrap.getBoundingClientRect();
-            drag = { x: e.clientX - r.left, y: e.clientY - r.top };
-            wrap.style.left = r.left + 'px'; wrap.style.top = r.top + 'px';
-        }, { signal });
-        document.addEventListener('mousemove', (e) => {
-            if (!drag) return;
-            wrap.style.left = Math.max(0, e.clientX - drag.x) + 'px';
-            wrap.style.top = Math.max(0, e.clientY - drag.y) + 'px';
-        }, { signal });
-        document.addEventListener('mouseup', () => { drag = null; }, { signal });
-
         document.addEventListener('keydown', (e) => { if (e.key === 'Escape') _killPanel(); }, { signal });
         document.addEventListener('visibilitychange', () => { if (!document.hidden && _panelOpen) _pollSessoes(); }, { signal });
 
@@ -828,7 +867,7 @@
             }
             const parts = [];
             fixos.forEach(h => parts.push(`<div class="adm-blk-line fixed"><span class="adm-blk-hash">${shortHash(h, 8, 5)}</span>
-                <span style="font-size:7px;padding:1px 5px;border-radius:4px;background:rgba(139,143,163,.14);color:#7d8194;font-weight:800;">FIXO</span></div>`));
+                <span style="font-size:7px;padding:1px 5px;border-radius:4px;background:rgba(139,143,163,.16);color:#8b8fa3;font-weight:800;">FIXO</span></div>`));
             extras.forEach((h, i) => parts.push(`<div class="adm-blk-line"><span class="adm-blk-hash">${shortHash(h, 8, 5)}</span>
                 <span data-rm="${i}" class="adm-blk-rm" title="Remover">✕</span></div>`));
             listEl.innerHTML = parts.join('');
@@ -876,9 +915,9 @@
             const expanded = _expandedRows.has(s.id);
             return `<div class="adm-sess-item ${euMesmo ? 'self' : ''} ${expanded ? 'expanded' : ''}" data-sess-id="${s.id}" style="animation-delay:${Math.min(idx * 16, 220)}ms;">
                 <div class="adm-sess-head" data-head>
-                    <span class="adm-dot ${online ? 'live' : 'offline'}" title="${online ? 'Online' : 'Offline'}"></span>
+                    <span class="adm-dot ${online ? 'live' : 'offline'}" data-dot title="${online ? 'Online' : 'Offline'}"></span>
                     <span class="adm-sess-name" title="${s.name || 'Sem nome'}">${s.name || 'Sem nome'}${euMesmo ? ' <span style="color:#a78bfa">(você)</span>' : ''}</span>
-                    <span class="adm-sess-meta">${shortHash(s.id, 7, 4)} · ${tempo}</span>
+                    <span class="adm-sess-meta" data-meta>${shortHash(s.id, 7, 4)} · ${tempo}</span>
                     <span class="adm-sess-version ${vCls}">v${hubV}</span>
                     <span class="adm-switch-wrap">
                         <label class="adm-switch" title="${bloq ? 'Bloqueado — clique para liberar' : 'Livre — clique para bloquear'}">
@@ -892,7 +931,7 @@
                     <div class="adm-sess-detail-row"><span>deviceId</span><span title="${s.id}">${s.id}</span></div>
                     ${s.fingerprint ? `<div class="adm-sess-detail-row"><span>fingerprint</span><span title="${s.fingerprint}">${shortHash(s.fingerprint, 12, 6)}</span></div>` : ''}
                     ${s.sessionStart ? `<div class="adm-sess-detail-row"><span>início</span><span>${timestampAbs(s.sessionStart)}</span></div>` : ''}
-                    <div class="adm-sess-detail-row"><span>último sinal</span><span>${timestampAbs(s.lastSeen)}</span></div>
+                    <div class="adm-sess-detail-row"><span>último sinal</span><span data-lastseen>${timestampAbs(s.lastSeen)}</span></div>
                     ${s.ua ? `<div class="adm-sess-detail-row"><span>user agent</span><span title="${s.ua}">${s.ua.slice(0, 42)}…</span></div>` : ''}
                     ${s.mission ? `<div class="adm-sess-detail-row"><span>missão</span><span title="${s.mission}">${s.mission}</span></div>` : ''}
                     <button class="adm-sess-detail-btn" data-copy-id="${s.id}">Copiar tudo</button>
@@ -920,8 +959,47 @@
                 : eu.blocked === true ? `<span class="adm-badge bad">Bloqueada</span>` : `<span class="adm-badge ok">Livre</span>`;
         }
 
+        // ─── TICK: atualiza só textos/timestamps/dots — não toca no DOM tree ───
+        _tickDisplay = function() {
+            if (!listEl) return;
+            const now = Date.now();
+            listEl.querySelectorAll('.adm-sess-item').forEach(item => {
+                const id = item.dataset.sessId;
+                const s = _sessionsMap.get(id);
+                if (!s) return;
+                const ago = now - (s.lastSeen || 0);
+                const online = ago < SESSAO_ONLINE_MS;
+                const dot = item.querySelector('[data-dot]');
+                if (dot) {
+                    dot.className = 'adm-dot ' + (online ? 'live' : 'offline');
+                    dot.title = online ? 'Online' : 'Offline';
+                }
+                const meta = item.querySelector('[data-meta]');
+                if (meta) {
+                    const tempo = online ? 'ativa ' + fmtDur(now - (s.sessionStart || s.lastSeen || now)) : 'há ' + fmtAtras(ago);
+                    meta.textContent = shortHash(s.id, 7, 4) + ' · ' + tempo;
+                }
+                if (item.classList.contains('expanded')) {
+                    const ls = item.querySelector('[data-lastseen]');
+                    if (ls) ls.textContent = timestampAbs(s.lastSeen);
+                }
+            });
+
+            // Group counts
+            const { online, offline } = recomputarFiltrados();
+            listEl.querySelectorAll('[data-group-count]').forEach(elc => {
+                const kind = elc.dataset.groupCount;
+                elc.textContent = kind === 'online' ? online.length : offline.length;
+            });
+
+            _renderCounters(Array.from(_sessionsMap.values()));
+            _updateOwnSessionBadge();
+        };
+
         _renderSessoes = function (skipRebuild) {
             if (!listEl) return;
+            if (skipRebuild) { _tickDisplay?.(); return; }
+
             const { all, filtrados, online, offline } = recomputarFiltrados();
             _renderCounters(all);
             _updateOwnSessionBadge();
@@ -939,10 +1017,13 @@
 
             const now = Date.now();
             let html = '', idx = 0;
-            if (online.length) { html += `<div class="adm-sess-group">Online · ${online.length}</div>`; html += online.map(s => renderRow(s, idx++, now)).join(''); }
+            if (online.length) {
+                html += `<div class="adm-sess-group">Online · <span data-group-count="online">${online.length}</span></div>`;
+                html += online.map(s => renderRow(s, idx++, now)).join('');
+            }
             if (offline.length) {
                 const showOffline = _offlineExpanded || offline.length <= 5;
-                html += `<div class="adm-sess-group clickable" data-toggle-offline="1"><span>Offline · ${offline.length}</span><span style="font-size:10px;">${showOffline ? '▾' : '▸'}</span></div>`;
+                html += `<div class="adm-sess-group clickable" data-toggle-offline="1"><span>Offline · <span data-group-count="offline">${offline.length}</span></span><span style="font-size:10px;">${showOffline ? '▾' : '▸'}</span></div>`;
                 if (showOffline) html += offline.map(s => renderRow(s, idx++, now)).join('');
             }
             listEl.innerHTML = html;
@@ -1045,8 +1126,18 @@
         _fecharTempMenu();
         if (_footTimer) { clearInterval(_footTimer); _footTimer = null; }
         if (_scopedAc) { _scopedAc.abort(); _scopedAc = null; }
-        if (_panelEl) { _animOut(_panelEl); _panelEl = null; }
+        if (_panelEl) {
+            const p = _panelEl; _panelEl = null;
+            p.classList.add('closing');
+            setTimeout(() => p.remove(), 320);
+        }
+        if (_backdropEl) {
+            const b = _backdropEl; _backdropEl = null;
+            b.classList.add('closing');
+            setTimeout(() => b.remove(), 320);
+        }
         _renderSessoes = null;
+        _tickDisplay = null;
     }
 
     // ═══ OPEN / TOGGLE ═══
