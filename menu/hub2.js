@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Sang Hub
 // @namespace    http://tampermonkey.net/
-// @version      1.2.1
+// @version      1.3.1
 // @description  Gerenciador de módulos
 // @author       Sang
 // @match        *://*.habblive.in/bigclient*
@@ -20,7 +20,6 @@
     // ═══ CONTEXTO ═══
     const IS_CORE = /^https?:\/\/(?:[^/]*\.)?(?:habblive\.in|habblet\.city)\/(?:bigclient|me)/i.test(location.href);
 
-    // ═══ CAPTURA /me ═══
     if (IS_CORE && /\/me(\/|$|\?)/.test(location.pathname)) {
         function buildHeadshotUrl(walkgifUrl) {
             try {
@@ -202,50 +201,52 @@
         return res.json();
     }
     async function _verificarBloqueioRemoto() {
-    if (!fsConfigured() || !_deviceId) return false;
-    try {
-        const doc = await fsRequest('GET', '/sessions/' + _deviceId);
-        const s = fsParseDoc(doc);
-        if (s.blocked !== true) return false;
-        if (s.blockedUntil && Date.now() > s.blockedUntil) {
-            // expirou — limpa e considera livre
-            try {
-                await fsRequest('PATCH', '/sessions/' + _deviceId, {
-                    fields: { blocked: fsValue(false), blockedUntil: fsValue(0) }
-                }, 'updateMask.fieldPaths=blocked&updateMask.fieldPaths=blockedUntil');
-            } catch(e) {}
+        if (!fsConfigured() || !_deviceId) return false;
+        try {
+            const doc = await fsRequest('GET', '/sessions/' + _deviceId);
+            const s = fsParseDoc(doc);
+            if (s.blocked !== true) return false;
+            if (s.blockedUntil && Date.now() > s.blockedUntil) {
+                try {
+                    await fsRequest('PATCH', '/sessions/' + _deviceId, {
+                        fields: { blocked: fsValue(false), blockedUntil: fsValue(0) }
+                    }, 'updateMask.fieldPaths=blocked&updateMask.fieldPaths=blockedUntil');
+                } catch(e) {}
+                return false;
+            }
+            return true;
+        } catch(e) {
+            if (/404/.test(String(e.message || ''))) return false;
             return false;
         }
-        return true;
-    } catch(e) {
-        if (/404/.test(String(e.message || ''))) return false;
-        return false;
     }
-}
 
     let _heartbeatTimer = null;
     const SESSION_HEARTBEAT_FIELDS = ['name', 'mission', 'hubVersion', 'lastSeen', 'ua'];
 
+    // ── Cria/atualiza sessão com TODOS os campos iniciais no mask ──
+    // (sessionStart, blocked, fingerprint precisam estar no mask,
+    //  caso contrário o Firestore os ignora na primeira escrita)
     async function _criarOuAtualizarSessao() {
         if (!fsConfigured() || !_deviceId) return;
         const player = loadPlayerCache() || {};
         const now = Date.now();
-        const mask = SESSION_HEARTBEAT_FIELDS.map(f => 'updateMask.fieldPaths=' + f).join('&');
+        const campos = {
+            name:         fsValue(player.name || ''),
+            mission:      fsValue(player.mission || ''),
+            hubVersion:   fsValue(HUB_VERSION),
+            lastSeen:     fsValue(now),
+            ua:           fsValue(navigator.userAgent.slice(0, 120)),
+            sessionStart: fsValue(now),
+            blocked:      fsValue(false),
+            fingerprint:  fsValue(_fp || '')
+        };
+        const mask = Object.keys(campos).map(f => 'updateMask.fieldPaths=' + f).join('&');
         try {
-            await fsRequest('PATCH', '/sessions/' + _deviceId, {
-                fields: {
-                    name:         fsValue(player.name || ''),
-                    mission:      fsValue(player.mission || ''),
-                    hubVersion:   fsValue(HUB_VERSION),
-                    lastSeen:     fsValue(now),
-                    ua:           fsValue(navigator.userAgent.slice(0, 120)),
-                    sessionStart: fsValue(now),
-                    blocked:      fsValue(false),
-                    fingerprint:  fsValue(_fp || '')
-                }
-            }, mask);
+            await fsRequest('PATCH', '/sessions/' + _deviceId, { fields: campos }, mask);
         } catch(e) { HWARN('Sessão inicial falhou:', e); }
     }
+
     async function _enviarHeartbeat() {
         if (!fsConfigured() || !_deviceId) return;
         const player = loadPlayerCache() || {};
@@ -266,6 +267,12 @@
         if (!fsConfigured() || _heartbeatTimer) return;
         _criarOuAtualizarSessao();
         _heartbeatTimer = setInterval(_enviarHeartbeat, HEARTBEAT_MS);
+    }
+
+    // ── Reage a mudança do cache do jogador (via /me em outra aba) ──
+    function _aplicarCacheJogador() {
+        try { _enviarHeartbeat(); } catch(e) {}
+        try { window.dispatchEvent(new CustomEvent('sang:player-updated', { detail: loadPlayerCache() })); } catch(e) {}
     }
 
     // ═══ BLOQUEIO — UI ═══
@@ -391,7 +398,6 @@
         HLOG('💥 Autodestruindo hub');
         try { window._admin?.kill?.(); } catch(e) {}
         try { window._hubUI?.kill?.(); } catch(e) {}
-        // Heartbeat continua rodando — admin precisa ver a sessão online
         if (!_heartbeatTimer && fsConfigured() && _deviceId) {
             _enviarHeartbeat();
             _heartbeatTimer = setInterval(_enviarHeartbeat, HEARTBEAT_MS);
@@ -448,7 +454,7 @@
     });
 
     // ═══ CONSTANTES ═══
-    const HUB_VERSION = "1.2.1";
+    const HUB_VERSION = "1.3.1";
     const HUB_UPDATE_URL = "https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/menu/hub2.js";
     const MANIFEST_URL = "https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/menu/manifest.json";
     const UPDATE_INTERVAL_MS = 3 * 60 * 1000;
@@ -466,7 +472,7 @@
     const VOICE_COOLDOWN_MS = 1200;
     const SpeechRecognitionAPI = window.SpeechRecognition || window.webkitSpeechRecognition;
 
-    const VOICE_OPEN  = ['abra', 'abre', 'abrir', 'ativa', 'ativar', 'liga', 'ligar', 'inicia', 'iniciar'];
+    const VOICE_OPEN = ['abra', 'abre', 'abrir', 'ativa', 'ativar', 'liga', 'ligar', 'inicia', 'iniciar'];
     const VOICE_CLOSE = ['feche', 'fecha', 'fechar', 'desativa', 'desativar', 'desliga', 'desligar', 'para', 'parar'];
     const VOICE_ALIASES = {
         packetlive:  ['packet', 'packet manager', 'analisador', 'analyzer'],
@@ -536,6 +542,67 @@
             onMessage: (cb) => { messageCbs.push(cb); },
             _original: OriginalWebSocket
         };
+    })();
+
+    // ═══ SFX — soft tone ═══
+    // Tom filtrado por lowpass, ataque lento (~12ms) para remover o "pipoco"
+    // digital, frequências graves e ganho baixo. Resulta num toque macio,
+    // orgânico, que combina com menu de vidro.
+    (function setupSfx() {
+        if (window._hubSFX) return;
+        let actx = null;
+        function ctx() {
+            if (actx) return actx;
+            try { actx = new (window.AudioContext || window.webkitAudioContext)(); } catch(e) { actx = null; }
+            return actx;
+        }
+        function tone(freq, dur, type, peak, attack) {
+            const c = ctx();
+            if (!c) return;
+            if (c.state === 'suspended') c.resume().catch(() => {});
+            const now = c.currentTime;
+            const osc = c.createOscillator();
+            const lp  = c.createBiquadFilter();
+            const gain = c.createGain();
+
+            osc.type = type || 'sine';
+            osc.frequency.setValueAtTime(freq, now);
+
+            lp.type = 'lowpass';
+            lp.frequency.setValueAtTime(Math.min(freq * 2.6, 3200), now);
+            lp.Q.setValueAtTime(0.6, now);
+
+            const a = attack != null ? attack : 0.012;
+            gain.gain.setValueAtTime(0, now);
+            gain.gain.linearRampToValueAtTime(peak || 0.03, now + a);
+            gain.gain.exponentialRampToValueAtTime(0.0001, now + dur);
+
+            osc.connect(lp).connect(gain).connect(c.destination);
+            osc.start(now);
+            osc.stop(now + dur + 0.03);
+        }
+        let lastHover = 0;
+        window._hubSFX = {
+            warm() { ctx(); },
+            // tick grave, curto e abafado — como tecla de piano coberta
+            hover() {
+                const t = performance.now();
+                if (t - lastHover < 45) return;
+                lastHover = t;
+                tone(520, 0.075, 'sine', 0.022, 0.014);
+            },
+            // par C5 → E5 (terça maior), sobe suave, sensação de "ligou"
+            toggleOn() {
+                tone(523.25, 0.09, 'sine', 0.028, 0.012);
+                setTimeout(() => tone(659.25, 0.13, 'sine', 0.024, 0.014), 55);
+            },
+            // par A4 → E4 (queda de quarta), tom macio, sensação de "desligou"
+            toggleOff() {
+                tone(440, 0.10, 'sine', 0.028, 0.012);
+                setTimeout(() => tone(329.63, 0.14, 'sine', 0.022, 0.016), 60);
+            }
+        };
+        document.addEventListener('click', () => { try { ctx()?.resume(); } catch(e) {} }, { once: true, capture: true });
     })();
 
     // ═══ MODULE LOADING ═══
@@ -975,21 +1042,37 @@
         #${UID} .hub-toast.ok{border-color:rgba(52,211,153,0.5);color:#a7f3d0}
         #${UID} .hub-toast.error{border-color:rgba(251,113,133,0.5);color:#fecdd3}
         #${UID} .hub-toast.warn,#${UID} .hub-toast.info{border-color:rgba(34,211,238,0.5);color:#cffafe}
-        #${UID}pill{--hub-cyan:#22d3ee; --hub-violet:#a78bfa; --hub-grad:linear-gradient(120deg,var(--hub-cyan),var(--hub-violet));
+
+        #${UID}pill{
+            --hub-cyan:#22d3ee; --hub-violet:#a78bfa; --hub-grad:linear-gradient(120deg,var(--hub-cyan),var(--hub-violet));
             position:fixed;top:20px;left:20px;width:250px;
             font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Inter,sans-serif;
-            border-radius:20px;z-index:2147483647;user-select:none;animation:hubFade .25s ease-out;padding:2px}
+            border-radius:20px;z-index:2147483647;user-select:none;animation:hubFade .25s ease-out;padding:2px;
+            transition:opacity .18s ease .04s, width .38s cubic-bezier(.16,1,.3,1);
+            will-change:transform,opacity,width}
         #${UID}pill::before{content:'';position:absolute;inset:0;border-radius:20px;padding:2px;
             background:conic-gradient(from var(--hub-angle),var(--hub-cyan),var(--hub-violet),#fff,var(--hub-violet),var(--hub-cyan));
             -webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);
             -webkit-mask-composite:xor;mask-composite:exclude;
             animation:hubPillRing 6s linear infinite;pointer-events:none;
-            box-shadow:0 0 14px rgba(34,211,238,0.35),0 0 22px rgba(167,139,250,0.2)}
-        #${UID}pill{transition:opacity .18s ease .04s;opacity:1}
+            box-shadow:0 0 14px rgba(34,211,238,0.35),0 0 22px rgba(167,139,250,0.2);
+            transition:box-shadow .4s cubic-bezier(.16,1,.3,1)}
+        #${UID}pill:hover:not(.dragging){width:284px}
+        #${UID}pill:hover:not(.dragging)::before{
+            box-shadow:0 0 30px rgba(34,211,238,0.85),
+                       0 0 60px rgba(167,139,250,0.6),
+                       0 0 100px rgba(34,211,238,0.35)}
+        #${UID}pill:hover:not(.dragging) #${UID}pillinner{
+            box-shadow:0 24px 60px rgba(0,0,0,0.6),
+                       0 0 36px rgba(34,211,238,0.18)}
+        #${UID}pill.dragging{cursor:grabbing}
+        #${UID}pill.hidden{display:none}
+
         #${UID}pillinner{display:block;border-radius:18px;cursor:grab;color:#f1f2f8;
             background:linear-gradient(175deg,rgba(20,20,28,0.94),rgba(9,9,14,0.98));
-            box-shadow:0 20px 50px rgba(0,0,0,0.55);overflow:hidden}
-        #${UID}pill.hidden{display:none}
+            box-shadow:0 20px 50px rgba(0,0,0,0.55);overflow:hidden;
+            transition:box-shadow .4s cubic-bezier(.16,1,.3,1)}
+        #${UID}pillinner:active{cursor:grabbing}
         #${UID}pill .hub-p-hdr{padding:11px 13px;display:flex;align-items:center;gap:9px}
         #${UID}pill .hub-p-icon{flex-shrink:0;width:28px;height:28px;border-radius:9px;background:rgba(255,255,255,0.05);
             border:1px solid rgba(255,255,255,0.08);display:flex;align-items:center;justify-content:center}
@@ -1060,6 +1143,9 @@
         document.body.appendChild(root);
         uiRoot = root;
 
+        root.querySelectorAll('.hub-hbtn, .hub-tab').forEach(n =>
+            n.addEventListener('mouseenter', () => window._hubSFX?.hover?.(), { signal: ac.signal }));
+
         const pill = document.createElement('div');
         pill.id = UID + 'pill';
         pill.setAttribute('data-hub', '1');
@@ -1086,6 +1172,22 @@
         </div>`;
         document.body.appendChild(pill);
         uiPill = pill;
+        pill.querySelector('#' + UID + 'pillinner').addEventListener('mouseenter', () => window._hubSFX?.hover?.(), { signal: ac.signal });
+
+        // ── Estado de drag (jelly / spring) ──
+        let _dragOff = null, _dragTarget = null, _dragCurrent = null, _dragVel = { x: 0, y: 0 }, _dragRaf = null;
+        let _pDragOff = null, _pDragTarget = null, _pDragCurrent = null, _pDragVel = { x: 0, y: 0 }, _pDragRaf = null, _pDragMoved = false;
+
+        function _cancelDrags() {
+            if (_dragRaf)  { cancelAnimationFrame(_dragRaf);  _dragRaf  = null; }
+            if (_pDragRaf) { cancelAnimationFrame(_pDragRaf); _pDragRaf = null; }
+            _dragOff = _dragTarget = _dragCurrent = null;
+            _pDragOff = _pDragTarget = _pDragCurrent = null;
+            _pDragMoved = false;
+            root.style.transform = '';
+            pill.style.transform = '';
+            pill.classList.remove('dragging');
+        }
 
         function syncPos(from, to) {
             const r = from.getBoundingClientRect();
@@ -1093,17 +1195,19 @@
             to.style.top = r.top + 'px';
         }
         function showPanel() {
+            _cancelDrags();
             syncPos(pill, root);
             pill.classList.add('hidden');
             root.classList.remove('hidden');
             requestAnimationFrame(() => root.classList.remove('hub-collapsed'));
         }
         function showPill() {
+            _cancelDrags();
             syncPos(root, pill);
             root.classList.add('hub-collapsed');
             setTimeout(() => { root.classList.add('hidden'); pill.classList.remove('hidden'); }, 220);
         }
-        function hideAll() { root.classList.add('hidden'); pill.classList.add('hidden'); }
+        function hideAll() { _cancelDrags(); root.classList.add('hidden'); pill.classList.add('hidden'); }
         showPanelFn = showPanel;
         showPillFn = showPill;
 
@@ -1111,41 +1215,108 @@
             return (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); h(); } };
         }
 
-        let drag = null;
+        // ── JELLY DRAG: painel ──
+        // O loop amostra continuamente o alvo (cursor) e interpola a posição
+        // com física de mola sub-amortecida. A defasagem vira o "borracha" e
+        // a rotação proporcional à velocidade horizontal dá o molenga.
+        function _dragLoop() {
+            if (!_dragTarget || !_dragCurrent) { _dragRaf = null; return; }
+            const S = 0.16, D = 0.72;
+            const dx = _dragTarget.x - _dragCurrent.x;
+            const dy = _dragTarget.y - _dragCurrent.y;
+            _dragVel.x = (_dragVel.x + dx * S) * D;
+            _dragVel.y = (_dragVel.y + dy * S) * D;
+            _dragCurrent.x += _dragVel.x;
+            _dragCurrent.y += _dragVel.y;
+
+            const rot = Math.max(-2.5, Math.min(2.5, _dragVel.x * 0.4));
+            root.style.left = _dragCurrent.x + 'px';
+            root.style.top  = _dragCurrent.y + 'px';
+            root.style.transform = Math.abs(rot) > 0.05 ? 'rotate(' + rot.toFixed(2) + 'deg)' : '';
+
+            const dist = Math.hypot(dx, dy) + Math.hypot(_dragVel.x, _dragVel.y);
+            if (_dragOff || dist > 0.4) {
+                _dragRaf = requestAnimationFrame(_dragLoop);
+            } else {
+                root.style.transform = '';
+                _dragRaf = null;
+            }
+        }
+
         const hdr = root.querySelector('#' + UID + 'hdr');
         hdr.addEventListener('mousedown', e => {
             if (e.target.closest('.hub-hbtn')) return;
             const r = root.getBoundingClientRect();
-            drag = { x: e.clientX - r.left, y: e.clientY - r.top };
+            _dragOff = { ox: e.clientX - r.left, oy: e.clientY - r.top };
+            _dragTarget  = { x: r.left, y: r.top };
+            _dragCurrent = { x: r.left, y: r.top };
+            _dragVel = { x: 0, y: 0 };
             root.style.left = r.left + 'px';
-            root.style.top = r.top + 'px';
+            root.style.top  = r.top  + 'px';
+            if (!_dragRaf) _dragRaf = requestAnimationFrame(_dragLoop);
         }, { signal: ac.signal });
+
         document.addEventListener('mousemove', e => {
-            if (!drag) return;
-            root.style.left = Math.max(0, e.clientX - drag.x) + 'px';
-            root.style.top = Math.max(0, e.clientY - drag.y) + 'px';
+            if (!_dragOff || !_dragTarget) return;
+            _dragTarget.x = Math.max(0, e.clientX - _dragOff.ox);
+            _dragTarget.y = Math.max(0, e.clientY - _dragOff.oy);
         }, { signal: ac.signal });
-        document.addEventListener('mouseup', () => { drag = null; }, { signal: ac.signal });
+
+        document.addEventListener('mouseup', () => { _dragOff = null; }, { signal: ac.signal });
+
+        // ── JELLY DRAG: pill ──
+        // Amostra mais leve (S=0.22) — pill tem massa menor, reage mais rápido.
+        function _pDragLoop() {
+            if (!_pDragTarget || !_pDragCurrent) { _pDragRaf = null; return; }
+            const S = 0.22, D = 0.70;
+            const dx = _pDragTarget.x - _pDragCurrent.x;
+            const dy = _pDragTarget.y - _pDragCurrent.y;
+            _pDragVel.x = (_pDragVel.x + dx * S) * D;
+            _pDragVel.y = (_pDragVel.y + dy * S) * D;
+            _pDragCurrent.x += _pDragVel.x;
+            _pDragCurrent.y += _pDragVel.y;
+
+            const rot = Math.max(-4, Math.min(4, _pDragVel.x * 0.7));
+            pill.style.left = _pDragCurrent.x + 'px';
+            pill.style.top  = _pDragCurrent.y + 'px';
+            pill.style.transform = Math.abs(rot) > 0.05 ? 'rotate(' + rot.toFixed(2) + 'deg)' : '';
+
+            const dist = Math.hypot(dx, dy) + Math.hypot(_pDragVel.x, _pDragVel.y);
+            if (_pDragOff || dist > 0.4) {
+                _pDragRaf = requestAnimationFrame(_pDragLoop);
+            } else {
+                pill.style.transform = '';
+                _pDragRaf = null;
+            }
+        }
 
         const pillInner = pill.querySelector('#' + UID + 'pillinner');
-        let pillDrag = null, pillDidDrag = false;
         pillInner.addEventListener('mousedown', e => {
             const r = pill.getBoundingClientRect();
-            pillDrag = { x: e.clientX - r.left, y: e.clientY - r.top, sx: e.clientX, sy: e.clientY };
-            pillDidDrag = false;
+            _pDragOff = { ox: e.clientX - r.left, oy: e.clientY - r.top, sx: e.clientX, sy: e.clientY };
+            _pDragTarget  = { x: r.left, y: r.top };
+            _pDragCurrent = { x: r.left, y: r.top };
+            _pDragVel = { x: 0, y: 0 };
+            _pDragMoved = false;
+            pill.classList.add('dragging');
             pill.style.left = r.left + 'px';
-            pill.style.top = r.top + 'px';
+            pill.style.top  = r.top  + 'px';
+            if (!_pDragRaf) _pDragRaf = requestAnimationFrame(_pDragLoop);
         }, { signal: ac.signal });
+
         document.addEventListener('mousemove', e => {
-            if (!pillDrag) return;
-            if (Math.abs(e.clientX - pillDrag.sx) > 3 || Math.abs(e.clientY - pillDrag.sy) > 3) pillDidDrag = true;
-            pill.style.left = Math.max(0, e.clientX - pillDrag.x) + 'px';
-            pill.style.top = Math.max(0, e.clientY - pillDrag.y) + 'px';
+            if (!_pDragOff || !_pDragTarget) return;
+            if (Math.abs(e.clientX - _pDragOff.sx) > 3 || Math.abs(e.clientY - _pDragOff.sy) > 3) _pDragMoved = true;
+            _pDragTarget.x = Math.max(0, e.clientX - _pDragOff.ox);
+            _pDragTarget.y = Math.max(0, e.clientY - _pDragOff.oy);
         }, { signal: ac.signal });
+
         document.addEventListener('mouseup', () => {
-            if (pillDrag && !pillDidDrag) showPanel();
-            pillDrag = null;
+            if (_pDragOff && !_pDragMoved) showPanel();
+            _pDragOff = null;
+            pill.classList.remove('dragging');
         }, { signal: ac.signal });
+
         pillInner.addEventListener('keydown', onKeyActivate(showPanel), { signal: ac.signal });
 
         let toastTm = null;
@@ -1196,6 +1367,7 @@
         function setVoiceActive(on) {
             voiceActive = on;
             updateVoiceBtn();
+            on ? window._hubSFX?.toggleOn?.() : window._hubSFX?.toggleOff?.();
             try { localStorage.setItem(VOICE_KEY, on ? '1' : '0'); } catch(e) {}
             const rec = ensureRecognition();
             if (on) { if (!vozHabilitado) try { rec.start(); } catch(e) {} }
@@ -1248,6 +1420,7 @@
             if (state.syncState === 'error' && !state.manifest.modules.length) {
                 listEl.innerHTML = `<div class="hub-error-box">Erro ao carregar manifesto.<div class="hub-retry" id="${UID}retry" role="button" tabindex="0">Tentar novamente</div></div>`;
                 const r = listEl.querySelector('#' + UID + 'retry');
+                r.addEventListener('mouseenter', () => window._hubSFX?.hover?.());
                 r.addEventListener('click', () => refreshManifest(true));
                 return;
             }
@@ -1275,6 +1448,7 @@
                 const c = item.querySelector('.hub-gif-frozen');
                 const l = item.querySelector('.hub-gif-live');
                 if (c && l) setupGifIcon(item, c, l, l.getAttribute('data-original'));
+                item.addEventListener('mouseenter', () => window._hubSFX?.hover?.());
                 item.addEventListener('click', () => handleModuleClick(mod));
                 listEl.appendChild(item);
             });
@@ -1313,17 +1487,25 @@
         renderListFn();
         renderChromeFn();
 
+        // ── Popular pill com cache do jogador + reagir a atualizações ──
         const nameEl = pill.querySelector('#' + UID + 'playername');
         const missionEl = pill.querySelector('#' + UID + 'playermission');
         const avatarEl = pill.querySelector('#' + UID + 'playeravatar');
-        const cached = loadPlayerCache();
-        if (cached) {
-            nameEl.textContent = cached.name || '—';
-            missionEl.textContent = cached.mission || '—';
-            if (cached.avatarUrl) avatarEl.innerHTML = `<img src="${cached.avatarUrl}" style="position:absolute;top:-25%;left:-40%;width:210%;height:210%;object-fit:cover" alt="avatar" />`;
+
+        function aplicarInfoJogadorNaPill() {
+            const c = loadPlayerCache();
+            if (!c) return;
+            nameEl.textContent = c.name || '—';
+            missionEl.textContent = c.mission || '—';
+            if (c.avatarUrl) {
+                avatarEl.innerHTML = `<img src="${c.avatarUrl}" style="position:absolute;top:-25%;left:-40%;width:210%;height:210%;object-fit:cover" alt="avatar" />`;
+            }
         }
+        aplicarInfoJogadorNaPill();
+        window.addEventListener('sang:player-updated', aplicarInfoJogadorNaPill, { signal: ac.signal });
 
         function kill() {
+            _cancelDrags();
             limparHandlerVoz();
             state.killFlag = true;
             voiceActive = false;
@@ -1350,6 +1532,20 @@
             activateModule,
             toast: (msg, kind) => { if (toastFn) toastFn(msg, kind); },
             log: HLOG, warn: HWARN, err: HERR,
+
+            // ── Porta para o painel admin puxar info do jogador ──
+            player: {
+                get raw()         { return loadPlayerCache(); },
+                get name()        { return (loadPlayerCache() || {}).name || ''; },
+                get mission()     { return (loadPlayerCache() || {}).mission || ''; },
+                get avatarUrl()   { return (loadPlayerCache() || {}).avatarUrl || ''; },
+                get capturedAt()  { return (loadPlayerCache() || {}).capturedAt || 0; },
+                refresh() {
+                    _aplicarCacheJogador();
+                    return loadPlayerCache();
+                }
+            },
+
             gate: {
                 get fp() { return _fp; },
                 get secretOn() { return _secretOn; },
@@ -1403,6 +1599,13 @@
         await _gate();
         _iniciarHeartbeat();
         _iniciarBlockWatcher();
+
+        window.addEventListener('storage', (e) => {
+            if (e.key === PLAYER_CACHE_KEY && e.newValue) {
+                HLOG('📥 Cache do jogador atualizado em outra aba — reenviando heartbeat');
+                _aplicarCacheJogador();
+            }
+        });
 
         if (_blocked) {
             HLOG('🚫 Bloqueado no boot — toast apenas');
