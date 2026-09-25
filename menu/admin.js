@@ -79,6 +79,9 @@
         if (h.length <= head + tail + 1) return h;
         return h.slice(0, head) + '…' + h.slice(-tail);
     }
+    function escapeText(s) {
+        return String(s ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
+    }
     function timestampAbs(ts) {
         if (!ts) return '—';
         try {
@@ -201,7 +204,7 @@
         }
         .adm-backdrop.closing { animation: aurFadeOut .3s ease forwards; }
 
-        /* ═══ PANEL — Aurora Glass, centralizado, slide-down ═══ */
+        /* ═══ PANEL ═══ */
         .adm-panel {
             position: fixed;
             top: 50%; left: 50%;
@@ -249,12 +252,11 @@
             animation: aurShine 3.6s linear infinite;
         }
 
-        /* ═══ HEADER — sem drag ═══ */
+        /* ═══ HEADER ═══ */
         .adm-hdr {
             padding: 13px 16px; display: flex; align-items: center; justify-content: space-between; flex-shrink: 0;
             background: linear-gradient(120deg, rgba(34,211,238,.07), rgba(167,139,250,.07) 50%, rgba(244,114,182,.05));
             border-bottom: 1px solid rgba(255,255,255,.06);
-            cursor: default;
         }
         .adm-icon-box { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; border-radius: 9px;
             background: linear-gradient(135deg, rgba(34,211,238,.18), rgba(167,139,250,.18)); border: 1px solid rgba(34,211,238,.36); flex-shrink: 0; }
@@ -586,8 +588,8 @@
                 const id = d.name.split('/').pop();
                 novos.set(id, { id, ...bridge.firestore.parseDoc(d) });
             });
-            // Sig foca apenas em campos estruturais. lastSeen muda a cada heartbeat
-            // e forçava rebuild do DOM → flicker.
+            // Sig ignora lastSeen — muda a cada heartbeat e forçaria rebuild
+            // do DOM. Quando algum campo estrutural muda, aí sim rebuilda.
             const sig = Array.from(novos.values())
                 .sort((a, b) => a.id.localeCompare(b.id))
                 .map(s => `${s.id}|${s.name || ''}|${s.blocked ? 1 : 0}|${s.hubVersion || ''}|${s.mission || ''}|${s.fingerprint || ''}`)
@@ -751,6 +753,9 @@
             <div class="adm-row"><span class="adm-row-label">Sua sessão</span>
                 <span class="adm-row-val" id="suaSessao"><span class="adm-badge ${bridge.gate.blocked ? 'bad' : 'ok'}">${bridge.gate.blocked ? 'Bloqueada' : 'Livre'}</span></span>
             </div>
+            <div class="adm-row"><span class="adm-row-label">Nome local</span>
+                <span class="adm-row-val" id="localName" style="font-size:10px;color:#e5e7eb;">${bridge.player && bridge.player.name ? escapeText(bridge.player.name) : '<span style="color:#6b7280;">—</span>'}</span>
+            </div>
             <div class="adm-row"><span class="adm-row-label">Firestore</span><span class="adm-badge ${fsOk ? 'ok' : 'neutral'}">${fsOk ? 'OK' : 'Off'}</span></div>
             <div class="adm-row"><span class="adm-row-label">Device ID</span>
                 <span class="adm-row-val" id="devCopy" title="Clique para copiar" style="font-family:ui-monospace,monospace;font-size:9px;cursor:pointer;
@@ -818,10 +823,17 @@
 
         _bindHover(wrap.querySelectorAll('.adm-btn, .adm-mode-btn, .adm-close'), signal);
 
-        // ═══ FECHAR / ESC (sem drag) ═══
+        // ═══ FECHAR / ESC / VISIBILITY ═══
         hdr.querySelector('#close').addEventListener('click', _killPanel, { signal });
         document.addEventListener('keydown', (e) => { if (e.key === 'Escape') _killPanel(); }, { signal });
         document.addEventListener('visibilitychange', () => { if (!document.hidden && _panelOpen) _pollSessoes(); }, { signal });
+
+        // ═══ Re-render quando o hub avisa que o cache do jogador mudou ═══
+        window.addEventListener('sang:player-updated', () => {
+            _lastSig = ''; // força rebuild para propagar nome/missão do bridge.player
+            _renderSessoes?.();
+            _refreshLocalName();
+        }, { signal });
 
         (function tick() {
             const now = new Date();
@@ -841,6 +853,15 @@
             try { await navigator.clipboard.writeText(bridge.deviceId || ''); _toast('Device ID copiado', 'ok'); }
             catch (e) { _toast('Falha ao copiar', 'err'); }
         }, { signal });
+
+        // ═══ NOME LOCAL (bridge.player) ═══
+        const localNameEl = statusContent.querySelector('#localName');
+        function _refreshLocalName() {
+            if (!localNameEl) return;
+            const n = bridge.player && bridge.player.name ? bridge.player.name : '';
+            localNameEl.innerHTML = n ? escapeText(n) : '<span style="color:#6b7280;">—</span>';
+        }
+        _refreshLocalName();
 
         // ═══ MODO SECRET ═══
         modoContent.querySelectorAll('button[data-mode]').forEach(btn => {
@@ -913,27 +934,36 @@
             const vCls = hubV === bridge.HUB_VERSION ? 'current' : 'outdated';
             const tempo = online ? 'ativa ' + fmtDur(now - (s.sessionStart || s.lastSeen || now)) : 'há ' + fmtAtras(ago);
             const expanded = _expandedRows.has(s.id);
+
+            // ── Fallback local para a própria sessão ──
+            // Se o Firestore ainda não reflete (heartbeat atrasado),
+            // usa o que o hub tem em cache local (bridge.player).
+            const localPlayer = euMesmo && bridge.player ? bridge.player : null;
+            const displayName = s.name || (localPlayer && localPlayer.name) || 'Sem nome';
+            const displayMission = s.mission || (localPlayer && localPlayer.mission) || '';
+            const displayFp = s.fingerprint || (localPlayer && localPlayer.avatarUrl ? '' : '') || '';
+
             return `<div class="adm-sess-item ${euMesmo ? 'self' : ''} ${expanded ? 'expanded' : ''}" data-sess-id="${s.id}" style="animation-delay:${Math.min(idx * 16, 220)}ms;">
                 <div class="adm-sess-head" data-head>
                     <span class="adm-dot ${online ? 'live' : 'offline'}" data-dot title="${online ? 'Online' : 'Offline'}"></span>
-                    <span class="adm-sess-name" title="${s.name || 'Sem nome'}">${s.name || 'Sem nome'}${euMesmo ? ' <span style="color:#a78bfa">(você)</span>' : ''}</span>
+                    <span class="adm-sess-name" title="${escapeText(displayName)}">${escapeText(displayName)}${euMesmo ? ' <span style="color:#a78bfa">(você)</span>' : ''}</span>
                     <span class="adm-sess-meta" data-meta>${shortHash(s.id, 7, 4)} · ${tempo}</span>
-                    <span class="adm-sess-version ${vCls}">v${hubV}</span>
+                    <span class="adm-sess-version ${vCls}">v${escapeText(hubV)}</span>
                     <span class="adm-switch-wrap">
                         <label class="adm-switch" title="${bloq ? 'Bloqueado — clique para liberar' : 'Livre — clique para bloquear'}">
-                            <input type="checkbox" ${bloq ? 'checked' : ''} data-toggle-id="${s.id}" data-name="${s.name || 'Sessão'}" />
+                            <input type="checkbox" ${bloq ? 'checked' : ''} data-toggle-id="${s.id}" data-name="${escapeText(displayName)}" />
                             <span class="adm-switch-track"></span>
                         </label>
-                        ${!bloq ? `<button class="adm-temp-btn" data-temp-id="${s.id}" data-temp-name="${s.name || 'Sessão'}" title="Bloquear temporariamente">⏱</button>` : ''}
+                        ${!bloq ? `<button class="adm-temp-btn" data-temp-id="${s.id}" data-temp-name="${escapeText(displayName)}" title="Bloquear temporariamente">⏱</button>` : ''}
                     </span>
                 </div>
                 ${expanded ? `<div class="adm-sess-detail">
-                    <div class="adm-sess-detail-row"><span>deviceId</span><span title="${s.id}">${s.id}</span></div>
-                    ${s.fingerprint ? `<div class="adm-sess-detail-row"><span>fingerprint</span><span title="${s.fingerprint}">${shortHash(s.fingerprint, 12, 6)}</span></div>` : ''}
+                    <div class="adm-sess-detail-row"><span>deviceId</span><span title="${escapeText(s.id)}">${escapeText(s.id)}</span></div>
+                    ${s.fingerprint ? `<div class="adm-sess-detail-row"><span>fingerprint</span><span title="${escapeText(s.fingerprint)}">${shortHash(s.fingerprint, 12, 6)}</span></div>` : ''}
                     ${s.sessionStart ? `<div class="adm-sess-detail-row"><span>início</span><span>${timestampAbs(s.sessionStart)}</span></div>` : ''}
                     <div class="adm-sess-detail-row"><span>último sinal</span><span data-lastseen>${timestampAbs(s.lastSeen)}</span></div>
-                    ${s.ua ? `<div class="adm-sess-detail-row"><span>user agent</span><span title="${s.ua}">${s.ua.slice(0, 42)}…</span></div>` : ''}
-                    ${s.mission ? `<div class="adm-sess-detail-row"><span>missão</span><span title="${s.mission}">${s.mission}</span></div>` : ''}
+                    ${s.ua ? `<div class="adm-sess-detail-row"><span>user agent</span><span title="${escapeText(s.ua)}">${escapeText(s.ua.slice(0, 42))}…</span></div>` : ''}
+                    ${displayMission ? `<div class="adm-sess-detail-row"><span>missão</span><span title="${escapeText(displayMission)}">${escapeText(displayMission)}</span></div>` : ''}
                     <button class="adm-sess-detail-btn" data-copy-id="${s.id}">Copiar tudo</button>
                 </div>` : ''}
             </div>`;
@@ -1076,8 +1106,12 @@
                 e.stopPropagation();
                 const s = _sessionsMap.get(btn.dataset.copyId);
                 if (!s) return;
+                const euMesmo = s.id === bridge.deviceId;
+                const localPlayer = euMesmo && bridge.player ? bridge.player : null;
+                const nm = s.name || (localPlayer && localPlayer.name) || '';
+                const ms = s.mission || (localPlayer && localPlayer.mission) || '';
                 const txt = [
-                    `deviceId: ${s.id}`, `nome: ${s.name || ''}`, `missão: ${s.mission || ''}`,
+                    `deviceId: ${s.id}`, `nome: ${nm}`, `missão: ${ms}`,
                     `fingerprint: ${s.fingerprint || ''}`, `hub: v${s.hubVersion || '?'}`,
                     `sessionStart: ${timestampAbs(s.sessionStart)}`, `lastSeen: ${timestampAbs(s.lastSeen)}`,
                     `blocked: ${s.blocked === true}`, `ua: ${s.ua || ''}`
