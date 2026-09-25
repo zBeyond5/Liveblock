@@ -202,16 +202,26 @@
         return res.json();
     }
     async function _verificarBloqueioRemoto() {
-        if (!fsConfigured() || !_deviceId) return false;
-        try {
-            const doc = await fsRequest('GET', '/sessions/' + _deviceId);
-            return fsParseDoc(doc).blocked === true;
-        } catch(e) {
-            if (/404/.test(String(e.message || ''))) return false;
-            HWARN('Falha ao checar bloqueio:', e);
+    if (!fsConfigured() || !_deviceId) return false;
+    try {
+        const doc = await fsRequest('GET', '/sessions/' + _deviceId);
+        const s = fsParseDoc(doc);
+        if (s.blocked !== true) return false;
+        if (s.blockedUntil && Date.now() > s.blockedUntil) {
+            // expirou — limpa e considera livre
+            try {
+                await fsRequest('PATCH', '/sessions/' + _deviceId, {
+                    fields: { blocked: fsValue(false), blockedUntil: fsValue(0) }
+                }, 'updateMask.fieldPaths=blocked&updateMask.fieldPaths=blockedUntil');
+            } catch(e) {}
             return false;
         }
+        return true;
+    } catch(e) {
+        if (/404/.test(String(e.message || ''))) return false;
+        return false;
     }
+}
 
     let _heartbeatTimer = null;
     const SESSION_HEARTBEAT_FIELDS = ['name', 'mission', 'hubVersion', 'lastSeen', 'ua'];
