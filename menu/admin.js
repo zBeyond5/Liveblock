@@ -16,19 +16,13 @@
     const ADMIN_TOKEN_KEY = 'sanghub_admin_token';
     const ADMIN_TTL = 30 * 24 * 60 * 60 * 1000;
     const SESSAO_ONLINE_MS = 5 * 60 * 1000;
-    const SSE_RETRY_MS = 3000;
+    const SESSOES_REFRESH_MS = 20 * 1000;
 
     // ═══ STATE ═══
     let _admAuthed = false;
     let _admPanelEl = null;
     let _admModalEl = null;
-    let _admConfirmEl = null;
-
-    let _sseAbort = null;
-    let _sseRetryTimer = null;
-    let _sseState = 'idle'; // idle | connecting | live | reconnecting | error
-    const _sessionsMap = new Map();
-    let _renderSessoes = null;
+    let _sessoesTimer = null;
 
     // ═══ AUTH ═══
     function _admCheck(u, p) { try { return u === atob(ADMIN_U_B64) && p === atob(ADMIN_P_B64); } catch(e) { return false; } }
@@ -47,9 +41,8 @@
     // ═══ KILL ═══
     function _admKillModal() { if (_admModalEl) { _admAnimateOut(_admModalEl); _admModalEl = null; } }
     function _admKillPanel() {
-        _fecharListener();
-        _fecharConfirm();
         if (_admPanelEl) { _admAnimateOut(_admPanelEl); _admPanelEl = null; }
+        if (_sessoesTimer) { clearInterval(_sessoesTimer); _sessoesTimer = null; }
     }
     function _admAnimateOut(el) {
         if (!el) return;
@@ -79,6 +72,7 @@
         const st = document.createElement('style');
         st.setAttribute('data-hub-admin', '1');
         st.textContent = `
+        /* ═══ AURORA GLASS ═══ */
         @property --aur-angle{syntax:'<angle>';inherits:false;initial-value:0deg}
         @keyframes aurSpin{to{--aur-angle:360deg}}
         @keyframes aurShine{to{background-position:-200% center}}
@@ -93,7 +87,11 @@
 
         .adm-box{position:relative;animation:aurPopIn .4s cubic-bezier(0.16,1,0.3,1)}
         .adm-box.adm-shake{animation:aurShake .4s ease}
-        .adm-panel{animation:aurPanelIn .3s cubic-bezier(0.16,1,0.3,1);position:relative;isolation:isolate}
+
+        .adm-panel{animation:aurPanelIn .3s cubic-bezier(0.16,1,0.3,1);
+            position:relative;isolation:isolate}
+
+        /* Aurora background glows */
         .adm-panel::before{
             content:'';position:absolute;inset:0;z-index:-1;border-radius:inherit;overflow:hidden;
             background:
@@ -104,17 +102,21 @@
                 linear-gradient(175deg, rgba(14,18,28,0.82), rgba(8,10,16,0.92));
             animation:aurFloat 18s ease-in-out infinite;
         }
+        /* Iridescent border */
         .adm-panel::after{
-            content:'';position:absolute;inset:0;z-index:-1;border-radius:inherit;pointer-events:none;padding:1px;
+            content:'';position:absolute;inset:0;z-index:-1;border-radius:inherit;pointer-events:none;
+            padding:1px;
             background:linear-gradient(135deg, rgba(34,211,238,0.35), rgba(167,139,250,0.3) 40%, rgba(244,114,182,0.25) 70%, rgba(52,211,153,0.3));
             -webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);
             -webkit-mask-composite:xor;mask-composite:exclude;
         }
+
         .adm-title-shine{
             background:linear-gradient(100deg,#22d3ee 0%,#a78bfa 35%,#fff 50%,#f472b6 65%,#22d3ee 100%);
             background-size:220% auto;-webkit-background-clip:text;background-clip:text;color:transparent;
             animation:aurShine 3.4s linear infinite;
         }
+
         .adm-input{width:100%;box-sizing:border-box;padding:10px 12px;margin-bottom:12px;
             background:rgba(255,255,255,0.045);border:1px solid rgba(255,255,255,0.1);border-radius:9px;
             color:#f1f2f8;font-size:12.5px;outline:none;font-family:inherit;
@@ -122,17 +124,24 @@
         .adm-input:focus{border-color:rgba(34,211,238,.55);
             box-shadow:0 0 0 3px rgba(34,211,238,.14),0 0 24px rgba(34,211,238,.1);
             background:rgba(255,255,255,0.06)}
+
+        /* Sections with glass effect */
         .adm-sec{position:relative;background:rgba(255,255,255,0.024);
-            border:1px solid rgba(255,255,255,0.06);border-radius:12px;padding:10px 12px;
-            display:flex;flex-direction:column;min-height:0;backdrop-filter:blur(6px);
+            border:1px solid rgba(255,255,255,0.06);
+            border-radius:12px;padding:10px 12px;display:flex;flex-direction:column;min-height:0;
+            backdrop-filter:blur(6px);
             transition:border-color .25s,background .25s,box-shadow .25s}
-        .adm-sec:hover{border-color:rgba(34,211,238,0.16);background:rgba(255,255,255,0.032);box-shadow:0 0 24px rgba(34,211,238,0.04)}
+        .adm-sec:hover{border-color:rgba(34,211,238,0.16);
+            background:rgba(255,255,255,0.032);
+            box-shadow:0 0 24px rgba(34,211,238,0.04)}
         .adm-sec-head{display:flex;align-items:center;justify-content:space-between;gap:6px;
             font-size:8.5px;font-weight:800;letter-spacing:.1em;text-transform:uppercase;
-            color:#8b8fa3;margin-bottom:8px;padding-bottom:6px;border-bottom:1px solid rgba(255,255,255,0.05)}
+            color:#8b8fa3;margin-bottom:8px;padding-bottom:6px;
+            border-bottom:1px solid rgba(255,255,255,0.05)}
         .adm-sec-head > span{display:flex;align-items:center;gap:6px}
         .adm-sec-head svg{opacity:.75}
 
+        /* Dots */
         .adm-dot{display:inline-block;width:6px;height:6px;border-radius:50%;vertical-align:middle;flex-shrink:0}
         .adm-dot.loading{background:#22d3ee;animation:aurPulse 1s infinite}
         .adm-dot.synced{background:#34d399;box-shadow:0 0 8px rgba(52,211,153,.75)}
@@ -140,6 +149,7 @@
         .adm-dot.live{background:#34d399;animation:aurLive 2s ease-in-out infinite}
         .adm-dot.offline{background:#4b4f60}
 
+        /* Badges */
         .adm-badge{display:inline-flex;align-items:center;gap:5px;padding:2px 8px;border-radius:14px;font-size:8.5px;
             font-weight:800;letter-spacing:.04em;text-transform:uppercase;border:1px solid transparent}
         .adm-badge::before{content:'';width:4px;height:4px;border-radius:50%;flex-shrink:0}
@@ -150,45 +160,56 @@
         .adm-badge.neutral{background:rgba(255,255,255,.045);color:#c7cad6;border-color:rgba(255,255,255,.08)}
         .adm-badge.neutral::before{background:#5b5f70}
 
-        .adm-row{display:flex;justify-content:space-between;align-items:center;font-size:10px;padding:5px 0;color:#c7cad6}
+        /* Rows */
+        .adm-row{display:flex;justify-content:space-between;align-items:center;
+            font-size:10px;padding:5px 0;color:#c7cad6}
         .adm-row + .adm-row{border-top:1px dashed rgba(255,255,255,.04)}
         .adm-row-label{color:#8b8fa3}
         .adm-row-val{color:#f1f2f8;font-weight:700;font-variant-numeric:tabular-nums;font-size:10px}
 
+        /* Buttons */
         .adm-action-btn{transition:all .15s cubic-bezier(0.16,1,0.3,1);
             display:flex;align-items:center;gap:5px;justify-content:center;cursor:pointer;font-family:inherit;border-radius:8px}
-        .adm-action-btn:hover{background:rgba(255,255,255,0.08)!important;transform:translateY(-1px);box-shadow:0 4px 14px rgba(0,0,0,.25)}
+        .adm-action-btn:hover{background:rgba(255,255,255,0.08)!important;transform:translateY(-1px);
+            box-shadow:0 4px 14px rgba(0,0,0,.25)}
         .adm-action-btn:active{transform:translateY(0) scale(.97)}
         .adm-action-btn svg{flex-shrink:0}
 
         .adm-mode-btn{transition:all .18s cubic-bezier(0.16,1,0.3,1);cursor:pointer;font-family:inherit;border-radius:7px;
-            padding:6px 4px;font-size:9px;font-weight:800;letter-spacing:.04em;position:relative;overflow:hidden}
+            padding:6px 4px;font-size:9px;font-weight:800;letter-spacing:.04em;
+            position:relative;overflow:hidden}
         .adm-mode-btn:hover:not(.active){background:rgba(255,255,255,0.07)!important;transform:translateY(-1px)}
         .adm-mode-btn:active{transform:scale(.97)}
 
+        /* Blacklist */
         .adm-blk-line{display:flex;align-items:center;gap:6px;padding:4px 7px;border-radius:6px;
             font-family:ui-monospace,'SF Mono',Menlo,monospace;font-size:8.5px;color:#b8bcca;
             background:rgba(255,255,255,0.018);border:1px solid rgba(255,255,255,0.035)}
         .adm-blk-line.fixed{color:#7d8194}
         .adm-blk-hash{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
         .adm-blk-rm{cursor:pointer;color:#fb7185;font-size:10px;font-weight:800;flex-shrink:0;
-            width:16px;height:16px;display:flex;align-items:center;justify-content:center;border-radius:4px;transition:background .15s}
+            width:16px;height:16px;display:flex;align-items:center;justify-content:center;
+            border-radius:4px;transition:background .15s}
         .adm-blk-rm:hover{background:rgba(251,113,133,.15)}
 
+        /* Sessions (main content) */
         .adm-sess-list{flex:1;min-height:0;overflow-y:auto;display:flex;flex-direction:column;gap:4px;padding-right:2px}
         .adm-sess-list::-webkit-scrollbar{width:5px}
         .adm-sess-list::-webkit-scrollbar-thumb{background:linear-gradient(#22d3ee,#a78bfa);border-radius:3px}
         .adm-sess-line{display:flex;align-items:center;gap:10px;padding:9px 11px;border-radius:10px;
             background:rgba(255,255,255,0.024);border:1px solid rgba(255,255,255,0.05);
             transition:all .18s cubic-bezier(0.16,1,0.3,1);
-            animation:aurSlideIn .22s cubic-bezier(0.16,1,0.3,1) backwards;backdrop-filter:blur(4px)}
-        .adm-sess-line:hover{background:rgba(255,255,255,0.05);border-color:rgba(34,211,238,0.18);
+            animation:aurSlideIn .22s cubic-bezier(0.16,1,0.3,1) backwards;
+            backdrop-filter:blur(4px)}
+        .adm-sess-line:hover{background:rgba(255,255,255,0.05);
+            border-color:rgba(34,211,238,0.18);
             box-shadow:0 4px 16px rgba(0,0,0,.2),0 0 24px rgba(34,211,238,0.03)}
         .adm-sess-name{font-weight:700;color:#f1f2f8;font-size:11.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
             flex-shrink:0;max-width:34%;min-width:70px}
         .adm-sess-meta{flex:1;min-width:0;font-size:9px;color:#8b8fa3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
             font-family:ui-monospace,'SF Mono',Menlo,monospace;letter-spacing:.01em}
 
+        /* Switch — block/unblock */
         .adm-switch{position:relative;display:inline-block;width:30px;height:16px;flex-shrink:0;cursor:pointer}
         .adm-switch input{opacity:0;width:0;height:0;position:absolute}
         .adm-switch-track{position:absolute;inset:0;background:linear-gradient(120deg,rgba(52,211,153,0.18),rgba(34,211,238,0.18));
@@ -199,16 +220,21 @@
             box-shadow:0 0 8px rgba(52,211,153,.7)}
         .adm-switch input:checked + .adm-switch-track{
             background:linear-gradient(120deg,rgba(251,113,133,0.2),rgba(244,114,182,0.2));
-            border-color:rgba(251,113,133,0.48);box-shadow:inset 0 0 6px rgba(251,113,133,.1)}
+            border-color:rgba(251,113,133,0.48);
+            box-shadow:inset 0 0 6px rgba(251,113,133,.1)}
         .adm-switch input:checked + .adm-switch-track::before{
-            background:linear-gradient(135deg,#fb7185,#f472b6);transform:translateX(14px);
-            box-shadow:0 0 8px rgba(251,113,133,.75)}
+            background:linear-gradient(135deg,#fb7185,#f472b6);
+            transform:translateX(14px);box-shadow:0 0 8px rgba(251,113,133,.75)}
         .adm-switch.busy{opacity:.5;pointer-events:none}
 
-        .adm-foot{padding:9px 14px;background:rgba(0,0,0,0.22);border-top:1px solid rgba(255,255,255,0.05);
+        /* Footer */
+        .adm-foot{padding:9px 14px;background:rgba(0,0,0,0.22);
+            border-top:1px solid rgba(255,255,255,0.05);
             display:flex;align-items:center;justify-content:space-between;gap:8px;
-            font-size:9px;color:#8b8fa3;flex-shrink:0;border-radius:0 0 14px 14px}
+            font-size:9px;color:#8b8fa3;flex-shrink:0;
+            border-radius:0 0 14px 14px}
 
+        /* Toast */
         .adm-toast{position:fixed;top:24px;left:50%;transform:translateX(-50%) translateY(-10px);
             z-index:2147483647;padding:10px 18px;border-radius:10px;
             font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
@@ -216,7 +242,8 @@
             background:linear-gradient(175deg,rgba(14,18,24,0.97),rgba(8,10,14,0.98));
             border:1px solid rgba(34,211,238,0.5);
             box-shadow:0 10px 30px rgba(0,0,0,0.5),0 0 40px rgba(34,211,238,0.1);
-            backdrop-filter:blur(10px);transition:opacity .25s ease,transform .25s ease;opacity:0;pointer-events:none}
+            backdrop-filter:blur(10px);
+            transition:opacity .25s ease,transform .25s ease;opacity:0;pointer-events:none}
         .adm-toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
         .adm-toast.ok{color:#a7f3d0;border-color:rgba(52,211,153,0.5);box-shadow:0 10px 30px rgba(0,0,0,0.5),0 0 40px rgba(52,211,153,0.12)}
         .adm-toast.err{color:#fecdd3;border-color:rgba(251,113,133,0.5);box-shadow:0 10px 30px rgba(0,0,0,0.5),0 0 40px rgba(251,113,133,0.12)}
@@ -274,229 +301,6 @@
         return h.slice(0, head) + '…' + h.slice(-tail);
     }
 
-    // ═══════════════════════════════════════════════════════════
-    // SSE LISTENER
-    // ═══════════════════════════════════════════════════════════
-    function _processarListenMsg(msg) {
-        if (msg.targetChange) {
-            const t = msg.targetChange.targetChangeType;
-            if (t === 'RESET') _sessionsMap.clear();
-            return;
-        }
-        if (msg.documentChange && msg.documentChange.document) {
-            const doc = msg.documentChange.document;
-            const id = doc.name.split('/').pop();
-            const data = bridge.firestore.parseDoc(doc);
-            _sessionsMap.set(id, { id, ...data });
-            return;
-        }
-        if (msg.documentDelete && msg.documentDelete.document) {
-            _sessionsMap.delete(msg.documentDelete.document.split('/').pop());
-            return;
-        }
-        if (msg.documentRemove && msg.documentRemove.document) {
-            _sessionsMap.delete(msg.documentRemove.document.split('/').pop());
-            return;
-        }
-    }
-
-    function _fecharListener() {
-        if (_sseRetryTimer) { clearTimeout(_sseRetryTimer); _sseRetryTimer = null; }
-        if (_sseAbort) { try { _sseAbort.abort(); } catch(e) {} _sseAbort = null; }
-        _sseState = 'idle';
-    }
-
-    function _atualizarIndicadorSess() {
-        const el = _admPanelEl?.querySelector('#_admSessState');
-        if (!el) return;
-        const map = {
-            idle:         { dot: 'offline', txt: 'aguardando' },
-            connecting:   { dot: 'loading', txt: 'conectando' },
-            live:         { dot: 'live',    txt: 'ao vivo' },
-            reconnecting: { dot: 'loading', txt: 'reconectando' },
-            error:        { dot: 'error',   txt: 'erro' }
-        };
-        const s = map[_sseState] || map.idle;
-        el.innerHTML = `<span class="adm-dot ${s.dot}" style="width:5px;height:5px;"></span><span>${s.txt}</span>`;
-    }
-
-    async function _abrirListener() {
-        _fecharListener();
-        _sseState = 'connecting';
-        _sessionsMap.clear();
-        _renderSessoes && _renderSessoes();
-        _atualizarIndicadorSess();
-
-        const ctrl = new AbortController();
-        _sseAbort = ctrl;
-
-        let token;
-        try {
-            token = await bridge.firestore.getToken();
-        } catch(e) {
-            _sseState = 'error';
-            _atualizarIndicadorSess();
-            _agendarReconexao();
-            return;
-        }
-        if (ctrl.signal.aborted) return;
-
-        const url = bridge.firestore.base + ':listen';
-        let res;
-        try {
-            res = await fetch(url, {
-                method: 'POST',
-                headers: {
-                    'Authorization': 'Bearer ' + token,
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({
-                    addTarget: {
-                        query: {
-                            structuredQuery: {
-                                from: [{ collectionId: 'sessions' }]
-                            }
-                        }
-                    }
-                }),
-                signal: ctrl.signal
-            });
-        } catch(e) {
-            if (ctrl.signal.aborted) return;
-            _sseState = 'error';
-            _atualizarIndicadorSess();
-            _agendarReconexao();
-            return;
-        }
-
-        if (!res.ok || !res.body) {
-            _sseState = 'error';
-            _atualizarIndicadorSess();
-            _agendarReconexao();
-            return;
-        }
-
-        _sseState = 'live';
-        _atualizarIndicadorSess();
-        _renderSessoes && _renderSessoes();
-
-        const reader = res.body.getReader();
-        const dec = new TextDecoder();
-        let buf = '';
-        let redrawPending = false;
-
-        try {
-            while (true) {
-                const { value, done } = await reader.read();
-                if (done) break;
-                buf += dec.decode(value, { stream: true });
-                let idx;
-                while ((idx = buf.indexOf('\n')) !== -1) {
-                    let line = buf.slice(0, idx).trim();
-                    buf = buf.slice(idx + 1);
-                    if (!line) continue;
-                    if (line.startsWith('data:')) line = line.slice(5).trim();
-                    if (!line) continue;
-                    let msg;
-                    try { msg = JSON.parse(line); } catch(e) { continue; }
-                    _processarListenMsg(msg);
-                    if (!redrawPending) {
-                        redrawPending = true;
-                        requestAnimationFrame(() => {
-                            redrawPending = false;
-                            _renderSessoes && _renderSessoes();
-                        });
-                    }
-                }
-            }
-        } catch(e) {
-            if (ctrl.signal.aborted) return;
-        }
-
-        if (ctrl.signal.aborted) return;
-        _sseState = 'reconnecting';
-        _atualizarIndicadorSess();
-        _agendarReconexao();
-    }
-
-    function _agendarReconexao() {
-        if (_sseRetryTimer) clearTimeout(_sseRetryTimer);
-        _sseRetryTimer = setTimeout(() => {
-            _sseRetryTimer = null;
-            _abrirListener();
-        }, SSE_RETRY_MS);
-    }
-
-    // ═══════════════════════════════════════════════════════════
-    // CONFIRM MODAL — auto-bloqueio
-    // ═══════════════════════════════════════════════════════════
-    function _fecharConfirm() {
-        if (_admConfirmEl) { _admConfirmEl.remove(); _admConfirmEl = null; }
-    }
-    function _confirmarAutoBloqueio() {
-        return new Promise((resolve) => {
-            _fecharConfirm();
-            const el = document.createElement('div');
-            el.setAttribute('data-hub-admin', '1');
-            el.setAttribute('data-sang-ui', '');
-            el.style.cssText = `
-                position:fixed; inset:0; z-index:2147483647;
-                display:flex; align-items:center; justify-content:center;
-                background:radial-gradient(circle at 50% 40%, rgba(251,113,133,0.06), transparent 60%), rgba(0,0,0,0.6);
-                backdrop-filter:blur(8px);
-                font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
-                animation:aurFade .18s ease;
-            `;
-            el.innerHTML = `
-                <div class="adm-box" style="width:340px; padding:22px; border-radius:14px; position:relative; isolation:isolate;
-                    background:linear-gradient(175deg, rgba(22,16,26,0.94), rgba(10,8,14,0.98));
-                    backdrop-filter:blur(24px) saturate(160%);
-                    border:1px solid rgba(251,113,133,0.32);
-                    box-shadow:0 24px 60px rgba(0,0,0,0.75), 0 0 60px rgba(251,113,133,0.1);">
-                    <div style="display:flex; align-items:center; gap:10px; margin-bottom:12px;">
-                        <span style="width:32px; height:32px; border-radius:9px;
-                            display:inline-flex; align-items:center; justify-content:center;
-                            background:rgba(251,113,133,0.12); border:1px solid rgba(251,113,133,0.36);">
-                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fb7185" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
-                                <path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
-                                <line x1="12" y1="9" x2="12" y2="13"/>
-                                <line x1="12" y1="17" x2="12.01" y2="17"/>
-                            </svg>
-                        </span>
-                        <div>
-                            <div style="font-size:12.5px; font-weight:800; color:#fff; letter-spacing:.03em;">Confirmar bloqueio</div>
-                            <div style="font-size:9px; color:#7d8194; margin-top:2px; text-transform:uppercase; letter-spacing:.05em;">Ação sobre sua própria sessão</div>
-                        </div>
-                    </div>
-                    <div style="font-size:11px; color:#9ca3af; line-height:1.6; margin-bottom:18px;">
-                        Você vai bloquear <b style="color:#fca5b1;">este dispositivo</b>.<br>
-                        O hub será encerrado imediatamente e você ficará sem acesso até liberar pelo Firestore.
-                    </div>
-                    <div style="display:flex; gap:8px;">
-                        <button id="_admConfNo" class="adm-action-btn" style="flex:1; padding:10px; border-radius:9px;
-                            background:rgba(255,255,255,0.04); border:1px solid rgba(255,255,255,0.08);
-                            color:#c7cad6; font-size:11px; font-weight:700;">Cancelar</button>
-                        <button id="_admConfYes" class="adm-action-btn" style="flex:1; padding:10px; border-radius:9px;
-                            background:linear-gradient(120deg, rgba(251,113,133,0.9), rgba(244,114,182,0.9)); border:none;
-                            color:#fff; font-size:11px; font-weight:800; letter-spacing:.03em;">Bloquear</button>
-                    </div>
-                </div>
-            `;
-            document.body.appendChild(el);
-            _admConfirmEl = el;
-
-            function finalizar(v) {
-                if (_admConfirmEl === el) _admConfirmEl = null;
-                el.style.transition = 'opacity .16s ease';
-                el.style.opacity = '0';
-                setTimeout(() => el.remove(), 160);
-                resolve(v);
-            }
-            el.querySelector('#_admConfNo').addEventListener('click', () => finalizar(false));
-            el.querySelector('#_admConfYes').addEventListener('click', () => finalizar(true));
-        });
-    }
-
     // ═══ LOGIN ═══
     function _admMountLogin() {
         _admEnsureStyle();
@@ -516,6 +320,7 @@
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
             animation:aurFade .2s ease-out;
         `;
+
         const box = document.createElement('div');
         box.className = 'adm-box';
         box.style.cssText = `
@@ -630,7 +435,7 @@
             </div>
         `;
 
-        // ─── BODY ───
+        // ─── BODY: 2 colunas ───
         const body = document.createElement('div');
         body.style.cssText = `display:flex; gap:10px; padding:10px; flex:1; min-height:0;`;
 
@@ -639,6 +444,7 @@
 
         const colSide = document.createElement('div');
         colSide.style.cssText = 'width:280px; flex-shrink:0; display:flex; flex-direction:column; gap:8px; overflow-y:auto; padding-right:2px;';
+        colSide.className = 'adm-sess-list';
 
         // ─── FOOTER ───
         const foot = document.createElement('div');
@@ -663,28 +469,28 @@
             return s;
         }
 
-        // ═══ SESSÕES ═══
+        // ═══ COLUNA PRINCIPAL: SESSÕES ═══
         const fsOk = bridge.firestore.configured();
         const sessContent = document.createElement('div');
         sessContent.style.cssText = 'display:flex; flex-direction:column; flex:1; min-height:0;';
         sessContent.innerHTML = fsOk
             ? `<div class="adm-sess-list" id="_admSessList">
-                   <div style="padding:16px;text-align:center;font-size:9.5px;color:#5b5f70;">Conectando…</div>
+                   <div style="padding:16px;text-align:center;font-size:9.5px;color:#5b5f70;">Carregando…</div>
                </div>`
             : `<div style="padding:16px;text-align:center;font-size:9.5px;color:#7d8194;">Firestore não configurado.</div>`;
 
-        const sessStateBadge = fsOk
-            ? `<span id="_admSessState" style="display:inline-flex; align-items:center; gap:5px;
-                   font-size:8.5px; font-weight:800; letter-spacing:.05em; color:#8b8fa3;">
-                   <span class="adm-dot loading" style="width:5px;height:5px;"></span><span>conectando</span>
-               </span>`
+        const sessRefresh = fsOk
+            ? `<button id="_admSessRefresh" title="Atualizar agora" style="cursor:pointer; background:transparent;
+                   border:1px solid rgba(255,255,255,0.08); border-radius:6px; width:22px; height:22px;
+                   color:#c7cad6; display:flex; align-items:center; justify-content:center; transition:all .15s;">${ICON.refresh}</button>`
             : '';
 
-        const sessSec = sec('Sessões ao vivo', ICON.users, sessContent, sessStateBadge);
+        const sessSec = sec('Sessões ao vivo', ICON.users, sessContent, sessRefresh);
         sessSec.style.flex = '1';
         colMain.appendChild(sessSec);
 
         // ═══ SIDEBAR ═══
+        // — Status
         const statusContent = document.createElement('div');
         statusContent.innerHTML = `
             <div class="adm-row">
@@ -705,6 +511,7 @@
         `;
         colSide.appendChild(sec('Status', ICON.status, statusContent));
 
+        // — Módulos secret
         const mode = bridge.gate.mode;
         const modoContent = document.createElement('div');
         const modeBtnStyle = (on) => `
@@ -725,6 +532,7 @@
         `;
         colSide.appendChild(sec('Módulos secret', ICON.zap, modoContent));
 
+        // — Blacklist local
         const blkContent = document.createElement('div');
         blkContent.innerHTML = `
             <div style="display:flex; gap:5px; margin-bottom:7px;">
@@ -741,6 +549,7 @@
         `;
         colSide.appendChild(sec('Blacklist local', ICON.shield, blkContent));
 
+        // — Ações
         const acoesContent = document.createElement('div');
         acoesContent.style.cssText = 'display:grid; grid-template-columns:1fr 1fr; gap:5px;';
         [
@@ -760,6 +569,7 @@
         });
         colSide.appendChild(sec('Ações', ICON.refresh, acoesContent));
 
+        // — Sessão admin
         const adminContent = document.createElement('div');
         adminContent.innerHTML = `
             <button id="_admLogout" class="adm-action-btn" style="width:100%; padding:7px; font-size:9px; font-weight:700;
@@ -824,11 +634,12 @@
             document.removeEventListener('mouseup', _upH);
             document.removeEventListener('keydown', _escH);
             clearInterval(_footTimer);
+            if (_sessoesTimer) { clearInterval(_sessoesTimer); _sessoesTimer = null; }
         };
         const _origKill = _admKillPanel;
         _admKillPanel = () => { _cleanup(); _origKill(); };
 
-        // ─── COPIAR DEVICE ID ───
+        // ─── COPIAR ID ───
         statusContent.querySelector('#_admDevCopy')?.addEventListener('click', async () => {
             try { await navigator.clipboard.writeText(bridge.deviceId || ''); _admToast('Device ID copiado', 'ok'); }
             catch(e) { _admToast('Falha ao copiar', 'err'); }
@@ -890,80 +701,83 @@
             _admToast('Fingerprint liberado', 'ok');
         });
 
-        // ═══ RENDER SESSÕES (reativo, alimentado pelo SSE) ═══
-        _renderSessoes = function() {
+        // ─── SESSÕES ───
+        async function carregarSessoes() {
             const listEl = sessContent.querySelector('#_admSessList');
             if (!listEl) return;
+            try {
+                const data = await bridge.firestore.request('GET', '/sessions');
+                const docs = data?.documents || [];
+                const sessoes = docs.map(d => {
+                    const id = d.name.split('/').pop();
+                    return { id, ...bridge.firestore.parseDoc(d) };
+                }).sort((a, b) => (b.lastSeen || 0) - (a.lastSeen || 0));
 
-            const sessoes = Array.from(_sessionsMap.values())
-                .sort((a, b) => (b.lastSeen || 0) - (a.lastSeen || 0));
+                const myId = bridge.deviceId;
+                const eu = sessoes.find(s => s.id === myId);
+                const suaEl = statusContent.querySelector('#_admSuaSessao');
+                if (suaEl) {
+                    if (!eu) suaEl.innerHTML = `<span class="adm-badge neutral">sem registro</span>`;
+                    else if (eu.blocked === true) suaEl.innerHTML = `<span class="adm-badge bad">Bloqueada</span>`;
+                    else suaEl.innerHTML = `<span class="adm-badge ok">Livre</span>`;
+                }
 
-            // Badge da própria sessão
-            const myId = bridge.deviceId;
-            const eu = sessoes.find(s => s.id === myId);
-            const suaEl = statusContent.querySelector('#_admSuaSessao');
-            if (suaEl) {
-                if (!eu) suaEl.innerHTML = `<span class="adm-badge neutral">sem registro</span>`;
-                else if (eu.blocked === true) suaEl.innerHTML = `<span class="adm-badge bad">Bloqueada</span>`;
-                else suaEl.innerHTML = `<span class="adm-badge ok">Livre</span>`;
-            }
+                if (!sessoes.length) {
+                    listEl.innerHTML = '<div style="padding:16px;text-align:center;font-size:9.5px;color:#5b5f70;">Nenhuma sessão registrada.</div>';
+                    return;
+                }
 
-            if (!sessoes.length) {
-                listEl.innerHTML = `<div style="padding:16px;text-align:center;font-size:9.5px;color:#5b5f70;">
-                    ${_sseState === 'live' ? 'Nenhuma sessão registrada.' : 'Aguardando conexão…'}
-                </div>`;
-                return;
-            }
+                listEl.innerHTML = sessoes.map((s, i) => {
+                    const ago = Date.now() - (s.lastSeen || 0);
+                    const online = ago < SESSAO_ONLINE_MS;
+                    const bloq = s.blocked === true;
+                    const euMesmo = s.id === myId;
+                    const tempo = online
+                        ? 'ativa ' + fmtDur(Date.now() - (s.sessionStart || s.lastSeen || Date.now()))
+                        : 'há ' + fmtAtras(ago);
+                    return `<div class="adm-sess-line" style="animation-delay:${i * 20}ms;">
+                        <span class="adm-dot ${online ? 'live' : 'offline'}" title="${online ? 'Online' : 'Offline'}"></span>
+                        <span class="adm-sess-name">${escHtml(s.name || 'Sem nome')}${euMesmo ? ' (você)' : ''}</span>
+                        <span class="adm-sess-meta">${shortHash(s.id, 7, 4)} · ${tempo} · v${escHtml(s.hubVersion || '?')}</span>
+                        <label class="adm-switch" title="${bloq ? 'Bloqueado — clique para liberar' : 'Livre — clique para bloquear'}">
+                            <input type="checkbox" ${bloq ? 'checked' : ''} data-toggle-id="${s.id}" />
+                            <span class="adm-switch-track"></span>
+                        </label>
+                    </div>`;
+                }).join('');
 
-            listEl.innerHTML = sessoes.map((s, i) => {
-                const ago = Date.now() - (s.lastSeen || 0);
-                const online = ago < SESSAO_ONLINE_MS;
-                const bloq = s.blocked === true;
-                const euMesmo = s.id === myId;
-                const tempo = online
-                    ? 'ativa ' + fmtDur(Date.now() - (s.sessionStart || s.lastSeen || Date.now()))
-                    : 'há ' + fmtAtras(ago);
-                return `<div class="adm-sess-line" style="animation-delay:${Math.min(i * 20, 200)}ms;">
-                    <span class="adm-dot ${online ? 'live' : 'offline'}" title="${online ? 'Online' : 'Offline'}"></span>
-                    <span class="adm-sess-name">${escHtml(s.name || 'Sem nome')}${euMesmo ? ' (você)' : ''}</span>
-                    <span class="adm-sess-meta">${shortHash(s.id, 7, 4)} · ${tempo} · v${escHtml(s.hubVersion || '?')}</span>
-                    <label class="adm-switch" title="${bloq ? 'Bloqueado — clique para liberar' : 'Livre — clique para bloquear'}">
-                        <input type="checkbox" ${bloq ? 'checked' : ''} data-toggle-id="${s.id}" />
-                        <span class="adm-switch-track"></span>
-                    </label>
-                </div>`;
-            }).join('');
-
-            listEl.querySelectorAll('input[data-toggle-id]').forEach(inp => {
-                inp.addEventListener('change', async () => {
-                    const alvoId = inp.dataset.toggleId;
-                    const novo = inp.checked;
-                    const euMesmo = alvoId === myId;
-
-                    // Item 4 — confirma auto-bloqueio
-                    if (novo && euMesmo) {
-                        inp.checked = false;
-                        const ok = await _confirmarAutoBloqueio();
-                        if (!ok) return;
-                        inp.checked = true;
-                    }
-
-                    const sw = inp.closest('.adm-switch');
-                    sw.classList.add('busy');
-                    try {
-                        await bridge.firestore.request('PATCH', '/sessions/' + alvoId, {
-                            fields: { blocked: bridge.firestore.value(novo) }
-                        }, 'updateMask.fieldPaths=blocked');
-                        _admToast(novo ? 'Sessão bloqueada' : 'Sessão liberada', 'ok');
-                        // SSE propaga a mudança; não precisa re-renderizar manualmente
-                    } catch(e) {
-                        _admToast('Falha ao atualizar', 'err');
-                        inp.checked = !novo;
-                        sw.classList.remove('busy');
-                    }
+                listEl.querySelectorAll('input[data-toggle-id]').forEach(inp => {
+                    inp.addEventListener('change', async () => {
+                        const alvoId = inp.dataset.toggleId;
+                        const novo = inp.checked;
+                        const sw = inp.closest('.adm-switch');
+                        sw.classList.add('busy');
+                        try {
+                            await bridge.firestore.request('PATCH', '/sessions/' + alvoId, {
+                                fields: { blocked: bridge.firestore.value(novo) }
+                            }, 'updateMask.fieldPaths=blocked');
+                            _admToast(novo ? 'Sessão bloqueada' : 'Sessão liberada', 'ok');
+                            carregarSessoes();
+                        } catch(e) {
+                            _admToast('Falha ao atualizar', 'err');
+                            inp.checked = !novo;
+                            sw.classList.remove('busy');
+                        }
+                    });
                 });
-            });
-        };
+            } catch(e) {
+                listEl.innerHTML = '<div style="padding:16px;text-align:center;font-size:9.5px;color:#fca5b1;">Falha ao carregar.</div>';
+            }
+        }
+
+        if (fsOk) {
+            carregarSessoes();
+            sessSec.querySelector('#_admSessRefresh')?.addEventListener('click', carregarSessoes);
+            _sessoesTimer = setInterval(() => {
+                if (!_admPanelEl) { clearInterval(_sessoesTimer); _sessoesTimer = null; return; }
+                carregarSessoes();
+            }, SESSOES_REFRESH_MS);
+        }
 
         // ─── AÇÕES ───
         acoesContent.querySelector('#_admReload').addEventListener('click', () => {
@@ -987,6 +801,7 @@
         });
         acoesContent.querySelector('#_admRePage').addEventListener('click', () => location.reload());
 
+        // ─── ADMIN ───
         adminContent.querySelector('#_admLogout').addEventListener('click', () => {
             _admAuthed = false;
             _admKillPanel();
@@ -998,12 +813,6 @@
             _admKillPanel();
             _admToast('Token removido', 'ok');
         });
-
-        // ─── LIGA O LISTENER ───
-        if (fsOk) {
-            _renderSessoes();
-            _abrirListener();
-        }
     }
 
     // ═══ OPEN / TOGGLE / KILL ═══
