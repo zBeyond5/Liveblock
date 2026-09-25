@@ -39,7 +39,6 @@
     let _tempMenuEl = null;
     let _toastLayer = null;
 
-    let _globalAc = null;   // hotkey — vive por toda a vida do módulo
     let _scopedAc = null;   // drag / esc / visibility — vive enquanto o painel existe
 
     // ═══ AUTH ═══
@@ -1061,18 +1060,11 @@
         _open();
     }
 
-    // ═══ INIT ═══
-    _globalAc = new AbortController();
-    document.addEventListener('keydown', (e) => {
-        if (e.ctrlKey && !e.altKey && !e.shiftKey && (e.key === 'b' || e.key === 'B')) { e.preventDefault(); toggle(); }
-    }, { signal: _globalAc.signal, capture: true });
-
     // ═══ KILL ═══
     function kill() {
         if (dying) return;
         dying = true;
         const steps = [
-            ['globalHotkey', () => _globalAc?.abort()],
             ['panel', () => _killPanel()],
             ['modal', () => _killModal()],
             ['confirm', () => _fecharConfirm()],
