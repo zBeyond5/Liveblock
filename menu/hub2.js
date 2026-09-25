@@ -1376,9 +1376,7 @@
                 configured: fsConfigured,
                 request: fsRequest,
                 parseDoc: fsParseDoc,
-                value: fsValue,
-                getToken: _fsGetToken,
-                base: FS_BASE
+                value: fsValue
             }
         };
 
