@@ -535,7 +535,7 @@
 
     // ═══ NEW CHAT / GROUP ═══
     function openNewChatPicker() {
-        const contacts = ctx.contacts?.contacts || [];
+        const contacts = S?.getContacts?.() || [];
         const body = _state.root?.querySelector('#szBody');
         if (!body) return;
         const modal = document.createElement('div');
