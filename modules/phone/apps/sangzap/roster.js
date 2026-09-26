@@ -6,10 +6,6 @@
     if (!ctx || !S) return;
     if (S.roster) return;
 
-    // ═══ FS HELPERS — tradução inline Firestore REST ═══
-    // Idempotente. Instala uma única vez (o primeiro módulo que carregar).
-    // Sobe value/parseDoc do hub para tratar array + objeto aninhado, e
-    // expõe fsGet / fsWrite / fsCreate / fsDel / fsQuery.
     (function ensureFsHelpers() {
         if (S.__fsFull) return;
         S.__fsFull = true;
@@ -411,7 +407,7 @@
     async function tick() {
         if (_abort || !_running) return;
         try {
-            const contacts = (ctx.contacts?.contacts || []).slice();
+            const contacts = S.getContacts ? S.getContacts() : (ctx.contacts?.contacts || []).slice();
             const chats = await fetchChats();
             if (chats === null) return; // falha: mantém cache
 
