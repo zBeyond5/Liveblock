@@ -1682,7 +1682,8 @@
         await Promise.all([
             _loadModule('contacts', base + '/contacts.js'),
             _loadModule('calls',    base + '/calls.js'),
-            _loadModule('notes',    base + '/notes.js')
+            _loadModule('notes',    base + '/notes.js'),
+            _loadModule('sangzap',  base + '/apps/sangzap/shell.js')
         ]);
 
         // Apps opcionais — descomente conforme forem adicionados:
