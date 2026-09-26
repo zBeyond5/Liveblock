@@ -15,7 +15,7 @@
     const MIN_TUCK_Y = -140;
     const FRAME_HALF_H = 285;
     const LS_MINIMIZED = 'sanghub_phone_minimized';
-    const MODULES_BASE = 'https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/menu/phone';
+    const MODULES_BASE = 'https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/modules/phone';
 
     // ═══ CTX COMPARTILHADO ═══
     const ctx = window._phoneCtx = window._phoneCtx || {};
