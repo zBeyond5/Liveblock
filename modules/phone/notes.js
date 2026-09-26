@@ -1,4 +1,7 @@
 // modules/phone/notes.js
+// Recados de voz entre contatos. Gravação (MediaRecorder), envio via Firestore
+// e inbox local com cache LRU de áudio. Única superfície de leitura é o inbox,
+// então deletar do inbox também deleta o doc remoto.
 (function() {
     'use strict';
     const ctx = window._phoneCtx;
@@ -11,11 +14,11 @@
 
     // ═══ CONFIG ═══
     const COL_NOTES = 'phone_notes';
-    const NOTES_POLL_MS = 9000;
+    const NOTES_POLL_MS = 20000;       // era 9000 — coleção é lida por inteiro a cada poll
     const MAX_REC_MS = 180000;         // 3 min de teto rígido
-    const MAX_REC_BYTES = 700 * 1024;   // ~700KB — rede de segurança
+    const MAX_REC_BYTES = 700 * 1024;  // ~700KB — rede de segurança
     const MIN_REC_BYTES = 800;
-    const AUDIO_BPS = 24000;            // opus 24kbps — voz boa, arquivo pequeno
+    const AUDIO_BPS = 24000;           // opus 24kbps — voz boa, arquivo pequeno
     const INBOX_MAX = 30;
     const SESSION_CACHE_MAX = 6;
     const LS_PLAYED_NOTES = 'sanghub_phone_notes_played';
@@ -34,6 +37,7 @@
     let _escHandler = null;
 
     let _notesPollTimer = null;
+    let _startupTimer = null;
     let _playedNotes = new Set();
     let _inbox = [];
     let _sessionCache = new Map();
@@ -135,6 +139,12 @@
         _sessionCache.delete(id);
         saveInbox();
         _notifyUnread();
+        // Deleta do servidor também — a inbox local é a única superfície de leitura.
+        // Se falhar (offline), o doc fica órfão e será reencontrado no próximo poll;
+        // _playedNotes contém o id, então não vira nota nova.
+        try {
+            bridge.firestore.request('DELETE', '/' + COL_NOTES + '/' + id).catch(() => {});
+        } catch(_) {}
     }
     function _cacheAudio(id, b64) {
         _sessionCache.set(id, b64);
@@ -405,9 +415,18 @@
     function _startNotesPoll() {
         if (_notesPollTimer) return;
         _notesPollTimer = setInterval(_pollNotes, NOTES_POLL_MS);
-        setTimeout(_pollNotes, 3000);
+        // Primeira leitura 3s depois do boot — deixa o resto do phone assentar.
+        // Handle rastreado: sem ele, kill + remount empilharia setTimeouts órfãos.
+        if (_startupTimer) clearTimeout(_startupTimer);
+        _startupTimer = setTimeout(() => {
+            _startupTimer = null;
+            _pollNotes();
+        }, 3000);
     }
-    function _stopPoll() { if (_notesPollTimer) { clearInterval(_notesPollTimer); _notesPollTimer = null; } }
+    function _stopPoll() {
+        if (_notesPollTimer) { clearInterval(_notesPollTimer); _notesPollTimer = null; }
+        if (_startupTimer) { clearTimeout(_startupTimer); _startupTimer = null; }
+    }
 
     async function _pollNotes() {
         if (!ctx.myNumber) return;
