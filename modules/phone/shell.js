@@ -166,8 +166,9 @@
     let _frameEl = null;
     let _screenEl = null;
     let _myNumEl = null;
-    let _activeTab = 'contatos';
+    let _activeTab = 'home';
     let _openAppId = null;
+    let _clockTimer = null;
 
     // ═══ HOST SHADOW ═══
     function _ensureHost() {
@@ -193,7 +194,7 @@
     }
     ctx.appendStyle = _appendStyle;
 
-    // ═══ STYLE (só shell — o resto é injetado pelos módulos) ═══
+    // ═══ STYLE ═══
     function _injectBaseStyle() {
         _appendStyle(`
         :host, * { box-sizing: border-box; }
@@ -371,6 +372,155 @@
 
         .ph-content { flex: 1; min-height: 0; position: relative; z-index: 2; display: flex; flex-direction: column; }
 
+        /* Esconder header e cartão de número na home */
+        .ph-screen[data-tab="home"] .ph-hdr,
+        .ph-screen[data-tab="home"] .ph-me { display: none; }
+
+        /* ═══ HOME ═══ */
+        .ph-home-wrap {
+            flex: 1; min-height: 0; overflow-y: auto;
+            padding: 10px 14px 14px;
+            display: flex; flex-direction: column; gap: 12px;
+        }
+        .ph-home-wrap::-webkit-scrollbar { width: 4px; }
+        .ph-home-wrap::-webkit-scrollbar-thumb { background: rgba(255,255,255,.14); border-radius: 2px; }
+
+        .ph-home-clock {
+            padding: 14px 4px 4px;
+            display: flex; flex-direction: column; gap: 2px;
+        }
+        .ph-home-time {
+            font-size: 42px; font-weight: 800; letter-spacing: -.03em;
+            color: #f6f7fb;
+            font-variant-numeric: tabular-nums;
+            line-height: 1;
+            text-shadow: 0 2px 14px rgba(0,0,0,.4);
+        }
+        .ph-home-date {
+            font-size: 11px; color: #a8aec4; letter-spacing: .02em;
+            text-transform: capitalize;
+            font-weight: 600;
+        }
+
+        .ph-home-me {
+            display: flex; align-items: center; gap: 10px;
+            padding: 10px 12px; border-radius: 14px;
+            background: linear-gradient(120deg, rgba(34,211,238,.14), rgba(167,139,250,.14));
+            border: 1px solid rgba(34,211,238,.32);
+            cursor: pointer; font-family: inherit;
+            color: inherit; text-align: left;
+            transition: background .2s, border-color .2s, transform .15s;
+            width: 100%;
+        }
+        .ph-home-me:hover { background: linear-gradient(120deg, rgba(34,211,238,.2), rgba(167,139,250,.2)); border-color: rgba(34,211,238,.5); }
+        .ph-home-me:active { transform: scale(.985); }
+        .ph-home-me-lbl { font-size: 8.5px; color: #a8aec4; text-transform: uppercase; letter-spacing: .08em; font-weight: 800; }
+        .ph-home-me-num {
+            flex: 1; text-align: right;
+            font-size: 16px; font-weight: 800; letter-spacing: .05em;
+            font-variant-numeric: tabular-nums;
+            background: linear-gradient(100deg,#22d3ee 0%,#a78bfa 50%,#22d3ee 100%);
+            background-size: 220% auto;
+            -webkit-background-clip: text; background-clip: text; color: transparent;
+            animation: phScreenBlink 4s ease-in-out infinite;
+        }
+        .ph-home-me-num.loading { background: none; color: #5c6280; animation: none; letter-spacing: .12em; font-weight: 600; }
+        .ph-home-me-copy {
+            width: 28px; height: 28px; border-radius: 8px; flex-shrink: 0;
+            display: inline-flex; align-items: center; justify-content: center;
+            background: rgba(34,211,238,.16); border: 1px solid rgba(34,211,238,.32);
+            color: #67e8f9;
+        }
+        .ph-home-me-copy svg { width: 11px; height: 11px; }
+
+        .ph-home-featured {
+            display: flex; align-items: center; gap: 12px;
+            padding: 14px; border-radius: 16px;
+            background: linear-gradient(135deg, rgba(52,211,153,.16), rgba(34,211,238,.14));
+            border: 1px solid rgba(52,211,153,.34);
+            cursor: pointer; font-family: inherit;
+            color: inherit; text-align: left;
+            transition: background .2s, border-color .2s, transform .15s;
+            width: 100%;
+        }
+        .ph-home-featured:hover { background: linear-gradient(135deg, rgba(52,211,153,.22), rgba(34,211,238,.2)); border-color: rgba(52,211,153,.55); }
+        .ph-home-featured:active { transform: scale(.985); }
+        .ph-home-featured-ico {
+            width: 42px; height: 42px; border-radius: 12px; flex-shrink: 0;
+            display: inline-flex; align-items: center; justify-content: center;
+            background: linear-gradient(135deg, #34d399, #22d3ee);
+            color: #062420;
+            box-shadow: 0 8px 22px rgba(52,211,153,.35), inset 0 1px 0 rgba(255,255,255,.3);
+        }
+        .ph-home-featured-ico svg { width: 20px; height: 20px; }
+        .ph-home-featured-txt { flex: 1; display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+        .ph-home-featured-title { font-size: 13px; font-weight: 800; color: #f1f2f8; letter-spacing: .01em; }
+        .ph-home-featured-sub { font-size: 10px; color: #a7f3d0; letter-spacing: .02em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .ph-home-featured-arrow { color: #a7f3d0; font-size: 22px; line-height: 1; opacity: .65; padding-right: 2px; }
+
+        .ph-home-grid-hdr {
+            font-size: 9px; font-weight: 800; letter-spacing: .1em;
+            text-transform: uppercase; color: #8890a8;
+            padding: 4px 2px 0;
+        }
+        .ph-home-grid {
+            display: grid; grid-template-columns: repeat(3, 1fr);
+            gap: 10px;
+        }
+        .ph-home-app {
+            display: flex; flex-direction: column; align-items: center; gap: 6px;
+            padding: 10px 4px 8px; border-radius: 14px;
+            background: rgba(255,255,255,.045);
+            border: 1px solid rgba(255,255,255,.06);
+            cursor: pointer; font-family: inherit;
+            color: inherit;
+            transition: background .2s, border-color .2s, transform .15s;
+        }
+        .ph-home-app:hover { background: rgba(255,255,255,.09); border-color: rgba(34,211,238,.28); transform: translateY(-1px); }
+        .ph-home-app:active { transform: scale(.96); }
+        .ph-home-app-icon {
+            width: 44px; height: 44px; border-radius: 13px;
+            display: inline-flex; align-items: center; justify-content: center;
+            background: rgba(255,255,255,.06);
+            border: 1px solid rgba(255,255,255,.1);
+        }
+        .ph-home-app-icon svg { width: 22px; height: 22px; }
+        .ph-home-app-name {
+            font-size: 9px; font-weight: 700; color: #c7cad6;
+            max-width: 100%; overflow: hidden; text-overflow: ellipsis;
+            white-space: nowrap; text-align: center;
+            letter-spacing: .01em;
+        }
+        .ph-home-empty {
+            grid-column: 1 / -1;
+            padding: 24px 10px; text-align: center;
+            font-size: 10.5px; color: #6b7280; line-height: 1.5;
+        }
+
+        /* App bar (dentro de apps) */
+        .ph-app-bar {
+            display: flex; align-items: center; gap: 8px;
+            padding: 8px 12px; margin: 0 12px 8px;
+            border-radius: 10px;
+            background: rgba(255,255,255,.05);
+            border: 1px solid rgba(255,255,255,.08);
+            flex-shrink: 0;
+        }
+        .ph-app-bar > span {
+            font-size: 12px; font-weight: 800; color: #e9ecf5;
+            letter-spacing: .02em;
+        }
+        .ph-app-back {
+            width: 26px; height: 26px; border-radius: 7px;
+            background: transparent; border: none;
+            color: #a8aec4; cursor: pointer;
+            display: inline-flex; align-items: center; justify-content: center;
+            transition: color .15s, background .15s;
+        }
+        .ph-app-back:hover { color: #67e8f9; background: rgba(34,211,238,.12); }
+        .ph-app-back svg { width: 14px; height: 14px; }
+        .ph-app-root { flex: 1; min-height: 0; overflow: hidden; display: flex; flex-direction: column; }
+
         .ph-home { padding: 6px 0 8px; flex-shrink: 0; display: flex; justify-content: center; position: relative; z-index: 2; }
         .ph-home::before { content: ''; width: 100px; height: 4px; border-radius: 2px; background: rgba(255,255,255,.26); }
 
@@ -406,7 +556,7 @@
             <div class="ph-side vol2"></div>
             <div class="ph-side pwr"></div>
             <div class="ph-notch" id="phNotch" title="Clique para ${_minimized ? 'expandir' : 'minimizar'}"></div>
-            <div class="ph-screen">
+            <div class="ph-screen" data-tab="home">
                 <div class="ph-status">
                     <span class="ph-status-time" id="phTime">--:--</span>
                     <span class="ph-status-icons">
@@ -428,10 +578,10 @@
                     <span class="ph-me-copy">${ctx.I.copy}</span>
                 </div>
                 <div class="ph-tabs">
-                    <button class="ph-tab active" data-tab="contatos">Contatos</button>
+                    <button class="ph-tab active" data-tab="home">Início</button>
+                    <button class="ph-tab" data-tab="contatos">Contatos</button>
                     <button class="ph-tab" data-tab="discar">Discar</button>
                     <button class="ph-tab" data-tab="recentes">Recentes</button>
-                    <button class="ph-tab" data-tab="apps" title="Apps">Apps</button>
                 </div>
                 <div class="ph-content" id="phContent"></div>
                 <div class="ph-home"></div>
@@ -444,7 +594,8 @@
         ctx.screenEl = _screenEl;
 
         _tickClock();
-        setInterval(() => { if (!_dying) _tickClock(); }, 15000);
+        if (_clockTimer) clearInterval(_clockTimer);
+        _clockTimer = setInterval(() => { if (!_dying) _tickClock(); }, 15000);
 
         const notch = _frameEl.querySelector('#phNotch');
         notch.addEventListener('click', (e) => { e.stopPropagation(); _setMinimized(!_minimized); });
@@ -458,17 +609,20 @@
             t.addEventListener('click', () => {
                 if (ctx.phase !== 'idle' && ctx.phase !== 'busy') return;
                 _activeTab = t.dataset.tab;
-                _frameEl.querySelectorAll('.ph-tab').forEach(b => b.classList.toggle('active', b === t));
+                _openAppId = null;
                 _renderTab();
             });
         });
     }
 
     function _tickClock() {
-        const t = _frameEl?.querySelector('#phTime');
-        if (!t) return;
         const d = new Date();
-        t.textContent = String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+        const hh = String(d.getHours()).padStart(2, '0');
+        const mm = String(d.getMinutes()).padStart(2, '0');
+        const t1 = _frameEl?.querySelector('#phTime');
+        if (t1) t1.textContent = hh + ':' + mm;
+        const t2 = _frameEl?.querySelector('#phHomeTime');
+        if (t2) t2.textContent = hh + ':' + mm;
     }
 
     function _setMinimized(v) {
@@ -493,6 +647,17 @@
             _myNumEl.textContent = '··· — ···';
             _myNumEl.classList.add('loading');
         }
+        // Também atualiza o da home se estiver na tela
+        const homeNum = _screenEl?.querySelector('#phHomeNum');
+        if (homeNum) {
+            if (ctx.myNumber) {
+                homeNum.textContent = ctx.contacts.fmtNumber ? ctx.contacts.fmtNumber(ctx.myNumber) : ctx.myNumber;
+                homeNum.classList.remove('loading');
+            } else {
+                homeNum.textContent = '··· — ···';
+                homeNum.classList.add('loading');
+            }
+        }
     }
     ctx.updateMyNumberUI = _updateMyNumberUI;
 
@@ -507,63 +672,140 @@
     function _renderTab() {
         if (!_screenEl) return;
         if (ctx.phase !== 'idle' && ctx.phase !== 'busy') return;
-        _openAppId = null;
+        _screenEl.setAttribute('data-tab', _activeTab);
         _screenEl.querySelectorAll('.ph-tab').forEach(b => b.classList.toggle('active', b.dataset.tab === _activeTab));
-        if (_activeTab === 'apps') _renderAppsTab();
+        if (_activeTab === 'home') _renderHome();
         else if (_activeTab === 'discar') ctx.contacts.renderDial?.();
         else if (_activeTab === 'recentes') ctx.contacts.renderHistory?.();
         else ctx.contacts.renderContacts?.();
     }
     ctx.renderTab = _renderTab;
 
-    // ═══ APP LAUNCHER (tab Apps) ═══
-    function _renderAppsTab() {
-        const content = _screenEl.querySelector('#phContent');
-        if (!content) return;
-        const apps = ctx.apps.all();
-        if (!apps.length) {
-            content.innerHTML = `<div class="ph-list"><div class="ph-empty">Nenhum app instalado.<br><span class="hint">Apps são registrados via <code>ctx.apps.register()</code>.</span></div></div>`;
-            return;
+    // ═══ HOME ═══
+    function _fmtHomeDate(d) {
+        try {
+            const s = d.toLocaleDateString('pt-BR', { weekday: 'long', day: 'numeric', month: 'long' });
+            // "domingo, 26 de setembro" → "Domingo, 26 de setembro"
+            return s.charAt(0).toUpperCase() + s.slice(1);
+        } catch(_) {
+            return d.toDateString();
         }
-        const html = apps.map(a => {
-            const icon = a.icon || ctx.I.apps;
-            const accent = a.accent || '#a78bfa';
-            return `<div class="ph-app-item" data-app-id="${esc(a.id)}">
-                <div class="ph-app-icon" style="color:${esc(accent)}">${icon}</div>
-                <div class="ph-app-name">${esc(a.name || a.id)}</div>
-            </div>`;
-        }).join('');
-        content.innerHTML = `<div class="ph-apps-grid">${html}</div>`;
-        content.querySelectorAll('.ph-app-item').forEach(row => {
-            row.addEventListener('click', () => _openApp(row.dataset.appId));
-        });
     }
 
+    function _renderHome() {
+        const content = _screenEl.querySelector('#phContent');
+        if (!content) return;
+        const now = new Date();
+        const hh = String(now.getHours()).padStart(2, '0');
+        const mm = String(now.getMinutes()).padStart(2, '0');
+
+        const myNumTxt = ctx.myNumber
+            ? (ctx.contacts.fmtNumber ? ctx.contacts.fmtNumber(ctx.myNumber) : ctx.myNumber)
+            : '··· — ···';
+        const numCls = ctx.myNumber ? '' : ' loading';
+
+        const apps = ctx.apps.all();
+        const gridHtml = apps.length
+            ? apps.map(a => {
+                const icon = a.icon || ctx.I.apps;
+                const accent = a.accent || '#a78bfa';
+                return `<button class="ph-home-app" data-app-id="${esc(a.id)}">
+                    <span class="ph-home-app-icon" style="color:${esc(accent)}">${icon}</span>
+                    <span class="ph-home-app-name">${esc(a.name || a.id)}</span>
+                </button>`;
+            }).join('')
+            : `<div class="ph-home-empty">Nenhum app instalado.<br><span style="color:#5c6280;font-size:9.5px;margin-top:4px;display:block;">Apps são registrados via <code>ctx.apps.register()</code></span></div>`;
+
+        content.innerHTML = `
+            <div class="ph-home-wrap">
+                <div class="ph-home-clock">
+                    <div class="ph-home-time" id="phHomeTime">${hh}:${mm}</div>
+                    <div class="ph-home-date">${esc(_fmtHomeDate(now))}</div>
+                </div>
+                <button class="ph-home-me" id="phHomeMe" title="Clique para copiar">
+                    <span class="ph-home-me-lbl">meu número</span>
+                    <span class="ph-home-me-num${numCls}" id="phHomeNum">${esc(myNumTxt)}</span>
+                    <span class="ph-home-me-copy">${ctx.I.copy}</span>
+                </button>
+                <button class="ph-home-featured" id="phHomeFeatured">
+                    <span class="ph-home-featured-ico">${ctx.I.phone}</span>
+                    <span class="ph-home-featured-txt">
+                        <span class="ph-home-featured-title">Chamadas</span>
+                        <span class="ph-home-featured-sub" id="phHomeFeaturedSub">—</span>
+                    </span>
+                    <span class="ph-home-featured-arrow">›</span>
+                </button>
+                <div class="ph-home-grid-hdr">Apps</div>
+                <div class="ph-home-grid" id="phHomeGrid">${gridHtml}</div>
+            </div>
+        `;
+
+        // Handlers
+        content.querySelector('#phHomeMe').addEventListener('click', () => _copyMyNumber());
+        content.querySelector('#phHomeFeatured').addEventListener('click', () => {
+            _activeTab = 'contatos';
+            _renderTab();
+        });
+        content.querySelectorAll('.ph-home-app').forEach(b => {
+            b.addEventListener('click', () => _openApp(b.dataset.appId));
+        });
+
+        // Popula o sub do card de chamadas em background
+        _updateHomeFeaturedSub();
+    }
+
+    async function _updateHomeFeaturedSub() {
+        const elSub = _screenEl?.querySelector('#phHomeFeaturedSub');
+        if (!elSub) return;
+        try {
+            if (ctx.contacts.fetchSessions) await ctx.contacts.fetchSessions(false);
+            const cache = ctx.contacts.sessionsCache || [];
+            const contactsList = ctx.contacts.contacts || [];
+            const myId = bridge.deviceId || '';
+            const now = Date.now();
+            const online = cache.filter(s => s.id !== myId && (now - (s.lastSeen || 0)) < 5 * 60 * 1000).length;
+            const parts = [];
+            parts.push(online === 1 ? '1 online' : online + ' online');
+            const cc = contactsList.length;
+            if (cc) parts.push(cc === 1 ? '1 contato' : cc + ' contatos');
+            elSub.textContent = parts.join(' · ');
+        } catch(_) {
+            elSub.textContent = '—';
+        }
+    }
+
+    // ═══ APP LAUNCHER ═══
     function _openApp(id) {
         if (!_screenEl) return;
         const app = ctx.apps.get(id);
         if (!app) return;
         const content = _screenEl.querySelector('#phContent');
         if (!content) return;
+
         // Encerra app anterior
         if (_openAppId && _openAppId !== id) {
             const prev = ctx.apps.get(_openAppId);
             try { prev?.unmount?.(); } catch(_) {}
         }
         _openAppId = id;
+        // Sempre volta pra home quando fecha o app
+        _activeTab = 'home';
+        _screenEl.setAttribute('data-tab', 'app');
+
         content.innerHTML = '';
         const bar = el('div', { class: 'ph-app-bar' });
         bar.innerHTML = `<button class="ph-app-back" title="Voltar">${ctx.I.back}</button><span>${esc(app.name || id)}</span>`;
         bar.querySelector('.ph-app-back').addEventListener('click', () => {
             try { app.unmount?.(); } catch(_) {}
             _openAppId = null;
+            _activeTab = 'home';
             _renderTab();
         });
         content.appendChild(bar);
         const appRoot = el('div', { class: 'ph-app-root' });
         content.appendChild(appRoot);
         try { app.mount(appRoot, ctx); }
-        catch(e) { appRoot.innerHTML = `<div class="ph-empty">Erro ao abrir app.</div>`; console.warn('[Phone] app mount falhou:', e); }
+        catch(e) { appRoot.innerHTML = `<div class="ph-home-empty">Erro ao abrir app.</div>`; console.warn('[Phone] app mount falhou:', e); }
     }
     ctx.openApp = _openApp;
 
@@ -575,6 +817,48 @@
     ctx.announceCall = () => _frameEl?.classList.add('ringing');
     ctx.clearCallGlow = () => _frameEl?.classList.remove('ringing');
     ctx.setRecording = (on) => _frameEl?.classList.toggle('recording', on);
+
+    // ═══ TECLADO FÍSICO — discador ═══
+    // Intercepta dígitos, backspace e escape quando:
+    //   - o telefone está visível e não minimizado
+    //   - a aba ativa é 'discar'
+    //   - a chamada está em idle ou busy
+    //   - nenhum input real (search, etc) está focado dentro do shadow
+    // Simula cliques nos botões do keypad — respeita o estado interno de contacts.js
+    function _handlePhysicalKeys(e) {
+        if (_dying) return;
+        if (!_frameEl || _frameEl.classList.contains('hidden')) return;
+        if (_minimized) return;
+        if (_activeTab !== 'discar') return;
+        if (ctx.phase !== 'idle' && ctx.phase !== 'busy') return;
+        // Não atropelar inputs dentro do telefone (ex: busca em contatos)
+        const ae = _shadow?.activeElement;
+        if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.isContentEditable)) return;
+        // Não atropelar inputs fora do telefone
+        const outAe = document.activeElement;
+        if (outAe && outAe !== _host && (outAe.tagName === 'INPUT' || outAe.tagName === 'TEXTAREA' || outAe.isContentEditable)) return;
+
+        const k = e.key;
+        let sel = null;
+        if (k.length === 1 && k >= '0' && k <= '9') {
+            sel = `.ph-key[data-digit="${k}"]`;
+        } else if (k === 'Backspace') {
+            sel = `.ph-key[data-util="back"]`;
+        } else if (k === 'Escape' || k === 'Delete') {
+            sel = `.ph-key[data-util="clear"]`;
+        } else if (k === 'Enter') {
+            sel = `#phCall`;
+        } else {
+            return;
+        }
+        const btn = _screenEl?.querySelector(sel);
+        if (!btn || btn.disabled) return;
+        e.preventDefault();
+        e.stopPropagation();
+        btn.click();
+    }
+    // Captura na fase de captura para rodar ANTES dos handlers do jogo
+    document.addEventListener('keydown', _handlePhysicalKeys, true);
 
     // ═══ MODULE LOADER ═══
     async function _loadModule(name, url) {
@@ -613,6 +897,8 @@
         try { ctx.calls.cleanup?.(); } catch(_) {}
         try { ctx.notes.cancelNote?.(); } catch(_) {}
         try { ctx.notes.stopPoll?.(); } catch(_) {}
+        try { document.removeEventListener('keydown', _handlePhysicalKeys, true); } catch(_) {}
+        if (_clockTimer) { clearInterval(_clockTimer); _clockTimer = null; }
         try { if (_host) _host.remove(); } catch(e) {}
         try { if (_actx) _actx.close(); } catch(e) {}
         try { delete window[UID]; } catch(e) {}
@@ -644,8 +930,10 @@
         //   _loadModule('config', base + '/apps/config.js')
         // ]);
 
-        // Registra listener de apps para atualizar o tab
-        ctx.apps.onChange(() => { if (_activeTab === 'apps') _renderAppsTab(); });
+        // Atualiza home se apps registrarem quando home já estiver renderizada
+        ctx.apps.onChange(() => {
+            if (_activeTab === 'home' && !_openAppId) _renderHome();
+        });
 
         // Alocação de número
         if (ctx.contacts.ensureMyNumber) {
