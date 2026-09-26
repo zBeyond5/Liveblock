@@ -6,18 +6,25 @@
     if (ctx.apps.get('sangzap')) return;
 
     const APP_ID = 'sangzap';
-    const APP_VERSION = '0.2.0';
+    const APP_VERSION = '0.3.0';
     const BASE = (ctx.moduleBase || '') + '/apps/sangzap';
 
     const ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>`;
 
-    let _activeTab = 'chats';
-    let _activeChatId = null;
-    let _root = null;
-    let _myNumber = null;
+    // ═══ STATE ═══
+    const _state = {
+        activeTab: 'chats',       // 'chats' | 'stories' | 'settings'
+        activeChatId: null,
+        chatMeta: null,            // { chatId, kind, number, title, ... }
+        searchQuery: '',
+        showArchived: false,
+        myNumber: null,
+        root: null,
+        screenEl: null
+    };
+
     let _moduleLoaded = false;
-    let _searchQuery = '';
-    let _showArchived = false;
+    let _unreadTotal = 0;
 
     // ═══ MODULE LOADER ═══
     async function loadModules() {
@@ -35,10 +42,29 @@
         _moduleLoaded = true;
     }
 
+    // ═══ APP BAR (phone) ═══
+    function hidePhoneBar() { _state.screenEl?.classList.add('sz-hide-bar'); }
+    function showPhoneBar() { _state.screenEl?.classList.remove('sz-hide-bar'); }
+
+    // ═══ BADGE NO ÍCONE DO APP (dock) ═══
+    function _refreshAppBadge(total) {
+        _unreadTotal = total || 0;
+        try { ctx.apps._notify?.(); } catch(_) {}
+    }
+
+    // ═══ NAV ═══
+    function goHome() {
+        if (_state.activeChatId) { closeChat(); return; }
+        if (_state.activeTab === 'settings') { _state.activeTab = 'chats'; render(); return; }
+        try { ctx.closeApp?.(); } catch(_) {}
+    }
+
     // ═══ RENDER ═══
     function render() {
-        if (!_root) return;
-        _root.innerHTML = `
+        if (!_state.root) return;
+        const root = _state.root;
+
+        root.innerHTML = `
             <div class="sz-app">
                 <header class="sz-hdr">
                     <button class="sz-hdr-back" id="szBack" aria-label="Voltar">${ctx.I.back}</button>
@@ -48,44 +74,38 @@
                     </button>
                 </header>
 
-                <div class="sz-tabs" id="szTabs">
-                    <button class="sz-tab${_activeTab === 'chats' ? ' active' : ''}" data-tab="chats">
-                        Conversas
-                    </button>
-                    <button class="sz-tab${_activeTab === 'stories' ? ' active' : ''}" data-tab="stories">
-                        Stories
-                    </button>
-                </div>
+                ${!_state.activeChatId && _state.activeTab !== 'settings' ? `
+                    <div class="sz-tabs" id="szTabs">
+                        <button class="sz-tab${_state.activeTab === 'chats' ? ' active' : ''}" data-tab="chats">Conversas</button>
+                        <button class="sz-tab${_state.activeTab === 'stories' ? ' active' : ''}" data-tab="stories">Stories</button>
+                    </div>
+                ` : ''}
 
                 <div class="sz-body" id="szBody"></div>
             </div>
         `;
 
-        _root.querySelector('#szBack').addEventListener('click', () => {
-            if (_activeChatId) { closeChat(); return; }
-            if (_activeTab === 'settings') { _activeTab = 'chats'; render(); return; }
-            try { ctx.closeApp(); } catch(_) {}
-        });
-
-        _root.querySelector('#szGear').addEventListener('click', () => {
-            _activeTab = 'settings';
-            _activeChatId = null;
+        root.querySelector('#szBack').addEventListener('click', goHome);
+        root.querySelector('#szGear').addEventListener('click', () => {
+            _state.activeTab = 'settings';
+            _state.activeChatId = null;
+            _state.chatMeta = null;
             render();
         });
-
-        _root.querySelectorAll('.sz-tab').forEach(btn => {
+        root.querySelectorAll('.sz-tab').forEach(btn => {
             btn.addEventListener('click', () => {
-                _activeTab = btn.dataset.tab;
-                _activeChatId = null;
+                _state.activeTab = btn.dataset.tab;
+                _state.activeChatId = null;
+                _state.chatMeta = null;
                 render();
             });
         });
 
-        const body = _root.querySelector('#szBody');
-        if (_activeChatId) renderChat(body);
-        else if (_activeTab === 'chats') renderRoster(body);
-        else if (_activeTab === 'stories') S.stories.renderTab(body, _myNumber);
-        else if (_activeTab === 'settings') S.settings.render(body, _myNumber);
+        const body = root.querySelector('#szBody');
+        if (_state.activeChatId) renderChat(body);
+        else if (_state.activeTab === 'chats') renderRoster(body);
+        else if (_state.activeTab === 'stories') S.stories?.renderTab(body, _state.myNumber);
+        else if (_state.activeTab === 'settings') S.settings?.render(body, _state.myNumber);
     }
 
     // ═══ ROSTER ═══
@@ -94,9 +114,9 @@
             <div class="sz-roster">
                 <div class="sz-roster-head">
                     <div class="sz-search-wrap">
-                        <input class="sz-search" id="szSearch" type="text" placeholder="Buscar…" value="${S.escape(_searchQuery)}" />
+                        <input class="sz-search" id="szSearch" type="text" placeholder="Buscar…" value="${S.escape(_state.searchQuery)}" />
                     </div>
-                    <button class="sz-new-btn" id="szNew" title="Nova conversa">+</button>
+                    <button class="sz-new-btn" id="szNew" title="Nova conversa" aria-label="Nova conversa">+</button>
                 </div>
                 <div class="sz-roster-list" id="szRosterList">
                     <div class="sz-empty">Carregando…</div>
@@ -109,17 +129,19 @@
         const list = body.querySelector('#szRosterList');
         const searchEl = body.querySelector('#szSearch');
         searchEl.addEventListener('input', () => {
-            _searchQuery = searchEl.value;
-            paint(S.roster.filter(_searchQuery));
+            _state.searchQuery = searchEl.value;
+            paint(S.roster.filter(_state.searchQuery));
         });
 
         function paint(entries) {
             if (!entries.length) {
-                list.innerHTML = `<div class="sz-empty">${_searchQuery ? 'Nada encontrado.' : 'Sem contatos. Adicione contatos no telefone.'}</div>`;
+                list.innerHTML = `<div class="sz-empty">${_state.searchQuery ? 'Nada encontrado.' : 'Sem contatos. Adicione contatos no telefone.'}</div>`;
                 return;
             }
+            let totalUnread = 0;
             list.innerHTML = entries.map(c => {
                 const unread = c.unread || 0;
+                totalUnread += unread;
                 const isGroup = c.kind === 'group';
                 const online = !isGroup && c.online;
                 const avatar = c.avatar
@@ -131,40 +153,60 @@
                 const recadoLine = c.recado && !c.lastMessage
                     ? `<span class="sz-item-preview sz-item-recado">${S.escape(c.recado)}</span>`
                     : `<span class="sz-item-preview">${S.escape(c.lastMessage || (isGroup ? '' : c.recado || 'Toque para conversar'))}</span>`;
+                const timeTxt = c.lastMessageAt
+                    ? S.fmtRelative(c.lastMessageAt)
+                    : (online ? 'online' : (c.lastSeen ? S.timeAgo(c.lastSeen) : ''));
                 return `
                     <button class="sz-item" data-chat="${S.escape(c.chatId)}" data-kind="${c.kind}" data-num="${S.escape(c.number || '')}">
                         <div class="sz-avatar">${avatar}${dot}</div>
                         <div class="sz-item-body">
                             <div class="sz-item-top">
                                 <span class="sz-item-title">${pin}${S.escape(c.title)}${mute}</span>
-                                <span class="sz-item-time">${c.lastMessageAt ? S.fmtRelative(c.lastMessageAt) : (online ? 'online' : S.timeAgo(c.lastSeen))}</span>
+                                <span class="sz-item-time">${timeTxt}</span>
                             </div>
                             <div class="sz-item-bot">
                                 ${recadoLine}
-                                ${unread ? `<span class="sz-item-badge">${unread}</span>` : ''}
+                                ${unread ? `<span class="sz-item-badge">${unread > 99 ? '99+' : unread}</span>` : ''}
                             </div>
                         </div>
                     </button>
                 `;
             }).join('');
+
+            _refreshAppBadge(totalUnread);
+
             list.querySelectorAll('.sz-item').forEach(btn => {
-                btn.addEventListener('click', () => {
-                    const c = entries.find(x => x.chatId === btn.dataset.chat);
-                    if (c) openChat(c.chatId, c);
+                const entry = entries.find(x => x.chatId === btn.dataset.chat);
+                if (!entry) return;
+                let longPressTimer = null;
+                let longPressFired = false;
+
+                btn.addEventListener('click', (ev) => {
+                    if (longPressFired) { longPressFired = false; return; }
+                    openChat(entry.chatId, entry);
                 });
                 btn.addEventListener('contextmenu', (ev) => {
                     ev.preventDefault();
-                    const c = entries.find(x => x.chatId === btn.dataset.chat);
-                    if (c) openContextMenu(c);
+                    openContextMenu(entry);
                 });
+                btn.addEventListener('pointerdown', () => {
+                    longPressFired = false;
+                    longPressTimer = setTimeout(() => {
+                        longPressFired = true;
+                        openContextMenu(entry);
+                    }, 550);
+                });
+                ['pointerup', 'pointerleave', 'pointercancel'].forEach(evt =>
+                    btn.addEventListener(evt, () => { if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; } })
+                );
             });
         }
 
-        S.roster.start(_myNumber, (all) => paint(S.roster.filter(_searchQuery)));
+        S.roster.start(_state.myNumber, () => paint(S.roster.filter(_state.searchQuery)));
     }
 
     function openContextMenu(entry) {
-        const body = _root.querySelector('#szBody');
+        const body = _state.root.querySelector('#szBody');
         const menu = document.createElement('div');
         menu.className = 'sz-ctx-menu';
         menu.innerHTML = `
@@ -190,7 +232,7 @@
     // ═══ NEW CHAT ═══
     function openNewChatPicker() {
         const contacts = (ctx.contacts?.contacts || []);
-        const body = _root.querySelector('#szBody');
+        const body = _state.root.querySelector('#szBody');
         const modal = document.createElement('div');
         modal.className = 'sz-modal';
         modal.innerHTML = `
@@ -199,7 +241,7 @@
                 <div class="sz-modal-list">
                     ${contacts.length ? contacts.map(c => {
                         const n = c.number || c.num;
-                        if (!n || n === _myNumber) return '';
+                        if (!n || n === _state.myNumber) return '';
                         return `<button class="sz-item sz-pick" data-num="${S.escape(n)}">
                             <div class="sz-avatar"><span class="sz-av-fallback">${S.escape((c.name || '?')[0].toUpperCase())}</span></div>
                             <div class="sz-item-body">
@@ -223,13 +265,13 @@
         modal.querySelectorAll('.sz-pick').forEach(btn => {
             btn.addEventListener('click', async () => {
                 const num = btn.dataset.num;
-                if (!num || num === _myNumber) return;
-                const chatId = S.chatIdFor(_myNumber, num);
+                if (!num || num === _state.myNumber) return;
+                const chatId = S.chatIdFor(_state.myNumber, num);
                 modal.remove();
                 try {
                     await ctx.bridge.firestore.request('PATCH', `/sangzap_chats/${chatId}`, {
                         kind: '1:1',
-                        members: [_myNumber, num].sort(),
+                        members: [_state.myNumber, num].sort(),
                         createdAt: Date.now(),
                         updatedAt: Date.now(),
                         lastMessage: '',
@@ -244,7 +286,7 @@
     function openGroupPicker() {
         const contacts = (ctx.contacts?.contacts || []);
         const sel = new Set();
-        const body = _root.querySelector('#szBody');
+        const body = _state.root.querySelector('#szBody');
         const m = document.createElement('div');
         m.className = 'sz-modal';
         m.innerHTML = `
@@ -256,7 +298,7 @@
                 <div class="sz-modal-list">
                     ${contacts.map(c => {
                         const n = c.number || c.num;
-                        if (!n || n === _myNumber) return '';
+                        if (!n || n === _state.myNumber) return '';
                         return `<button class="sz-item sz-gpick" data-num="${S.escape(n)}">
                             <div class="sz-avatar"><span class="sz-av-fallback">${S.escape((c.name || '?')[0].toUpperCase())}</span></div>
                             <div class="sz-item-body"><div class="sz-item-title">${S.escape(c.name || S.shortNum(n))}</div></div>
@@ -298,33 +340,39 @@
 
     // ═══ CHAT ═══
     function openChat(chatId, meta) {
-        _activeChatId = chatId;
-        _root.dataset.chatMeta = JSON.stringify(meta || {});
+        _state.activeChatId = chatId;
+        _state.chatMeta = meta || {};
         render();
     }
     function closeChat() {
-        S.chat.close();
-        _activeChatId = null;
+        // para áudios em curso
+        try {
+            _state.root?.querySelectorAll('.sz-msg-audio audio').forEach(a => { try { a.pause(); a.currentTime = 0; } catch(_) {} });
+        } catch(_) {}
+        try { S.chat?.close(); } catch(_) {}
+        _state.activeChatId = null;
+        _state.chatMeta = null;
         render();
     }
 
     function renderChat(body) {
-        const meta = JSON.parse(_root.dataset.chatMeta || '{}');
+        const meta = _state.chatMeta || {};
         const isGroup = meta.kind === 'group';
+        const title = meta.title || (meta.kind === '1:1' ? S.shortNum(meta.number) : 'Chat');
 
         body.innerHTML = `
             <div class="sz-chat">
                 <div class="sz-chat-head">
-                    <button class="sz-chat-back" id="szChatBack">‹</button>
-                    <div class="sz-chat-title">${S.escape(meta.title || 'Chat')}</div>
-                    ${!isGroup && meta.number ? `<button class="sz-chat-call" id="szChatCall" title="Ligar">📞</button>` : ''}
+                    <button class="sz-chat-back" id="szChatBack" aria-label="Voltar">‹</button>
+                    <div class="sz-chat-title">${S.escape(title)}</div>
+                    ${!isGroup && meta.number ? `<button class="sz-chat-call" id="szChatCall" title="Ligar" aria-label="Ligar">📞</button>` : ''}
                 </div>
                 <div class="sz-chat-thread" id="szThread"></div>
                 <div class="sz-chat-typing" id="szTyping"></div>
                 <div class="sz-chat-input">
-                    <button class="sz-chat-plus" id="szChatPlus" title="Anexar">+</button>
+                    <button class="sz-chat-plus" id="szChatPlus" title="Anexar" aria-label="Anexar">+</button>
                     <input class="sz-chat-field" id="szField" type="text" placeholder="Mensagem" maxlength="4000" />
-                    <button class="sz-chat-mic" id="szMic" title="Segurar para gravar">🎤</button>
+                    <button class="sz-chat-mic" id="szMic" title="Segurar para gravar" aria-label="Gravar">🎤</button>
                     <button class="sz-chat-send" id="szSend" aria-label="Enviar">↑</button>
                 </div>
             </div>
@@ -333,8 +381,14 @@
         body.querySelector('#szChatBack').addEventListener('click', closeChat);
 
         const callBtn = body.querySelector('#szChatCall');
-        if (callBtn) callBtn.addEventListener('click', () => {
-            try { ctx.calls?.call?.([meta.number]); } catch(_) {}
+        if (callBtn && meta.number) callBtn.addEventListener('click', () => {
+            try {
+                if (typeof ctx.calls?.call === 'function') {
+                    ctx.calls.call([meta.number]);
+                } else {
+                    ctx.toast?.('Chamadas indisponíveis', 'err');
+                }
+            } catch(e) { console.warn('[Sangzap] call:', e); }
         });
 
         const thread = body.querySelector('#szThread');
@@ -347,7 +401,7 @@
             for (const m of msgs) msgsById[m.id] = m;
 
             thread.innerHTML = msgs.map(m => {
-                const mine = m.from === _myNumber;
+                const mine = m.from === _state.myNumber;
                 if (m.kind === 'system') {
                     return `<div class="sz-msg-system">${S.escape(m.body || '')}</div>`;
                 }
@@ -359,11 +413,11 @@
                 const isStoryReply = m.kind === 'story-reply';
                 let bodyHtml;
                 if (isAudio) bodyHtml = `<div class="sz-msg-audio" data-audio-id="${S.escape(m.id)}"></div>`;
-                else if (isImage) bodyHtml = `<div class="sz-msg-image"><img src="${S.escape(m.media || '')}" alt="" /></div>`;
+                else if (isImage) bodyHtml = `<div class="sz-msg-image"><img src="${S.escape(m.media || '')}" alt="" loading="lazy" /></div>`;
                 else bodyHtml = `<div class="sz-msg-text">${S.escape(m.body || '')}</div>`;
 
                 const reply = m.replyTo && msgsById[m.replyTo]
-                    ? `<div class="sz-msg-reply">${S.escape(msgsById[m.replyTo].body || '').slice(0, 60)}</div>`
+                    ? `<div class="sz-msg-reply">${S.escape((msgsById[m.replyTo].body || '').slice(0, 60))}</div>`
                     : '';
                 const storyTag = isStoryReply ? `<div class="sz-msg-story-tag">💬 Story</div>` : '';
 
@@ -389,11 +443,22 @@
             });
 
             thread.querySelectorAll('.sz-msg').forEach(el => {
-                el.addEventListener('contextmenu', (ev) => {
-                    ev.preventDefault();
-                    const msg = msgsById[el.dataset.msg];
-                    if (msg) openMsgMenu(msg);
+                const msg = msgsById[el.dataset.msg];
+                if (!msg) return;
+                let longPressTimer = null;
+                let longPressFired = false;
+
+                el.addEventListener('contextmenu', (ev) => { ev.preventDefault(); openMsgMenu(msg); });
+                el.addEventListener('pointerdown', () => {
+                    longPressFired = false;
+                    longPressTimer = setTimeout(() => {
+                        longPressFired = true;
+                        openMsgMenu(msg);
+                    }, 550);
                 });
+                ['pointerup', 'pointerleave', 'pointercancel'].forEach(evt =>
+                    el.addEventListener(evt, () => { if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; } })
+                );
             });
 
             if (stick) thread.scrollTop = thread.scrollHeight;
@@ -421,6 +486,7 @@
                     if (act === 'reply') {
                         field.value = '';
                         field.dataset.replyTo = msg.id;
+                        field.placeholder = 'Responder…';
                         field.focus();
                     } else if (act === 'edit') {
                         const text = prompt('Editar mensagem:', msg.body);
@@ -433,13 +499,14 @@
             });
         }
 
-        S.chat.open(_activeChatId, _myNumber, meta, paint);
+        S.chat.open(_state.activeChatId, _state.myNumber, meta, paint);
 
         function send() {
             const text = field.value.trim();
             if (!text) return;
             const replyTo = field.dataset.replyTo || null;
             field.value = '';
+            field.placeholder = 'Mensagem';
             delete field.dataset.replyTo;
             S.chat.send(text, replyTo ? { replyTo } : undefined).catch(e => console.warn('[Sangzap] send:', e));
         }
@@ -450,17 +517,27 @@
         });
         field.addEventListener('input', () => S.chat.typing());
 
-        // Mic
+        // Mic — segurar pra gravar
         const mic = body.querySelector('#szMic');
+        let _recActive = false;
         mic.addEventListener('pointerdown', async (ev) => {
             ev.preventDefault();
-            await S.audio.start(
+            _recActive = true;
+            const ok = await S.audio.start(
                 (state) => mic.classList.toggle('rec', state === 'rec'),
-                (payload) => S.chat.sendAudio(payload).catch(() => {})
+                (payload) => {
+                    if (!_recActive) return;
+                    S.chat.sendAudio(payload).catch(() => {});
+                }
             );
+            if (!ok) _recActive = false;
         });
-        mic.addEventListener('pointerup', (ev) => { ev.preventDefault(); S.audio.stop(); });
-        mic.addEventListener('pointerleave', () => { if (S.audio.isRecording()) S.audio.stop(); });
+        const stopRec = () => {
+            if (_recActive) { _recActive = false; S.audio.stop(); }
+        };
+        mic.addEventListener('pointerup', (ev) => { ev.preventDefault(); stopRec(); });
+        mic.addEventListener('pointerleave', stopRec);
+        mic.addEventListener('pointercancel', stopRec);
 
         // Anexo (imagem)
         body.querySelector('#szChatPlus').addEventListener('click', async () => {
@@ -484,34 +561,67 @@
         order: 5,
         dock: true,
 
+        // badge no ícone da dock quando o phone expor esse hook
+        get badge() { return _unreadTotal || 0; },
+
         async mount(root, appCtx) {
-            _root = root;
-            _myNumber = appCtx.myNumber;
-            _activeTab = 'chats';
-            _activeChatId = null;
-            _searchQuery = '';
+            _state.root = root;
+            _state.myNumber = appCtx.myNumber;
+            _state.screenEl = appCtx.screenEl;
+            _state.activeTab = 'chats';
+            _state.activeChatId = null;
+            _state.chatMeta = null;
+            _state.searchQuery = '';
+
+            // isola a tela: esconde a app-bar do phone, ancora o app no root
+            hidePhoneBar();
+
+            // garante que o root tenha contexto de posicionamento
+            root.style.position = 'relative';
+            root.style.height = '100%';
+            root.style.minHeight = '0';
+            root.style.overflow = 'hidden';
+            root.style.display = 'block';
 
             await loadModules();
+
+            // tema persistido
+            try {
+                const prof = await S.settings?.get?.(appCtx.myNumber);
+                if (prof?.theme) document.documentElement.dataset.szTheme = prof.theme;
+            } catch(_) {}
+
             render();
         },
 
         unmount() {
+            showPhoneBar();
             try { S.roster?.stop(); } catch(_) {}
             try { S.chat?.close(); } catch(_) {}
             try { S.stories?.stop(); } catch(_) {}
-            _root = null;
+            try { S.audio?.cancel?.(); } catch(_) {}
+            _state.root = null;
+            _state.chatMeta = null;
+            _state.activeChatId = null;
         }
     });
 
     // ═══ CSS ═══
     ctx.appendStyle(`
+        :root { --sz-accent: #25d366; --sz-accent2: #128c7e; }
         :root[data-sz-theme="roxo"] { --sz-accent: #a78bfa; --sz-accent2: #7c3aed; }
         :root[data-sz-theme="azul"] { --sz-accent: #38bdf8; --sz-accent2: #0284c7; }
-        :root { --sz-accent: #25d366; --sz-accent2: #128c7e; }
+
+        /* Esconde a app-bar do phone enquanto o Sangzap está montado */
+        .ph-screen.sz-hide-bar .ph-app-bar { display: none !important; }
 
         .sz-app {
-            display: flex; flex-direction: column;
-            height: 100%; min-height: 0;
+            position: absolute;
+            inset: 0;
+            display: flex;
+            flex-direction: column;
+            min-height: 0;
+            overflow: hidden;
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
             color: #e9ecf5;
             background: linear-gradient(175deg, #0e1621 0%, #0b1218 100%);
@@ -568,19 +678,22 @@
             border-radius: 2px;
         }
 
-        .sz-body { flex: 1; min-height: 0; overflow: hidden; display: flex; flex-direction: column; }
-
-        .sz-roster { display: flex; flex-direction: column; height: 100%; min-height: 0; }
-        .sz-roster-head {
-            display: flex; align-items: center; gap: 8px;
-            padding: 10px 12px 8px; flex-shrink: 0;
+        .sz-body {
+            flex: 1 1 auto;
+            min-height: 0;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+            position: relative;
         }
+
+        /* ═══ ROSTER ═══ */
+        .sz-roster { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+        .sz-roster-head { display: flex; align-items: center; gap: 8px; padding: 10px 12px 8px; flex-shrink: 0; }
         .sz-search-wrap { flex: 1; min-width: 0; }
         .sz-search {
-            width: 100%; padding: 8px 12px;
-            border-radius: 20px;
-            background: rgba(255,255,255,.05);
-            border: 1px solid rgba(255,255,255,.08);
+            width: 100%; padding: 8px 12px; border-radius: 20px;
+            background: rgba(255,255,255,.05); border: 1px solid rgba(255,255,255,.08);
             color: #e9ecf5; font-family: inherit; font-size: 11.5px; outline: none;
             box-sizing: border-box;
             transition: border-color .16s, background .16s;
@@ -599,7 +712,7 @@
         .sz-new-btn:hover { transform: scale(1.06); }
         .sz-new-btn:active { transform: scale(.94); }
 
-        .sz-roster-list { flex: 1; overflow-y: auto; padding: 0 8px 12px; }
+        .sz-roster-list { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 0 8px 12px; }
         .sz-roster-list::-webkit-scrollbar { width: 4px; }
         .sz-roster-list::-webkit-scrollbar-thumb { background: rgba(255,255,255,.14); border-radius: 2px; }
 
@@ -609,6 +722,7 @@
             background: transparent; border: none; cursor: pointer;
             font-family: inherit; color: inherit; text-align: left;
             border-radius: 12px; transition: background .14s;
+            -webkit-tap-highlight-color: transparent;
         }
         .sz-item:hover { background: rgba(255,255,255,.04); }
         .sz-item:active { background: rgba(255,255,255,.07); }
@@ -651,6 +765,7 @@
         .sz-empty { padding: 32px 16px; text-align: center; font-size: 11px; color: #6b7280; line-height: 1.6; }
         .sz-empty b { color: var(--sz-accent); }
 
+        /* ═══ CONTEXT MENU ═══ */
         .sz-ctx-menu {
             position: absolute; z-index: 40;
             background: #1a222d; border: 1px solid rgba(255,255,255,.12);
@@ -671,6 +786,7 @@
         .sz-ctx-item:hover { background: rgba(255,255,255,.06); }
         .sz-ctx-item.danger { color: #fca5b1; }
 
+        /* ═══ MODAL ═══ */
         .sz-modal {
             position: absolute; inset: 0; z-index: 30;
             background: rgba(0,0,0,.65);
@@ -710,7 +826,7 @@
         .sz-gpick.selected .sz-check { color: var(--sz-accent); }
 
         /* ═══ CHAT ═══ */
-        .sz-chat { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+        .sz-chat { display: flex; flex-direction: column; flex: 1; min-height: 0; }
         .sz-chat-head {
             display: flex; align-items: center; gap: 8px;
             padding: 8px 12px;
@@ -727,14 +843,11 @@
         }
         .sz-chat-back:hover { background: rgba(37,211,102,.14); }
         .sz-chat-title { flex: 1; font-size: 12.5px; font-weight: 700; color: #e9ecf5; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-        .sz-chat-call {
-            background: transparent; border: none; font-size: 16px;
-            cursor: pointer; padding: 2px 4px;
-        }
+        .sz-chat-call { background: transparent; border: none; font-size: 16px; cursor: pointer; padding: 2px 4px; }
         .sz-chat-call:hover { transform: scale(1.15); }
 
         .sz-chat-thread {
-            flex: 1; min-height: 0; overflow-y: auto;
+            flex: 1 1 auto; min-height: 0; overflow-y: auto;
             padding: 12px 12px 4px;
             display: flex; flex-direction: column; gap: 6px;
             background:
@@ -793,7 +906,7 @@
 
         .sz-chat-input {
             display: flex; align-items: center; gap: 6px;
-            padding: 10px 10px;
+            padding: 10px;
             background: rgba(0,0,0,.3);
             border-top: 1px solid rgba(255,255,255,.06);
             flex-shrink: 0;
@@ -829,10 +942,7 @@
             background: linear-gradient(135deg, var(--sz-accent), var(--sz-accent2));
             box-shadow: 0 4px 12px rgba(37,211,102,.35);
         }
-        .sz-chat-mic {
-            background: rgba(255,255,255,.05);
-            border: 1px solid rgba(255,255,255,.14);
-        }
+        .sz-chat-mic { background: rgba(255,255,255,.05); border: 1px solid rgba(255,255,255,.14); }
         .sz-chat-send:hover, .sz-chat-mic:hover { transform: scale(1.06); }
         .sz-chat-send:active, .sz-chat-mic:active { transform: scale(.92); }
         .sz-chat-mic.rec {
@@ -858,7 +968,7 @@
         .sz-audio-time { font-size: 9px; color: #8a90a8; font-variant-numeric: tabular-nums; }
 
         /* ═══ SETTINGS ═══ */
-        .sz-settings { padding: 16px 14px 22px; display: flex; flex-direction: column; gap: 14px; overflow-y: auto; height: 100%; }
+        .sz-settings { padding: 16px 14px 22px; display: flex; flex-direction: column; gap: 14px; overflow-y: auto; flex: 1; min-height: 0; }
         .sz-profile-loading { padding: 32px; text-align: center; color: #6b7280; font-size: 11px; }
         .sz-settings-hero { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 12px 0; }
         .sz-settings-num { font-size: 11px; color: var(--sz-accent); letter-spacing: .08em; font-variant-numeric: tabular-nums; }
@@ -949,9 +1059,9 @@
         }
 
         /* ═══ STORIES ═══ */
-        .sz-stories-tab { display: flex; flex-direction: column; height: 100%; }
+        .sz-stories-tab { display: flex; flex-direction: column; flex: 1; min-height: 0; }
         .sz-status-actions { padding: 12px 14px 8px; flex-shrink: 0; }
-        .sz-stories-feed { flex: 1; overflow-y: auto; padding: 4px 10px 16px; display: flex; flex-direction: column; gap: 12px; }
+        .sz-stories-feed { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 4px 10px 16px; display: flex; flex-direction: column; gap: 12px; }
         .sz-story {
             background: rgba(255,255,255,.03);
             border: 1px solid rgba(255,255,255,.06);
