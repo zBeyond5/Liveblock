@@ -1,13 +1,19 @@
 // modules/phone/apps/sangzap/shell.js
 (function() {
     'use strict';
+
+    // ═══ BOOT GUARD ═══
     const ctx = window._phoneCtx;
     if (!ctx) { console.warn('[Sangzap] phone ctx ausente'); return; }
-    if (ctx.apps.get('sangzap')) return;
+    if (ctx.apps?.get?.('sangzap')) return;
 
     const APP_ID = 'sangzap';
-    const APP_VERSION = '0.3.0';
-    const BASE = (ctx.moduleBase || '') + '/apps/sangzap';
+    const APP_VERSION = '0.3.2';
+    const DEFAULT_MODULE_BASE = 'https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/modules/phone';
+    const DEFAULT_APP_BG = '#0e1621';
+
+    const MODULE_BASE = (ctx.moduleBase || DEFAULT_MODULE_BASE).replace(/\/+$/, '');
+    const BASE = MODULE_BASE + '/apps/sangzap';
 
     const ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>`;
 
@@ -15,41 +21,99 @@
     const _state = {
         activeTab: 'chats',       // 'chats' | 'stories' | 'settings'
         activeChatId: null,
-        chatMeta: null,            // { chatId, kind, number, title, ... }
+        chatMeta: null,
         searchQuery: '',
-        showArchived: false,
         myNumber: null,
         root: null,
-        screenEl: null
+        screenEl: null,
+        appBg: DEFAULT_APP_BG,
+        mounted: false,
+        destroyed: false
     };
 
+    let S = null;                  // bound dinamicamente a window._sangzapCtx
     let _moduleLoaded = false;
+    let _loadPromise = null;
     let _unreadTotal = 0;
 
+    // ═══ SAFE BINDING ═══
+    function bindS() {
+        S = window._sangzapCtx || null;
+        return S;
+    }
+
+    function safe(fn, fallback) {
+        try { return fn(); } catch(e) { console.warn('[Sangzap] safe:', e); return fallback; }
+    }
+
+    // ═══ S-ACCESSOR HELPERS (com fallbacks) ═══
+    const esc = (s) => safe(() => S?.escape?.(s), String(s ?? ''));
+    const fmtTime = (ts) => safe(() => S?.fmtTime?.(ts), '');
+    const fmtRelative = (ts) => safe(() => S?.fmtRelative?.(ts), '');
+    const timeAgo = (ts) => safe(() => S?.timeAgo?.(ts), '');
+    const shortNum = (n) => safe(() => S?.shortNum?.(n), String(n ?? ''));
+    const chatIdFor = (a, b) => safe(() => S?.chatIdFor?.(a, b), [String(a), String(b)].sort().join('-'));
+
     // ═══ MODULE LOADER ═══
-    async function loadModules() {
-        if (_moduleLoaded) return;
-        const files = ['common.js', 'roster.js', 'chat.js', 'audio.js', 'groups.js', 'settings.js', 'stories.js'];
-        for (const f of files) {
-            await new Promise((resolve) => {
-                const s = document.createElement('script');
-                s.src = `${BASE}/${f}?v=${APP_VERSION}`;
-                s.onload = resolve;
-                s.onerror = () => { console.warn('[Sangzap] falha ao carregar', f); resolve(); };
-                document.head.appendChild(s);
-            });
-        }
-        _moduleLoaded = true;
+    function loadScript(src, timeoutMs = 8000) {
+        return new Promise((resolve) => {
+            const s = document.createElement('script');
+            let settled = false;
+            const t = setTimeout(() => {
+                if (settled) return;
+                settled = true;
+                console.warn('[Sangzap] timeout ao carregar', src);
+                resolve(false);
+            }, timeoutMs);
+            const done = (ok) => {
+                if (settled) return;
+                settled = true;
+                clearTimeout(t);
+                if (!ok) console.warn('[Sangzap] falha ao carregar', src);
+                resolve(ok);
+            };
+            s.src = src;
+            s.async = true;
+            s.onload = () => done(true);
+            s.onerror = () => done(false);
+            document.head.appendChild(s);
+        });
+    }
+
+    function loadModules() {
+        if (_loadPromise) return _loadPromise;
+        _loadPromise = (async () => {
+            if (_moduleLoaded) return;
+            const files = ['common.js', 'roster.js', 'chat.js', 'audio.js', 'groups.js', 'settings.js', 'stories.js'];
+            await Promise.allSettled(files.map(f => loadScript(`${BASE}/${f}?v=${APP_VERSION}`)));
+            bindS();
+            if (!S) {
+                console.error('[Sangzap] common.js não publicou window._sangzapCtx. Base:', BASE);
+            } else {
+                console.log('[Sangzap] módulos prontos de', BASE);
+            }
+            _moduleLoaded = true;
+        })();
+        return _loadPromise;
     }
 
     // ═══ APP BAR (phone) ═══
-    function hidePhoneBar() { _state.screenEl?.classList.add('sz-hide-bar'); }
-    function showPhoneBar() { _state.screenEl?.classList.remove('sz-hide-bar'); }
+    function hidePhoneBar() { try { _state.screenEl?.classList?.add('sz-hide-bar'); } catch(_) {} }
+    function showPhoneBar() { try { _state.screenEl?.classList?.remove('sz-hide-bar'); } catch(_) {} }
 
-    // ═══ BADGE NO ÍCONE DO APP (dock) ═══
-    function _refreshAppBadge(total) {
+    // ═══ BADGE ═══
+    function refreshAppBadge(total) {
         _unreadTotal = total || 0;
-        try { ctx.apps._notify?.(); } catch(_) {}
+        try { ctx.apps?._notify?.(); } catch(_) {}
+    }
+
+    // ═══ APP BG ═══
+    function applyAppBg() {
+        const bg = _state.appBg || DEFAULT_APP_BG;
+        try {
+            _state.root?.style?.setProperty('--sz-app-bg', bg);
+            document.documentElement?.style?.setProperty('--sz-app-bg', bg);
+        } catch(_) {}
     }
 
     // ═══ NAV ═══
@@ -61,23 +125,28 @@
 
     // ═══ RENDER ═══
     function render() {
-        if (!_state.root) return;
+        if (!_state.root || _state.destroyed) return;
+        bindS();                       // garante S atualizado
+
         const root = _state.root;
+        const inSettings = _state.activeTab === 'settings' && !_state.activeChatId;
+        const inChat = !!_state.activeChatId;
+        const showTabs = !inChat && !inSettings;
 
         root.innerHTML = `
-            <div class="sz-app">
+            <div class="sz-app${inSettings ? ' sz-settings-mode' : ''}">
                 <header class="sz-hdr">
-                    <button class="sz-hdr-back" id="szBack" aria-label="Voltar">${ctx.I.back}</button>
+                    <button class="sz-hdr-back" id="szBack" aria-label="Voltar">${ctx.I?.back || '←'}</button>
                     <div class="sz-hdr-title">SANGZAP</div>
                     <button class="sz-hdr-gear" id="szGear" aria-label="Configurações" title="Configurações">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="14" height="14"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
                     </button>
                 </header>
 
-                ${!_state.activeChatId && _state.activeTab !== 'settings' ? `
-                    <div class="sz-tabs" id="szTabs">
-                        <button class="sz-tab${_state.activeTab === 'chats' ? ' active' : ''}" data-tab="chats">Conversas</button>
-                        <button class="sz-tab${_state.activeTab === 'stories' ? ' active' : ''}" data-tab="stories">Stories</button>
+                ${showTabs ? `
+                    <div class="sz-tabs" id="szTabs" role="tablist">
+                        <button class="sz-tab${_state.activeTab === 'chats' ? ' active' : ''}" data-tab="chats" role="tab" aria-selected="${_state.activeTab === 'chats'}">Conversas</button>
+                        <button class="sz-tab${_state.activeTab === 'stories' ? ' active' : ''}" data-tab="stories" role="tab" aria-selected="${_state.activeTab === 'stories'}">Stories</button>
                     </div>
                 ` : ''}
 
@@ -85,8 +154,9 @@
             </div>
         `;
 
-        root.querySelector('#szBack').addEventListener('click', goHome);
-        root.querySelector('#szGear').addEventListener('click', () => {
+        // listeners
+        root.querySelector('#szBack')?.addEventListener('click', goHome);
+        root.querySelector('#szGear')?.addEventListener('click', () => {
             _state.activeTab = 'settings';
             _state.activeChatId = null;
             _state.chatMeta = null;
@@ -94,6 +164,7 @@
         });
         root.querySelectorAll('.sz-tab').forEach(btn => {
             btn.addEventListener('click', () => {
+                if (btn.dataset.tab === _state.activeTab) return;
                 _state.activeTab = btn.dataset.tab;
                 _state.activeChatId = null;
                 _state.chatMeta = null;
@@ -102,10 +173,33 @@
         });
 
         const body = root.querySelector('#szBody');
-        if (_state.activeChatId) renderChat(body);
-        else if (_state.activeTab === 'chats') renderRoster(body);
-        else if (_state.activeTab === 'stories') S.stories?.renderTab(body, _state.myNumber);
-        else if (_state.activeTab === 'settings') S.settings?.render(body, _state.myNumber);
+        if (!body) return;
+
+        try {
+            if (inChat) renderChat(body);
+            else if (_state.activeTab === 'chats') renderRoster(body);
+            else if (_state.activeTab === 'stories') {
+                if (S?.stories?.renderTab) S.stories.renderTab(body, _state.myNumber);
+                else renderStub(body, 'Stories', 'Módulo de stories indisponível.');
+            }
+            else if (inSettings) {
+                if (S?.settings?.render) S.settings.render(body, _state.myNumber);
+                else renderStub(body, 'Ajustes', 'Módulo de ajustes indisponível.');
+            }
+        } catch(e) {
+            console.error('[Sangzap] erro de render:', e);
+            renderStub(body, 'Erro', 'Falha ao montar esta tela. Recarregue o telefone.');
+        }
+    }
+
+    function renderStub(body, title, sub) {
+        body.innerHTML = `
+            <div class="sz-stub">
+                <div class="sz-stub-icon">💬</div>
+                <div class="sz-stub-title">${esc(title)}</div>
+                <div class="sz-stub-sub">${esc(sub || '')}</div>
+            </div>
+        `;
     }
 
     // ═══ ROSTER ═══
@@ -114,7 +208,7 @@
             <div class="sz-roster">
                 <div class="sz-roster-head">
                     <div class="sz-search-wrap">
-                        <input class="sz-search" id="szSearch" type="text" placeholder="Buscar…" value="${S.escape(_state.searchQuery)}" />
+                        <input class="sz-search" id="szSearch" type="text" placeholder="Buscar…" value="${esc(_state.searchQuery)}" autocomplete="off" spellcheck="false" />
                     </div>
                     <button class="sz-new-btn" id="szNew" title="Nova conversa" aria-label="Nova conversa">+</button>
                 </div>
@@ -124,89 +218,102 @@
             </div>
         `;
 
-        body.querySelector('#szNew').addEventListener('click', openNewChatPicker);
+        body.querySelector('#szNew')?.addEventListener('click', openNewChatPicker);
 
         const list = body.querySelector('#szRosterList');
         const searchEl = body.querySelector('#szSearch');
+        if (!list || !searchEl) return;
+
         searchEl.addEventListener('input', () => {
             _state.searchQuery = searchEl.value;
-            paint(S.roster.filter(_state.searchQuery));
+            if (S?.roster) paint(S.roster.filter(_state.searchQuery));
         });
 
         function paint(entries) {
+            if (!Array.isArray(entries)) entries = [];
             if (!entries.length) {
                 list.innerHTML = `<div class="sz-empty">${_state.searchQuery ? 'Nada encontrado.' : 'Sem contatos. Adicione contatos no telefone.'}</div>`;
+                refreshAppBadge(0);
                 return;
             }
             let totalUnread = 0;
-            list.innerHTML = entries.map(c => {
+            const html = entries.map(c => {
+                if (!c || !c.chatId) return '';
                 const unread = c.unread || 0;
                 totalUnread += unread;
                 const isGroup = c.kind === 'group';
                 const online = !isGroup && c.online;
+                const title = c.title || shortNum(c.number || '');
+                const initial = (title || '?').trim()[0]?.toUpperCase() || '?';
                 const avatar = c.avatar
-                    ? `<img src="${S.escape(c.avatar)}" alt="" />`
-                    : `<span class="sz-av-fallback">${S.escape((c.title || '?')[0].toUpperCase())}</span>`;
+                    ? `<img src="${esc(c.avatar)}" alt="" loading="lazy" onerror="this.replaceWith(document.createTextNode('${esc(initial)}'))" />`
+                    : `<span class="sz-av-fallback">${esc(initial)}</span>`;
                 const dot = online ? `<span class="sz-online-dot" title="Online"></span>` : '';
                 const pin = c.pinned ? `<span class="sz-pin" title="Fixado">📌</span>` : '';
                 const mute = c.muted ? `<span class="sz-mute" title="Silenciado">🔇</span>` : '';
-                const recadoLine = c.recado && !c.lastMessage
-                    ? `<span class="sz-item-preview sz-item-recado">${S.escape(c.recado)}</span>`
-                    : `<span class="sz-item-preview">${S.escape(c.lastMessage || (isGroup ? '' : c.recado || 'Toque para conversar'))}</span>`;
+                const preview = c.recado && !c.lastMessage
+                    ? `<span class="sz-item-preview sz-item-recado">${esc(c.recado)}</span>`
+                    : `<span class="sz-item-preview">${esc(c.lastMessage || (isGroup ? '' : c.recado || 'Toque para conversar'))}</span>`;
                 const timeTxt = c.lastMessageAt
-                    ? S.fmtRelative(c.lastMessageAt)
-                    : (online ? 'online' : (c.lastSeen ? S.timeAgo(c.lastSeen) : ''));
+                    ? fmtRelative(c.lastMessageAt)
+                    : (online ? 'online' : (c.lastSeen ? timeAgo(c.lastSeen) : ''));
                 return `
-                    <button class="sz-item" data-chat="${S.escape(c.chatId)}" data-kind="${c.kind}" data-num="${S.escape(c.number || '')}">
+                    <button class="sz-item" data-chat="${esc(c.chatId)}" data-kind="${esc(c.kind || '1:1')}" data-num="${esc(c.number || '')}" type="button">
                         <div class="sz-avatar">${avatar}${dot}</div>
                         <div class="sz-item-body">
                             <div class="sz-item-top">
-                                <span class="sz-item-title">${pin}${S.escape(c.title)}${mute}</span>
-                                <span class="sz-item-time">${timeTxt}</span>
+                                <span class="sz-item-title">${pin}${esc(title)}${mute}</span>
+                                <span class="sz-item-time">${esc(timeTxt)}</span>
                             </div>
                             <div class="sz-item-bot">
-                                ${recadoLine}
+                                ${preview}
                                 ${unread ? `<span class="sz-item-badge">${unread > 99 ? '99+' : unread}</span>` : ''}
                             </div>
                         </div>
                     </button>
                 `;
             }).join('');
-
-            _refreshAppBadge(totalUnread);
+            list.innerHTML = html;
+            refreshAppBadge(totalUnread);
 
             list.querySelectorAll('.sz-item').forEach(btn => {
                 const entry = entries.find(x => x.chatId === btn.dataset.chat);
                 if (!entry) return;
-                let longPressTimer = null;
-                let longPressFired = false;
+                let lpTimer = null;
+                let lpFired = false;
 
-                btn.addEventListener('click', (ev) => {
-                    if (longPressFired) { longPressFired = false; return; }
+                btn.addEventListener('click', () => {
+                    if (lpFired) { lpFired = false; return; }
                     openChat(entry.chatId, entry);
                 });
                 btn.addEventListener('contextmenu', (ev) => {
                     ev.preventDefault();
                     openContextMenu(entry);
                 });
-                btn.addEventListener('pointerdown', () => {
-                    longPressFired = false;
-                    longPressTimer = setTimeout(() => {
-                        longPressFired = true;
-                        openContextMenu(entry);
-                    }, 550);
+                btn.addEventListener('pointerdown', (ev) => {
+                    if (ev.pointerType === 'mouse' && ev.button !== 0) return;
+                    lpFired = false;
+                    lpTimer = setTimeout(() => { lpFired = true; openContextMenu(entry); }, 550);
                 });
                 ['pointerup', 'pointerleave', 'pointercancel'].forEach(evt =>
-                    btn.addEventListener(evt, () => { if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; } })
+                    btn.addEventListener(evt, () => { if (lpTimer) { clearTimeout(lpTimer); lpTimer = null; } })
                 );
             });
         }
 
-        S.roster.start(_state.myNumber, () => paint(S.roster.filter(_state.searchQuery)));
+        if (S?.roster?.start) {
+            S.roster.start(_state.myNumber, () => {
+                if (!_state.mounted) return;
+                paint(S.roster.filter(_state.searchQuery));
+            });
+        } else {
+            list.innerHTML = `<div class="sz-empty">Módulo de contatos não carregou. Recarregue o telefone.</div>`;
+        }
     }
 
     function openContextMenu(entry) {
-        const body = _state.root.querySelector('#szBody');
+        const body = _state.root?.querySelector('#szBody');
+        if (!body) return;
         const menu = document.createElement('div');
         menu.className = 'sz-ctx-menu';
         menu.innerHTML = `
@@ -215,15 +322,17 @@
             <button class="sz-ctx-item" data-act="archive">${entry.archived ? 'Restaurar' : 'Arquivar'}</button>
         `;
         body.appendChild(menu);
-        const close = () => menu.remove();
+        const close = () => { try { menu.remove(); } catch(_) {} };
         setTimeout(() => document.addEventListener('click', close, { once: true }), 0);
         menu.querySelectorAll('.sz-ctx-item').forEach(btn => {
             btn.addEventListener('click', async (ev) => {
                 ev.stopPropagation();
                 const act = btn.dataset.act;
-                if (act === 'pin') await S.roster.pin(entry.chatId, !entry.pinned);
-                if (act === 'mute') await S.roster.mute(entry.chatId, !entry.muted);
-                if (act === 'archive') await S.roster.archive(entry.chatId, !entry.archived);
+                try {
+                    if (act === 'pin' && S?.roster?.pin) await S.roster.pin(entry.chatId, !entry.pinned);
+                    if (act === 'mute' && S?.roster?.mute) await S.roster.mute(entry.chatId, !entry.muted);
+                    if (act === 'archive' && S?.roster?.archive) await S.roster.archive(entry.chatId, !entry.archived);
+                } catch(_) {}
                 close();
             });
         });
@@ -231,8 +340,9 @@
 
     // ═══ NEW CHAT ═══
     function openNewChatPicker() {
-        const contacts = (ctx.contacts?.contacts || []);
-        const body = _state.root.querySelector('#szBody');
+        const contacts = ctx.contacts?.contacts || [];
+        const body = _state.root?.querySelector('#szBody');
+        if (!body) return;
         const modal = document.createElement('div');
         modal.className = 'sz-modal';
         modal.innerHTML = `
@@ -240,25 +350,27 @@
                 <div class="sz-modal-title">Nova conversa</div>
                 <div class="sz-modal-list">
                     ${contacts.length ? contacts.map(c => {
-                        const n = c.number || c.num;
+                        const n = c?.number || c?.num;
                         if (!n || n === _state.myNumber) return '';
-                        return `<button class="sz-item sz-pick" data-num="${S.escape(n)}">
-                            <div class="sz-avatar"><span class="sz-av-fallback">${S.escape((c.name || '?')[0].toUpperCase())}</span></div>
+                        const name = c.name || shortNum(n);
+                        const initial = (name || '?')[0].toUpperCase();
+                        return `<button class="sz-item sz-pick" data-num="${esc(n)}" type="button">
+                            <div class="sz-avatar"><span class="sz-av-fallback">${esc(initial)}</span></div>
                             <div class="sz-item-body">
-                                <div class="sz-item-title">${S.escape(c.name || S.shortNum(n))}</div>
-                                <div class="sz-item-preview">${S.escape(S.shortNum(n))}</div>
+                                <div class="sz-item-title">${esc(name)}</div>
+                                <div class="sz-item-preview">${esc(shortNum(n))}</div>
                             </div>
                         </button>`;
                     }).join('') : `<div class="sz-empty">Sem contatos no telefone.</div>`}
                 </div>
-                <button class="sz-btn ghost" id="szNewGroupBtn">Novo grupo</button>
-                <button class="sz-modal-cancel" id="szPickCancel">Cancelar</button>
+                <button class="sz-btn ghost" id="szNewGroupBtn" type="button">Novo grupo</button>
+                <button class="sz-modal-cancel" id="szPickCancel" type="button">Cancelar</button>
             </div>
         `;
         body.appendChild(modal);
 
-        modal.querySelector('#szPickCancel').addEventListener('click', () => modal.remove());
-        modal.querySelector('#szNewGroupBtn').addEventListener('click', () => {
+        modal.querySelector('#szPickCancel')?.addEventListener('click', () => modal.remove());
+        modal.querySelector('#szNewGroupBtn')?.addEventListener('click', () => {
             modal.remove();
             openGroupPicker();
         });
@@ -266,10 +378,10 @@
             btn.addEventListener('click', async () => {
                 const num = btn.dataset.num;
                 if (!num || num === _state.myNumber) return;
-                const chatId = S.chatIdFor(_state.myNumber, num);
+                const chatId = chatIdFor(_state.myNumber, num);
                 modal.remove();
                 try {
-                    await ctx.bridge.firestore.request('PATCH', `/sangzap_chats/${chatId}`, {
+                    await ctx.bridge?.firestore?.request?.('PATCH', `/sangzap_chats/${chatId}`, {
                         kind: '1:1',
                         members: [_state.myNumber, num].sort(),
                         createdAt: Date.now(),
@@ -278,15 +390,16 @@
                         lastMessageAt: 0
                     });
                 } catch(_) {}
-                openChat(chatId, { chatId, kind: '1:1', number: num, title: S.shortNum(num) });
+                openChat(chatId, { chatId, kind: '1:1', number: num, title: shortNum(num) });
             });
         });
     }
 
     function openGroupPicker() {
-        const contacts = (ctx.contacts?.contacts || []);
+        const contacts = ctx.contacts?.contacts || [];
         const sel = new Set();
-        const body = _state.root.querySelector('#szBody');
+        const body = _state.root?.querySelector('#szBody');
+        if (!body) return;
         const m = document.createElement('div');
         m.className = 'sz-modal';
         m.innerHTML = `
@@ -297,18 +410,20 @@
                 </div>
                 <div class="sz-modal-list">
                     ${contacts.map(c => {
-                        const n = c.number || c.num;
+                        const n = c?.number || c?.num;
                         if (!n || n === _state.myNumber) return '';
-                        return `<button class="sz-item sz-gpick" data-num="${S.escape(n)}">
-                            <div class="sz-avatar"><span class="sz-av-fallback">${S.escape((c.name || '?')[0].toUpperCase())}</span></div>
-                            <div class="sz-item-body"><div class="sz-item-title">${S.escape(c.name || S.shortNum(n))}</div></div>
+                        const name = c.name || shortNum(n);
+                        const initial = (name || '?')[0].toUpperCase();
+                        return `<button class="sz-item sz-gpick" data-num="${esc(n)}" type="button">
+                            <div class="sz-avatar"><span class="sz-av-fallback">${esc(initial)}</span></div>
+                            <div class="sz-item-body"><div class="sz-item-title">${esc(name)}</div></div>
                             <span class="sz-check">○</span>
                         </button>`;
                     }).join('')}
                 </div>
                 <div class="sz-modal-actions">
-                    <button class="sz-btn" id="szGCancel">Cancelar</button>
-                    <button class="sz-btn sz-btn-primary" id="szGCreate">Criar</button>
+                    <button class="sz-btn" id="szGCancel" type="button">Cancelar</button>
+                    <button class="sz-btn sz-btn-primary" id="szGCreate" type="button">Criar</button>
                 </div>
             </div>
         `;
@@ -319,14 +434,17 @@
                 const n = btn.dataset.num;
                 if (sel.has(n)) sel.delete(n); else sel.add(n);
                 btn.classList.toggle('selected', sel.has(n));
-                btn.querySelector('.sz-check').textContent = sel.has(n) ? '●' : '○';
+                const chk = btn.querySelector('.sz-check');
+                if (chk) chk.textContent = sel.has(n) ? '●' : '○';
             });
         });
-        m.querySelector('#szGCancel').addEventListener('click', () => m.remove());
-        m.querySelector('#szGCreate').addEventListener('click', async () => {
-            const name = m.querySelector('#szGroupName').value.trim() || 'Grupo';
+        m.querySelector('#szGCancel')?.addEventListener('click', () => m.remove());
+        m.querySelector('#szGCreate')?.addEventListener('click', async () => {
+            const nameEl = m.querySelector('#szGroupName');
+            const name = (nameEl?.value || '').trim() || 'Grupo';
             if (sel.size < 2) { ctx.toast?.('Escolha 2+ contatos', 'err'); return; }
             try {
+                if (!S?.groups?.create) throw new Error('módulo de grupos ausente');
                 const chat = await S.groups.create(name, [...sel]);
                 m.remove();
                 ctx.toast?.('Grupo criado', 'ok');
@@ -345,11 +463,12 @@
         render();
     }
     function closeChat() {
-        // para áudios em curso
         try {
-            _state.root?.querySelectorAll('.sz-msg-audio audio').forEach(a => { try { a.pause(); a.currentTime = 0; } catch(_) {} });
+            _state.root?.querySelectorAll('.sz-msg-audio audio').forEach(a => {
+                try { a.pause(); a.currentTime = 0; } catch(_) {}
+            });
         } catch(_) {}
-        try { S.chat?.close(); } catch(_) {}
+        try { S?.chat?.close?.(); } catch(_) {}
         _state.activeChatId = null;
         _state.chatMeta = null;
         render();
@@ -358,52 +477,54 @@
     function renderChat(body) {
         const meta = _state.chatMeta || {};
         const isGroup = meta.kind === 'group';
-        const title = meta.title || (meta.kind === '1:1' ? S.shortNum(meta.number) : 'Chat');
+        const title = meta.title || (meta.kind === '1:1' && meta.number ? shortNum(meta.number) : 'Chat');
 
         body.innerHTML = `
             <div class="sz-chat">
                 <div class="sz-chat-head">
                     <button class="sz-chat-back" id="szChatBack" aria-label="Voltar">‹</button>
-                    <div class="sz-chat-title">${S.escape(title)}</div>
+                    <div class="sz-chat-title">${esc(title)}</div>
                     ${!isGroup && meta.number ? `<button class="sz-chat-call" id="szChatCall" title="Ligar" aria-label="Ligar">📞</button>` : ''}
                 </div>
                 <div class="sz-chat-thread" id="szThread"></div>
                 <div class="sz-chat-typing" id="szTyping"></div>
                 <div class="sz-chat-input">
-                    <button class="sz-chat-plus" id="szChatPlus" title="Anexar" aria-label="Anexar">+</button>
-                    <input class="sz-chat-field" id="szField" type="text" placeholder="Mensagem" maxlength="4000" />
-                    <button class="sz-chat-mic" id="szMic" title="Segurar para gravar" aria-label="Gravar">🎤</button>
-                    <button class="sz-chat-send" id="szSend" aria-label="Enviar">↑</button>
+                    <button class="sz-chat-plus" id="szChatPlus" title="Anexar" aria-label="Anexar" type="button">+</button>
+                    <input class="sz-chat-field" id="szField" type="text" placeholder="Mensagem" maxlength="4000" autocomplete="off" />
+                    <button class="sz-chat-mic" id="szMic" title="Segurar para gravar" aria-label="Gravar" type="button">🎤</button>
+                    <button class="sz-chat-send" id="szSend" aria-label="Enviar" type="button">↑</button>
                 </div>
             </div>
         `;
 
-        body.querySelector('#szChatBack').addEventListener('click', closeChat);
+        body.querySelector('#szChatBack')?.addEventListener('click', closeChat);
 
         const callBtn = body.querySelector('#szChatCall');
-        if (callBtn && meta.number) callBtn.addEventListener('click', () => {
-            try {
-                if (typeof ctx.calls?.call === 'function') {
-                    ctx.calls.call([meta.number]);
-                } else {
-                    ctx.toast?.('Chamadas indisponíveis', 'err');
-                }
-            } catch(e) { console.warn('[Sangzap] call:', e); }
-        });
+        if (callBtn && meta.number) {
+            callBtn.addEventListener('click', () => {
+                try {
+                    if (typeof ctx.calls?.call === 'function') ctx.calls.call([meta.number]);
+                    else ctx.toast?.('Chamadas indisponíveis', 'err');
+                } catch(e) { console.warn('[Sangzap] call:', e); }
+            });
+        }
 
         const thread = body.querySelector('#szThread');
         const typingEl = body.querySelector('#szTyping');
         const field = body.querySelector('#szField');
+        if (!thread || !typingEl || !field) return;
 
         function paint(msgs, typing) {
+            if (!Array.isArray(msgs)) msgs = [];
             const stick = isNearBottom(thread);
             const msgsById = {};
-            for (const m of msgs) msgsById[m.id] = m;
+            for (const m of msgs) if (m && m.id) msgsById[m.id] = m;
 
             thread.innerHTML = msgs.map(m => {
+                if (!m) return '';
                 const mine = m.from === _state.myNumber;
                 if (m.kind === 'system') {
-                    return `<div class="sz-msg-system">${S.escape(m.body || '')}</div>`;
+                    return `<div class="sz-msg-system">${esc(m.body || '')}</div>`;
                 }
                 if (m.deletedAt) {
                     return `<div class="sz-msg${mine ? ' mine' : ''}"><div class="sz-msg-bubble sz-msg-deleted">Mensagem apagada</div></div>`;
@@ -412,24 +533,24 @@
                 const isImage = m.kind === 'image';
                 const isStoryReply = m.kind === 'story-reply';
                 let bodyHtml;
-                if (isAudio) bodyHtml = `<div class="sz-msg-audio" data-audio-id="${S.escape(m.id)}"></div>`;
-                else if (isImage) bodyHtml = `<div class="sz-msg-image"><img src="${S.escape(m.media || '')}" alt="" loading="lazy" /></div>`;
-                else bodyHtml = `<div class="sz-msg-text">${S.escape(m.body || '')}</div>`;
+                if (isAudio) bodyHtml = `<div class="sz-msg-audio" data-audio-id="${esc(m.id)}"></div>`;
+                else if (isImage) bodyHtml = `<div class="sz-msg-image"><img src="${esc(m.media || '')}" alt="" loading="lazy" /></div>`;
+                else bodyHtml = `<div class="sz-msg-text">${esc(m.body || '')}</div>`;
 
                 const reply = m.replyTo && msgsById[m.replyTo]
-                    ? `<div class="sz-msg-reply">${S.escape((msgsById[m.replyTo].body || '').slice(0, 60))}</div>`
+                    ? `<div class="sz-msg-reply">${esc((msgsById[m.replyTo].body || '').slice(0, 60))}</div>`
                     : '';
                 const storyTag = isStoryReply ? `<div class="sz-msg-story-tag">💬 Story</div>` : '';
 
                 return `
-                    <div class="sz-msg${mine ? ' mine' : ''}" data-msg="${S.escape(m.id)}">
+                    <div class="sz-msg${mine ? ' mine' : ''}" data-msg="${esc(m.id)}">
                         <div class="sz-msg-bubble">
                             ${reply}
                             ${storyTag}
                             ${bodyHtml}
                             <div class="sz-msg-meta">
                                 ${m.editedAt ? `<span class="sz-edited">editado</span>` : ''}
-                                <span>${S.fmtTime(m.sentAt)}</span>
+                                <span>${esc(fmtTime(m.sentAt))}</span>
                                 ${mine ? `<span class="sz-tick">${m.readAt ? '✓✓' : m.deliveredAt ? '✓✓' : '✓'}</span>` : ''}
                             </div>
                         </div>
@@ -439,25 +560,24 @@
 
             thread.querySelectorAll('.sz-msg-audio').forEach(el => {
                 const msg = msgsById[el.dataset.audioId];
-                if (msg && S.audio) S.audio.renderInto(el, msg);
+                if (msg && S?.audio?.renderInto) {
+                    try { S.audio.renderInto(el, msg); } catch(_) {}
+                }
             });
 
             thread.querySelectorAll('.sz-msg').forEach(el => {
                 const msg = msgsById[el.dataset.msg];
                 if (!msg) return;
-                let longPressTimer = null;
-                let longPressFired = false;
-
+                let lpTimer = null;
+                let lpFired = false;
                 el.addEventListener('contextmenu', (ev) => { ev.preventDefault(); openMsgMenu(msg); });
-                el.addEventListener('pointerdown', () => {
-                    longPressFired = false;
-                    longPressTimer = setTimeout(() => {
-                        longPressFired = true;
-                        openMsgMenu(msg);
-                    }, 550);
+                el.addEventListener('pointerdown', (ev) => {
+                    if (ev.pointerType === 'mouse' && ev.button !== 0) return;
+                    lpFired = false;
+                    lpTimer = setTimeout(() => { lpFired = true; openMsgMenu(msg); }, 550);
                 });
                 ['pointerup', 'pointerleave', 'pointercancel'].forEach(evt =>
-                    el.addEventListener(evt, () => { if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; } })
+                    el.addEventListener(evt, () => { if (lpTimer) { clearTimeout(lpTimer); lpTimer = null; } })
                 );
             });
 
@@ -470,36 +590,43 @@
         function openMsgMenu(msg) {
             const menu = document.createElement('div');
             menu.className = 'sz-ctx-menu';
-            const canEdit = S.chat.canEdit(msg);
+            const canEdit = S?.chat?.canEdit?.(msg) || false;
             menu.innerHTML = `
                 <button class="sz-ctx-item" data-act="reply">Responder</button>
                 ${canEdit ? `<button class="sz-ctx-item" data-act="edit">Editar</button>` : ''}
                 <button class="sz-ctx-item danger" data-act="delete">Apagar</button>
             `;
             body.appendChild(menu);
-            const close = () => menu.remove();
+            const close = () => { try { menu.remove(); } catch(_) {} };
             setTimeout(() => document.addEventListener('click', close, { once: true }), 0);
             menu.querySelectorAll('.sz-ctx-item').forEach(btn => {
                 btn.addEventListener('click', async (ev) => {
                     ev.stopPropagation();
                     const act = btn.dataset.act;
-                    if (act === 'reply') {
-                        field.value = '';
-                        field.dataset.replyTo = msg.id;
-                        field.placeholder = 'Responder…';
-                        field.focus();
-                    } else if (act === 'edit') {
-                        const text = prompt('Editar mensagem:', msg.body);
-                        if (text != null) await S.chat.edit(msg.id, text);
-                    } else if (act === 'delete') {
-                        if (confirm('Apagar esta mensagem?')) await S.chat.delete(msg.id);
-                    }
+                    try {
+                        if (act === 'reply') {
+                            field.value = '';
+                            field.dataset.replyTo = msg.id;
+                            field.placeholder = 'Responder…';
+                            field.focus();
+                        } else if (act === 'edit') {
+                            const text = prompt('Editar mensagem:', msg.body);
+                            if (text != null && S?.chat?.edit) await S.chat.edit(msg.id, text);
+                        } else if (act === 'delete') {
+                            if (confirm('Apagar esta mensagem?') && S?.chat?.delete) await S.chat.delete(msg.id);
+                        }
+                    } catch(e) { console.warn('[Sangzap] msg act:', e); }
                     close();
                 });
             });
         }
 
-        S.chat.open(_state.activeChatId, _state.myNumber, meta, paint);
+        if (S?.chat?.open) {
+            try { S.chat.open(_state.activeChatId, _state.myNumber, meta, paint); }
+            catch(e) { console.warn('[Sangzap] chat.open:', e); }
+        } else {
+            thread.innerHTML = `<div class="sz-empty">Chat indisponível. Recarregue o telefone.</div>`;
+        }
 
         function send() {
             const text = field.value.trim();
@@ -508,42 +635,46 @@
             field.value = '';
             field.placeholder = 'Mensagem';
             delete field.dataset.replyTo;
-            S.chat.send(text, replyTo ? { replyTo } : undefined).catch(e => console.warn('[Sangzap] send:', e));
+            if (!S?.chat?.send) return;
+            S.chat.send(text, replyTo ? { replyTo } : undefined)
+                .catch(e => console.warn('[Sangzap] send:', e));
         }
 
-        body.querySelector('#szSend').addEventListener('click', send);
+        body.querySelector('#szSend')?.addEventListener('click', send);
         field.addEventListener('keydown', (e) => {
             if (e.key === 'Enter') { e.preventDefault(); send(); }
         });
-        field.addEventListener('input', () => S.chat.typing());
+        field.addEventListener('input', () => { try { S?.chat?.typing?.(); } catch(_) {} });
 
-        // Mic — segurar pra gravar
+        // Mic
         const mic = body.querySelector('#szMic');
-        let _recActive = false;
-        mic.addEventListener('pointerdown', async (ev) => {
-            ev.preventDefault();
-            _recActive = true;
-            const ok = await S.audio.start(
-                (state) => mic.classList.toggle('rec', state === 'rec'),
-                (payload) => {
-                    if (!_recActive) return;
-                    S.chat.sendAudio(payload).catch(() => {});
-                }
-            );
-            if (!ok) _recActive = false;
-        });
-        const stopRec = () => {
-            if (_recActive) { _recActive = false; S.audio.stop(); }
-        };
-        mic.addEventListener('pointerup', (ev) => { ev.preventDefault(); stopRec(); });
-        mic.addEventListener('pointerleave', stopRec);
-        mic.addEventListener('pointercancel', stopRec);
+        if (mic) {
+            let recActive = false;
+            mic.addEventListener('pointerdown', async (ev) => {
+                ev.preventDefault();
+                if (!S?.audio?.start) { ctx.toast?.('Áudio indisponível', 'err'); return; }
+                recActive = true;
+                const ok = await S.audio.start(
+                    (state) => mic.classList.toggle('rec', state === 'rec'),
+                    (payload) => { if (recActive) S.chat?.sendAudio?.(payload)?.catch?.(() => {}); }
+                );
+                if (!ok) recActive = false;
+            });
+            const stopRec = () => {
+                if (recActive) { recActive = false; try { S?.audio?.stop?.(); } catch(_) {} }
+            };
+            mic.addEventListener('pointerup', (ev) => { ev.preventDefault(); stopRec(); });
+            mic.addEventListener('pointerleave', stopRec);
+            mic.addEventListener('pointercancel', stopRec);
+        }
 
-        // Anexo (imagem)
-        body.querySelector('#szChatPlus').addEventListener('click', async () => {
-            const dataUrl = await S.settings?.pickAndCropSquare?.();
+        // Anexo
+        body.querySelector('#szChatPlus')?.addEventListener('click', async () => {
+            if (!S?.settings?.pickAndCropSquare) return;
+            const dataUrl = await S.settings.pickAndCropSquare();
             if (!dataUrl) return;
-            await S.chat.sendImage({ media: dataUrl, mime: 'image/jpeg', size: dataUrl.length });
+            try { await S.chat?.sendImage?.({ media: dataUrl, mime: 'image/jpeg', size: dataUrl.length }); }
+            catch(_) {}
         });
     }
 
@@ -558,48 +689,87 @@
         icon: ICON,
         accent: '#25d366',
         bg: 'linear-gradient(135deg, #25d366, #128c7e)',
+        appBg: DEFAULT_APP_BG,       // ⚠️ cor de fundo do app
         order: 5,
         dock: true,
 
-        // badge no ícone da dock quando o phone expor esse hook
         get badge() { return _unreadTotal || 0; },
 
         async mount(root, appCtx) {
+            if (!root) { console.warn('[Sangzap] mount sem root'); return; }
+            if (_state.mounted) {
+                // re-mount defensivo: desmonta o anterior
+                try { this.unmount(); } catch(_) {}
+            }
+
             _state.root = root;
-            _state.myNumber = appCtx.myNumber;
-            _state.screenEl = appCtx.screenEl;
+            _state.myNumber = appCtx?.myNumber || ctx.myNumber || '';
+            _state.screenEl = appCtx?.screenEl || ctx.screenEl || null;
+            _state.appBg = appCtx?.appBg || ctx.appBg || DEFAULT_APP_BG;
             _state.activeTab = 'chats';
             _state.activeChatId = null;
             _state.chatMeta = null;
             _state.searchQuery = '';
+            _state.mounted = true;
+            _state.destroyed = false;
 
-            // isola a tela: esconde a app-bar do phone, ancora o app no root
             hidePhoneBar();
+            applyAppBg();
 
-            // garante que o root tenha contexto de posicionamento
             root.style.position = 'relative';
             root.style.height = '100%';
             root.style.minHeight = '0';
             root.style.overflow = 'hidden';
             root.style.display = 'block';
 
+            // feedback visual imediato enquanto módulos carregam
+            root.innerHTML = `
+                <div class="sz-app">
+                    <header class="sz-hdr">
+                        <button class="sz-hdr-back" aria-label="Voltar">${ctx.I?.back || '←'}</button>
+                        <div class="sz-hdr-title">SANGZAP</div>
+                    </header>
+                    <div class="sz-body">
+                        <div class="sz-stub">
+                            <div class="sz-stub-icon">💬</div>
+                            <div class="sz-stub-title">Carregando…</div>
+                            <div class="sz-stub-sub">Buscando módulos</div>
+                        </div>
+                    </div>
+                </div>
+            `;
+
             await loadModules();
+
+            if (_state.destroyed) return;    // unmount rolou durante load
+
+            bindS();
 
             // tema persistido
             try {
-                const prof = await S.settings?.get?.(appCtx.myNumber);
-                if (prof?.theme) document.documentElement.dataset.szTheme = prof.theme;
+                if (S?.settings?.get && _state.myNumber) {
+                    const prof = await S.settings.get(_state.myNumber);
+                    if (prof?.theme) document.documentElement.dataset.szTheme = prof.theme;
+                }
             } catch(_) {}
 
+            if (_state.destroyed) return;
             render();
         },
 
         unmount() {
+            _state.mounted = false;
+            _state.destroyed = true;
             showPhoneBar();
-            try { S.roster?.stop(); } catch(_) {}
-            try { S.chat?.close(); } catch(_) {}
-            try { S.stories?.stop(); } catch(_) {}
-            try { S.audio?.cancel?.(); } catch(_) {}
+            try { S?.roster?.stop?.(); } catch(_) {}
+            try { S?.chat?.close?.(); } catch(_) {}
+            try { S?.stories?.stop?.(); } catch(_) {}
+            try { S?.audio?.cancel?.(); } catch(_) {}
+            try {
+                _state.root?.querySelectorAll('.sz-msg-audio audio').forEach(a => {
+                    try { a.pause(); } catch(_) {}
+                });
+            } catch(_) {}
             _state.root = null;
             _state.chatMeta = null;
             _state.activeChatId = null;
@@ -608,32 +778,30 @@
 
     // ═══ CSS ═══
     ctx.appendStyle(`
-        :root { --sz-accent: #25d366; --sz-accent2: #128c7e; }
+        :root { --sz-accent: #25d366; --sz-accent2: #128c7e; --sz-app-bg: ${DEFAULT_APP_BG}; }
         :root[data-sz-theme="roxo"] { --sz-accent: #a78bfa; --sz-accent2: #7c3aed; }
         :root[data-sz-theme="azul"] { --sz-accent: #38bdf8; --sz-accent2: #0284c7; }
 
-        /* Esconde a app-bar do phone enquanto o Sangzap está montado */
         .ph-screen.sz-hide-bar .ph-app-bar { display: none !important; }
 
         .sz-app {
-            position: absolute;
-            inset: 0;
-            display: flex;
-            flex-direction: column;
-            min-height: 0;
-            overflow: hidden;
+            position: absolute; inset: 0;
+            display: flex; flex-direction: column;
+            min-height: 0; overflow: hidden;
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
             color: #e9ecf5;
-            background: linear-gradient(175deg, #0e1621 0%, #0b1218 100%);
+            background: var(--sz-app-bg, #0e1621);
+            transition: background .22s ease;
         }
 
+        /* Header */
         .sz-hdr {
             display: flex; align-items: center; gap: 8px;
             padding: 10px 12px;
-            background: linear-gradient(180deg, rgba(14,22,33,.97), rgba(14,22,33,.85));
-            backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
-            flex-shrink: 0;
+            background: linear-gradient(180deg, rgba(255,255,255,.03), transparent);
             border-bottom: 1px solid rgba(255,255,255,.05);
+            flex-shrink: 0;
+            backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
         }
         .sz-hdr-back, .sz-hdr-gear {
             width: 30px; height: 30px; flex-shrink: 0;
@@ -642,74 +810,82 @@
             border: 1px solid rgba(255,255,255,.12);
             color: #c7cad6; cursor: pointer; padding: 0;
             display: flex; align-items: center; justify-content: center;
-            transition: all .16s cubic-bezier(.22,1,.36,1);
+            transition: all .18s cubic-bezier(.22,1,.36,1);
         }
         .sz-hdr-back svg { width: 13px; height: 13px; }
         .sz-hdr-back:hover, .sz-hdr-gear:hover {
             background: rgba(37,211,102,.16); color: #86efac; border-color: rgba(37,211,102,.4);
+            transform: translateY(-1px);
         }
+        .sz-hdr-back:active, .sz-hdr-gear:active { transform: translateY(0) scale(.94); }
         .sz-hdr-title {
             flex: 1;
             font-size: 13px; font-weight: 800; letter-spacing: .1em;
             background: linear-gradient(100deg, var(--sz-accent), #22d3ee, var(--sz-accent));
             background-size: 220% auto;
             -webkit-background-clip: text; background-clip: text; color: transparent;
-            animation: phScreenBlink 3.2s ease-in-out infinite;
+            animation: szBlink 3.2s ease-in-out infinite;
             text-transform: uppercase;
         }
 
         .sz-tabs {
             display: grid; grid-template-columns: repeat(2, 1fr);
             border-bottom: 1px solid rgba(255,255,255,.05);
-            background: rgba(0,0,0,.2);
+            background: rgba(0,0,0,.15);
             flex-shrink: 0;
         }
         .sz-tab {
-            padding: 10px 4px; font-size: 11px; font-weight: 700;
+            padding: 11px 4px; font-size: 11px; font-weight: 700;
             color: #8a90a8; background: transparent; border: none; cursor: pointer;
             font-family: inherit; position: relative;
-            transition: color .16s, background .16s;
+            transition: color .18s, background .18s;
         }
         .sz-tab:hover { color: #d1d5db; background: rgba(255,255,255,.03); }
         .sz-tab.active { color: var(--sz-accent); }
         .sz-tab.active::after {
             content: ''; position: absolute; bottom: 0; left: 30%; right: 30%;
             height: 2px; background: linear-gradient(90deg, var(--sz-accent), #22d3ee);
-            border-radius: 2px;
+            border-radius: 2px 2px 0 0;
+            animation: szSlideIn .28s cubic-bezier(.22,1,.36,1);
         }
 
         .sz-body {
-            flex: 1 1 auto;
-            min-height: 0;
-            overflow: hidden;
-            display: flex;
-            flex-direction: column;
-            position: relative;
+            flex: 1 1 auto; min-height: 0; overflow: hidden;
+            display: flex; flex-direction: column; position: relative;
         }
 
-        /* ═══ ROSTER ═══ */
+        /* Stub */
+        .sz-stub {
+            flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
+            gap: 8px; padding: 32px; text-align: center;
+        }
+        .sz-stub-icon { font-size: 38px; opacity: .35; margin-bottom: 6px; }
+        .sz-stub-title { font-size: 15px; font-weight: 800; color: #e9ecf5; }
+        .sz-stub-sub { font-size: 11px; color: #6b7280; line-height: 1.5; max-width: 240px; }
+
+        /* Roster */
         .sz-roster { display: flex; flex-direction: column; flex: 1; min-height: 0; }
         .sz-roster-head { display: flex; align-items: center; gap: 8px; padding: 10px 12px 8px; flex-shrink: 0; }
         .sz-search-wrap { flex: 1; min-width: 0; }
         .sz-search {
-            width: 100%; padding: 8px 12px; border-radius: 20px;
+            width: 100%; padding: 9px 14px; border-radius: 20px;
             background: rgba(255,255,255,.05); border: 1px solid rgba(255,255,255,.08);
             color: #e9ecf5; font-family: inherit; font-size: 11.5px; outline: none;
             box-sizing: border-box;
-            transition: border-color .16s, background .16s;
+            transition: border-color .18s, background .18s, box-shadow .18s;
         }
         .sz-search::placeholder { color: #5c6280; }
-        .sz-search:focus { border-color: rgba(37,211,102,.45); background: rgba(255,255,255,.07); }
+        .sz-search:focus { border-color: rgba(37,211,102,.5); background: rgba(255,255,255,.07); box-shadow: 0 0 0 3px rgba(37,211,102,.12); }
 
         .sz-new-btn {
             width: 32px; height: 32px; border-radius: 50%; flex-shrink: 0;
             background: linear-gradient(135deg, var(--sz-accent), var(--sz-accent2));
             border: none; color: #fff; font-size: 18px; font-weight: 700;
             cursor: pointer; line-height: 1;
-            box-shadow: 0 4px 12px rgba(37,211,102,.3);
-            transition: transform .16s cubic-bezier(.22,1,.36,1);
+            box-shadow: 0 4px 12px rgba(37,211,102,.35);
+            transition: transform .18s cubic-bezier(.22,1,.36,1), box-shadow .18s;
         }
-        .sz-new-btn:hover { transform: scale(1.06); }
+        .sz-new-btn:hover { transform: scale(1.06); box-shadow: 0 6px 16px rgba(37,211,102,.5); }
         .sz-new-btn:active { transform: scale(.94); }
 
         .sz-roster-list { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 0 8px 12px; }
@@ -721,27 +897,30 @@
             width: 100%; padding: 10px;
             background: transparent; border: none; cursor: pointer;
             font-family: inherit; color: inherit; text-align: left;
-            border-radius: 12px; transition: background .14s;
+            border-radius: 12px;
+            transition: background .16s;
             -webkit-tap-highlight-color: transparent;
         }
-        .sz-item:hover { background: rgba(255,255,255,.04); }
-        .sz-item:active { background: rgba(255,255,255,.07); }
+        .sz-item:hover { background: rgba(255,255,255,.045); }
+        .sz-item:active { background: rgba(255,255,255,.08); }
 
         .sz-avatar {
             position: relative;
             width: 44px; height: 44px; flex-shrink: 0;
-            border-radius: 50%; overflow: visible;
+            border-radius: 50%;
             background: linear-gradient(135deg, var(--sz-accent), var(--sz-accent2));
             display: flex; align-items: center; justify-content: center;
             border: 1px solid rgba(255,255,255,.08);
+            overflow: hidden;
         }
         .sz-avatar img { width: 100%; height: 100%; object-fit: cover; border-radius: 50%; }
         .sz-av-fallback { font-size: 17px; font-weight: 800; color: #fff; }
         .sz-online-dot {
-            position: absolute; right: 0; bottom: 0;
-            width: 11px; height: 11px; border-radius: 50%;
-            background: #22c55e; border: 2px solid #0e1621;
-            box-shadow: 0 0 6px rgba(34,197,94,.8);
+            position: absolute; right: -2px; bottom: -2px;
+            width: 12px; height: 12px; border-radius: 50%;
+            background: #22c55e; border: 2px solid var(--sz-app-bg, #0e1621);
+            box-shadow: 0 0 8px rgba(34,197,94,.7);
+            animation: szPulse 2s ease-in-out infinite;
         }
         .sz-avatar-lg { width: 84px; height: 84px; }
         .sz-avatar-sm { width: 30px; height: 30px; }
@@ -759,40 +938,42 @@
             border-radius: 9px; background: var(--sz-accent); color: #06280f;
             font-size: 10px; font-weight: 800; line-height: 18px; text-align: center;
             flex-shrink: 0;
+            box-shadow: 0 2px 8px rgba(37,211,102,.5);
         }
         .sz-pin, .sz-mute { font-size: 10px; margin-right: 4px; opacity: .75; }
 
-        .sz-empty { padding: 32px 16px; text-align: center; font-size: 11px; color: #6b7280; line-height: 1.6; }
+        .sz-empty { padding: 32px 16px; text-align: center; font-size: 11.5px; color: #6b7280; line-height: 1.6; }
         .sz-empty b { color: var(--sz-accent); }
 
-        /* ═══ CONTEXT MENU ═══ */
+        /* Context menu */
         .sz-ctx-menu {
             position: absolute; z-index: 40;
             background: #1a222d; border: 1px solid rgba(255,255,255,.12);
-            border-radius: 10px; padding: 4px;
-            box-shadow: 0 8px 24px rgba(0,0,0,.6);
-            min-width: 140px;
+            border-radius: 12px; padding: 5px;
+            box-shadow: 0 12px 32px rgba(0,0,0,.7);
+            min-width: 150px;
             top: 50%; left: 50%; transform: translate(-50%, -50%);
-            animation: phFadeIn .14s ease;
+            animation: szFadeIn .16s ease;
         }
         .sz-ctx-item {
             display: block; width: 100%;
-            padding: 9px 12px;
+            padding: 10px 12px;
             background: transparent; border: none;
             color: #e9ecf5; font-family: inherit;
             font-size: 11.5px; text-align: left; cursor: pointer;
-            border-radius: 7px;
+            border-radius: 8px;
+            transition: background .14s;
         }
         .sz-ctx-item:hover { background: rgba(255,255,255,.06); }
         .sz-ctx-item.danger { color: #fca5b1; }
 
-        /* ═══ MODAL ═══ */
+        /* Modal */
         .sz-modal {
             position: absolute; inset: 0; z-index: 30;
             background: rgba(0,0,0,.65);
             backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
             display: flex; align-items: flex-end; justify-content: center;
-            animation: phFadeIn .2s ease;
+            animation: szFadeIn .2s ease;
         }
         .sz-modal-card {
             width: 100%; max-height: 85%;
@@ -801,7 +982,7 @@
             border-top: 1px solid rgba(255,255,255,.08);
             display: flex; flex-direction: column;
             padding: 14px 0 0;
-            animation: phSlideUp .28s cubic-bezier(.22,1,.36,1);
+            animation: szSlideUp .3s cubic-bezier(.22,1,.36,1);
         }
         .sz-modal-title {
             font-size: 13px; font-weight: 800; color: #e9ecf5;
@@ -809,7 +990,7 @@
             border-bottom: 1px solid rgba(255,255,255,.06);
         }
         .sz-modal-body { padding: 12px 14px; display: flex; flex-direction: column; gap: 8px; }
-        .sz-modal-list { flex: 1; overflow-y: auto; padding: 8px 8px; }
+        .sz-modal-list { flex: 1; overflow-y: auto; padding: 8px; }
         .sz-modal-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 8px 14px 14px; }
         .sz-modal-cancel {
             margin: 8px 14px 14px;
@@ -818,6 +999,7 @@
             border: 1px solid rgba(255,255,255,.1);
             color: #c7cad6; font-family: inherit;
             font-size: 11.5px; font-weight: 700; cursor: pointer;
+            transition: background .16s;
         }
         .sz-modal-cancel:hover { background: rgba(255,255,255,.09); }
 
@@ -825,11 +1007,11 @@
         .sz-gpick.selected { background: rgba(37,211,102,.08); }
         .sz-gpick.selected .sz-check { color: var(--sz-accent); }
 
-        /* ═══ CHAT ═══ */
+        /* Chat */
         .sz-chat { display: flex; flex-direction: column; flex: 1; min-height: 0; }
         .sz-chat-head {
             display: flex; align-items: center; gap: 8px;
-            padding: 8px 12px;
+            padding: 9px 12px;
             background: rgba(37,211,102,.06);
             border-bottom: 1px solid rgba(255,255,255,.05);
             flex-shrink: 0;
@@ -840,10 +1022,15 @@
             color: var(--sz-accent); font-size: 22px; line-height: 1;
             cursor: pointer; padding: 0;
             display: flex; align-items: center; justify-content: center;
+            transition: background .16s;
         }
         .sz-chat-back:hover { background: rgba(37,211,102,.14); }
         .sz-chat-title { flex: 1; font-size: 12.5px; font-weight: 700; color: #e9ecf5; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-        .sz-chat-call { background: transparent; border: none; font-size: 16px; cursor: pointer; padding: 2px 4px; }
+        .sz-chat-call {
+            background: transparent; border: none; font-size: 16px;
+            cursor: pointer; padding: 3px 5px;
+            transition: transform .16s;
+        }
         .sz-chat-call:hover { transform: scale(1.15); }
 
         .sz-chat-thread {
@@ -865,7 +1052,7 @@
             border-radius: 12px;
             background: rgba(255,255,255,.06);
             border: 1px solid rgba(255,255,255,.05);
-            animation: phFadeIn .18s ease;
+            animation: szFadeIn .18s ease;
         }
         .sz-msg.mine .sz-msg-bubble {
             background: linear-gradient(135deg, rgba(37,211,102,.22), rgba(18,140,126,.22));
@@ -918,6 +1105,7 @@
             font-size: 18px; cursor: pointer;
             display: flex; align-items: center; justify-content: center;
             line-height: 1;
+            transition: background .16s, color .16s;
         }
         .sz-chat-plus:hover { background: rgba(37,211,102,.14); color: #86efac; }
         .sz-chat-field {
@@ -926,32 +1114,32 @@
             background: rgba(255,255,255,.06);
             border: 1px solid rgba(255,255,255,.1);
             color: #e9ecf5; font-family: inherit; font-size: 12px; outline: none;
-            transition: border-color .16s, background .16s;
+            transition: border-color .16s, background .16s, box-shadow .16s;
         }
         .sz-chat-field::placeholder { color: #5c6280; }
-        .sz-chat-field:focus { border-color: rgba(37,211,102,.5); background: rgba(255,255,255,.08); }
+        .sz-chat-field:focus { border-color: rgba(37,211,102,.5); background: rgba(255,255,255,.08); box-shadow: 0 0 0 3px rgba(37,211,102,.12); }
         .sz-chat-send, .sz-chat-mic {
             width: 36px; height: 36px; flex-shrink: 0;
             border-radius: 50%; border: none;
             color: #fff; font-size: 15px; font-weight: 700;
             cursor: pointer; line-height: 1;
             display: flex; align-items: center; justify-content: center;
-            transition: transform .16s cubic-bezier(.22,1,.36,1);
+            transition: transform .16s cubic-bezier(.22,1,.36,1), box-shadow .16s;
         }
         .sz-chat-send {
             background: linear-gradient(135deg, var(--sz-accent), var(--sz-accent2));
             box-shadow: 0 4px 12px rgba(37,211,102,.35);
         }
-        .sz-chat-mic { background: rgba(255,255,255,.05); border: 1px solid rgba(255,255,255,.14); }
+        .sz-chat-mic { background: rgba(255,255,255,.05); border: 1px solid rgba(255,255,255,.14); color: #e9ecf5; }
         .sz-chat-send:hover, .sz-chat-mic:hover { transform: scale(1.06); }
         .sz-chat-send:active, .sz-chat-mic:active { transform: scale(.92); }
         .sz-chat-mic.rec {
             background: #e5484d; border-color: #e5484d;
-            animation: phSpeaking 1.2s ease-in-out infinite;
+            animation: szPulse 1.2s ease-in-out infinite;
             box-shadow: 0 0 14px rgba(229,72,77,.55);
         }
 
-        /* ═══ AUDIO ═══ */
+        /* Audio */
         .sz-msg-audio { padding: 4px 0; }
         .sz-audio { display: flex; align-items: center; gap: 8px; padding: 2px 4px 2px 2px; }
         .sz-audio-btn {
@@ -967,7 +1155,7 @@
         .sz-audio-wave span.on { background: #86efac; }
         .sz-audio-time { font-size: 9px; color: #8a90a8; font-variant-numeric: tabular-nums; }
 
-        /* ═══ SETTINGS ═══ */
+        /* Settings */
         .sz-settings { padding: 16px 14px 22px; display: flex; flex-direction: column; gap: 14px; overflow-y: auto; flex: 1; min-height: 0; }
         .sz-profile-loading { padding: 32px; text-align: center; color: #6b7280; font-size: 11px; }
         .sz-settings-hero { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 12px 0; }
@@ -985,9 +1173,9 @@
             border-radius: 10px; color: #e9ecf5;
             font-family: inherit; font-size: 12px; outline: none;
             box-sizing: border-box;
-            transition: border-color .16s, background .16s;
+            transition: border-color .16s, background .16s, box-shadow .16s;
         }
-        .sz-input:focus { border-color: rgba(37,211,102,.5); background: rgba(255,255,255,.07); }
+        .sz-input:focus { border-color: rgba(37,211,102,.5); background: rgba(255,255,255,.07); box-shadow: 0 0 0 3px rgba(37,211,102,.12); }
         .sz-textarea { min-height: 60px; resize: vertical; font-family: inherit; }
         .sz-field-hint { font-size: 9px; color: #6b7280; }
         .sz-profile-photo-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
@@ -997,7 +1185,7 @@
             border: 1px solid rgba(255,255,255,.12);
             color: #e9ecf5; font-family: inherit;
             font-size: 11.5px; font-weight: 700; cursor: pointer;
-            transition: all .16s cubic-bezier(.22,1,.36,1);
+            transition: all .18s cubic-bezier(.22,1,.36,1);
             text-align: center;
         }
         .sz-btn:hover { background: rgba(255,255,255,.1); transform: translateY(-1px); }
@@ -1058,7 +1246,7 @@
             transform: translateX(16px);
         }
 
-        /* ═══ STORIES ═══ */
+        /* Stories */
         .sz-stories-tab { display: flex; flex-direction: column; flex: 1; min-height: 0; }
         .sz-status-actions { padding: 12px 14px 8px; flex-shrink: 0; }
         .sz-stories-feed { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 4px 10px 16px; display: flex; flex-direction: column; gap: 12px; }
@@ -1092,12 +1280,16 @@
         .sz-react:active { transform: scale(.94); }
         .sz-story-img-preview img { max-width: 100%; max-height: 200px; border-radius: 10px; display: block; margin: 6px auto; }
 
-        @keyframes phSlideUp { from { transform: translateY(40px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
-        @keyframes phFadeIn { from { opacity: 0; } to { opacity: 1; } }
+        /* Animações */
+        @keyframes szSlideUp { from { transform: translateY(40px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+        @keyframes szFadeIn  { from { opacity: 0; } to { opacity: 1; } }
+        @keyframes szSlideIn { from { transform: scaleX(0); } to { transform: scaleX(1); } }
+        @keyframes szBlink   { 0%,100% { background-position: 0% center; } 50% { background-position: 100% center; } }
+        @keyframes szPulse   { 0%,100% { opacity: 1; } 50% { opacity: .6; } }
 
         @media (prefers-reduced-motion: reduce) {
-            .sz-hdr-title, .sz-chat-mic.rec { animation: none !important; }
-            .sz-item, .sz-tab, .sz-hdr-back, .sz-hdr-gear, .sz-new-btn, .sz-chat-send, .sz-chat-mic, .sz-chat-plus, .sz-modal-cancel, .sz-btn, .sz-react { transition-duration: .01ms; }
+            .sz-hdr-title, .sz-chat-mic.rec, .sz-online-dot { animation: none !important; }
+            .sz-item, .sz-tab, .sz-hdr-back, .sz-hdr-gear, .sz-new-btn, .sz-chat-send, .sz-chat-mic, .sz-chat-plus, .sz-modal-cancel, .sz-btn, .sz-react, .sz-ctx-item { transition-duration: .01ms !important; }
         }
     `);
 })();
