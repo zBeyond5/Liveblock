@@ -13,6 +13,7 @@
     const TYPING_TTL      = 4000;
     const EDIT_WINDOW     = 15 * 60 * 1000;
     const PAGE_SIZE       = 40;
+    const FETCH_SIZE      = 300;
     const DOUBLE_TAP_MS   = 280;
     const LONG_PRESS_MS   = 420;
     const LS_DELETED      = 'sangzap_deleted_for_me';
@@ -79,12 +80,7 @@
         const s = Math.max(0, Math.floor((ms || 0) / 1000));
         return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
     };
-    const _fmtBytes = (n) => {
-        if (!n) return '';
-        if (n < 1024) return n + ' B';
-        if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
-        return (n / 1024 / 1024).toFixed(1) + ' MB';
-    };
+    const _fmtBytes = (n) => S.fmtBytes ? S.fmtBytes(n) : (n ? n + ' B' : '');
 
     function authorName(m) {
         if (!m) return '';
@@ -108,65 +104,15 @@
     function escape(s) { return S.escape ? S.escape(s) : String(s ?? ''); }
 
     // ═══ DATE SEPARATORS ═══
-    function dateKey(ts) {
-        const d = new Date(ts || 0);
-        return d.getFullYear() * 10000 + (d.getMonth() + 1) * 100 + d.getDate();
-    }
-    function dateLabel(ts) {
-        const d = new Date(ts || 0);
-        const now = new Date();
-        const today = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
-        const target = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
-        const diff = Math.round((today - target) / 86400000);
-        if (diff === 0) return 'Hoje';
-        if (diff === 1) return 'Ontem';
-        if (diff < 7) return d.toLocaleDateString('pt-BR', { weekday: 'long' });
-        return d.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric' });
-    }
     function withDateSeparators(msgs) {
-        const out = [];
-        let last = 0;
-        for (const m of msgs) {
-            const k = dateKey(m.sentAt);
-            if (k !== last && m.sentAt) {
-                last = k;
-                out.push({ _sep: true, id: 'sep_' + k, label: dateLabel(m.sentAt), sentAt: m.sentAt });
-            }
-            out.push(m);
-        }
-        return out;
+        if (S.withDateSeparators) return S.withDateSeparators(msgs);
+        return msgs;
     }
 
-    // ═══ RENDER TEXT (bold/italic/strike/code/links/mentions) ═══
-    const URL_RE = /\b((?:https?:\/\/|www\.)[^\s<]+)/gi;
+    // ═══ RENDER TEXT ═══
     function renderText(raw, opts) {
-        opts = opts || {};
-        let s = escape(raw || '');
-        // code blocks first to protect their content
-        const codes = [];
-        s = s.replace(/```([\s\S]*?)```/g, (_, c) => {
-            codes.push(c);
-            return `\u0000C${codes.length - 1}\u0000`;
-        });
-        // inline code
-        s = s.replace(/`([^`\n]+)`/g, (_, c) => {
-            codes.push(c);
-            return `\u0000C${codes.length - 1}\u0000`;
-        });
-        // bold / italic / strike (order matters: bold before italic)
-        s = s.replace(/\*([^*\n]+)\*/g, '<strong>$1</strong>');
-        s = s.replace(/_([^_\n]+)_/g, '<em>$1</em>');
-        s = s.replace(/~([^~\n]+)~/g, '<s>$1</s>');
-        // links
-        s = s.replace(URL_RE, (u) => {
-            const href = u.startsWith('http') ? u : 'https://' + u;
-            return `<a href="${escape(href)}" class="sz-link" target="_blank" rel="noopener noreferrer">${u}</a>`;
-        });
-        // mentions
-        s = s.replace(/@([\w\u00C0-\u017F]+)/g, '<span class="sz-mention">@$1</span>');
-        // restore code
-        s = s.replace(/\u0000C(\d+)\u0000/g, (_, i) => `<code class="sz-code">${codes[+i]}</code>`);
-        return s;
+        if (S.renderText) return S.renderText(raw, opts || { myName: _meta.myName });
+        return escape(raw || '');
     }
 
     // ═══ OFFLINE / CONNECTING ═══
@@ -209,30 +155,41 @@
                 }
                 _pending.delete(item.tmpId);
                 _failed.delete(item.tmpId);
-            } catch(_) { /* mantém na fila */ }
+            } catch(_) {}
         }
         _draining = false;
         renderThread({ stickToBottom: true });
     }
 
     // ═══ FETCH ═══
-    async function fetchPage(beforeTs) {
+    // O Firestore REST não aceita `where=campo > valor` na URL. Buscamos todas
+    // as mensagens recentes (com `pageSize`) e filtramos/paginamos no cliente.
+    async function fetchRaw() {
         const path = `/sangzap_chats/${_chatId}/messages`;
-        const qs = beforeTs
-            ? `?orderBy=${encodeURIComponent('sentAt desc')}&where=${encodeURIComponent(`sentAt < ${beforeTs}`)}&pageSize=${PAGE_SIZE}`
-            : `?orderBy=${encodeURIComponent('sentAt desc')}&pageSize=${PAGE_SIZE}`;
+        const qs = `?orderBy=${encodeURIComponent('sentAt desc')}&pageSize=${FETCH_SIZE}`;
         try {
             const docs = await ctx.bridge.firestore.request('GET', path + qs);
-            return docs.map(d => ({ id: d.id, ...d.data() })).filter(Boolean).reverse();
-        } catch(e) { console.warn('[Sangzap/chat] fetchPage:', e); return []; }
+            if (!Array.isArray(docs)) return [];
+            const arr = docs.map(d => {
+                if (!d) return null;
+                if (typeof d.data === 'function') return { id: d.id, ...d.data() };
+                return { id: d.id || '', ...d };
+            }).filter(Boolean);
+            arr.sort((a, b) => (a.sentAt || 0) - (b.sentAt || 0));
+            return arr;
+        } catch(e) {
+            console.warn('[Sangzap/chat] fetchRaw:', e.message || e);
+            return [];
+        }
+    }
+    async function fetchPage(beforeTs) {
+        const all = await fetchRaw();
+        if (!beforeTs) return all.slice(-PAGE_SIZE);
+        return all.filter(m => (m.sentAt || 0) < beforeTs).slice(-PAGE_SIZE);
     }
     async function fetchSince(ts) {
-        const path = `/sangzap_chats/${_chatId}/messages`;
-        const qs = `?orderBy=${encodeURIComponent('sentAt asc')}&where=${encodeURIComponent(`sentAt > ${ts}`)}`;
-        try {
-            const docs = await ctx.bridge.firestore.request('GET', path + qs);
-            return docs.map(d => ({ id: d.id, ...d.data() })).filter(Boolean);
-        } catch(e) { return []; }
+        const all = await fetchRaw();
+        return ts ? all.filter(m => (m.sentAt || 0) > ts) : all;
     }
 
     // ═══ SEND — primitives ═══
@@ -249,7 +206,6 @@
         if (payload.mentions && payload.mentions.length) base.mentions = payload.mentions;
         if (payload.forwarded) base.forwarded = 1;
         if (payload.storyId) base.storyId = payload.storyId;
-        // audio
         if (payload.audio) {
             base.audio = payload.audio;
             base.mime = payload.mime;
@@ -258,7 +214,6 @@
             if (Array.isArray(payload.waveform)) base.waveform = payload.waveform;
             if (Array.isArray(payload.peaks))     base.waveform = payload.peaks;
         }
-        // media
         if (payload.media) {
             base.media = payload.media;
             base.mime = payload.mime;
@@ -267,14 +222,10 @@
             if (payload.height) base.height = payload.height;
             if (payload.caption) base.caption = S.sanitize ? S.sanitize(payload.caption) : payload.caption;
         }
-        // doc
         if (payload.filename) base.filename = payload.filename;
-        // video
         if (payload.thumb) base.thumb = payload.thumb;
-        // location
         if (payload.lat != null) { base.lat = payload.lat; base.lng = payload.lng; }
         if (payload.place) base.place = payload.place;
-        // contact
         if (payload.contact) base.contact = payload.contact;
         return base;
     }
@@ -434,7 +385,6 @@
             return renderRow(m, i, decorated);
         }).join('');
 
-        // pós-render: monta players de áudio reais via S.audio
         _threadEl.querySelectorAll('.sz-audio-container[data-msgid]').forEach(el => {
             const msg = _byId.get(el.dataset.msgid);
             if (msg && S.audio?.renderPlayer) {
@@ -634,9 +584,7 @@
             { act: 'reply', label: 'Responder' },
             { act: 'react', label: 'Reagir' }
         ];
-        if (!m.deletedAt && m.body) {
-            items.push({ act: 'copy', label: 'Copiar' });
-        }
+        if (!m.deletedAt && m.body) items.push({ act: 'copy', label: 'Copiar' });
         if (!m.deletedAt) {
             items.push({ act: 'forward', label: 'Encaminhar' });
             items.push({ act: 'select', label: 'Selecionar' });
@@ -895,12 +843,10 @@
         inp.click();
     }
 
-    // ── IMAGE: preserva aspect ratio ──
     async function previewImage(file) {
         if (file.size > 20 * 1024 * 1024) { ctx.toast?.('Imagem muito grande', 'err'); return; }
         const data = await readFile(file);
         const img = await loadImage(data.url);
-        // reduz se maior que IMAGE_MAX_W
         let w = img.naturalWidth, h = img.naturalHeight;
         let outW = w, outH = h;
         if (w > IMAGE_MAX_W) { outW = IMAGE_MAX_W; outH = Math.round(h * (IMAGE_MAX_W / w)); }
@@ -916,14 +862,12 @@
         openMediaPreview('image', { media, mime: 'image/jpeg', size, width: outW, height: outH });
     }
 
-    // ── VIDEO: lê como data URL ──
     async function previewVideo(file) {
         if (file.size > MAX_VIDEO_BYTES) { ctx.toast?.('Vídeo muito grande (máx 10MB)', 'err'); return; }
         const data = await readFile(file);
         openMediaPreview('video', { media: data.dataUrl, mime: file.type, size: file.size });
     }
 
-    // ── DOC ──
     async function previewDoc(file) {
         if (file.size > MAX_DOC_BYTES) { ctx.toast?.('Documento muito grande (máx 8MB)', 'err'); return; }
         const data = await readFile(file);
@@ -947,7 +891,6 @@
         });
     }
 
-    // ── MEDIA PREVIEW + CAPTION ──
     function openMediaPreview(kind, payload) {
         const body = _root;
         const m = document.createElement('div');
@@ -1029,7 +972,6 @@
         }
     }
 
-    // ── LOCATION ──
     async function sendLocation() {
         if (!navigator.geolocation) { ctx.toast?.('Localização não disponível', 'err'); return; }
         ctx.toast?.('Obtendo localização…', 'info');
@@ -1039,7 +981,6 @@
         }, () => ctx.toast?.('Permissão negada', 'err'), { timeout: 8000 });
     }
 
-    // ── CONTACT ──
     function openContactPicker() {
         const contacts = ctx.contacts?.contacts || [];
         const body = _root;
@@ -1170,7 +1111,6 @@
     function bindMentions(inp) {
         const pop = _root.querySelector('.sz-mention-pop');
         if (!pop) return;
-        let active = false;
         function filter(term) {
             const members = getMentionMembers();
             if (!members.length) return [];
@@ -1182,10 +1122,9 @@
             const pos = inp.selectionStart || value.length;
             const before = value.slice(0, pos);
             const m = /@([\w\u00C0-\u017F]*)$/.exec(before);
-            if (!m) { pop.classList.remove('on'); active = false; return; }
+            if (!m) { pop.classList.remove('on'); return; }
             const items = filter(m[1]);
-            if (!items.length) { pop.classList.remove('on'); active = false; return; }
-            active = true;
+            if (!items.length) { pop.classList.remove('on'); return; }
             pop.innerHTML = items.map((it, i) =>
                 `<button data-name="${escape(it.name)}" data-i="${i}" type="button">${escape(it.name)}</button>`
             ).join('');
@@ -1234,10 +1173,7 @@
                     e.stopPropagation();
                     const m = _byId.get(b.dataset.msgid);
                     if (m && m.media) {
-                        try {
-                            const w = window.open();
-                            if (w) w.location.href = m.media;
-                        } catch(_) {}
+                        try { const w = window.open(); if (w) w.location.href = m.media; } catch(_) {}
                     }
                     return;
                 }
@@ -1338,7 +1274,6 @@
         bindShell();
         bindOnline();
 
-        // restaura draft
         const inp = _root.querySelector('.sz-input');
         const draft = _draftByChat[_chatId];
         if (inp && draft) { inp.value = draft; autoGrow(inp); }
@@ -1376,7 +1311,6 @@
                 else if (_reply) clearReply();
             }
         });
-        // paste image
         inp.addEventListener('paste', async ev => {
             const items = ev.clipboardData?.items || [];
             for (const it of items) {
@@ -1491,21 +1425,11 @@
             return null;
         }
     };
-    C.sendImage = async (payload, opts) => {
-        return sendAttachment('image', payload, opts?.caption || payload.caption || '');
-    };
-    C.sendVideo = async (payload, opts) => {
-        return sendAttachment('video', payload, opts?.caption || payload.caption || '');
-    };
-    C.sendDocument = async (payload, opts) => {
-        return sendAttachment('doc', payload, opts?.caption || '');
-    };
-    C.sendLocation = async (payload) => {
-        return sendAttachment('location', payload, '');
-    };
-    C.sendContact = async (payload) => {
-        return sendAttachment('contact', payload, '');
-    };
+    C.sendImage = async (payload, opts) => sendAttachment('image', payload, opts?.caption || payload.caption || '');
+    C.sendVideo = async (payload, opts) => sendAttachment('video', payload, opts?.caption || payload.caption || '');
+    C.sendDocument = async (payload, opts) => sendAttachment('doc', payload, opts?.caption || '');
+    C.sendLocation = async (payload) => sendAttachment('location', payload, '');
+    C.sendContact = async (payload) => sendAttachment('contact', payload, '');
     C.sendStoryReply = async (storyId, text) => {
         if (!_chatId) return null;
         const saved = await postMessage({ kind: 'story-reply', body: text, storyId });
