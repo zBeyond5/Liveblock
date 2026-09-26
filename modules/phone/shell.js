@@ -10,7 +10,7 @@
 
     // ═══ CONFIG ═══
     const ANDROID_VERSION = '14';
-    const PHONE_VERSION = '1.3.0';
+    const PHONE_VERSION = '1.3.1';
     const MIN_TUCK_X = 260;
     const MIN_TUCK_Y = -140;
     const FRAME_HALF_H = 285;
@@ -107,7 +107,8 @@
         block() { _tone(220, 0.12, 'sine', 0.026, 0.008); setTimeout(() => _tone(174.61, 0.13, 'sine', 0.02, 0.01), 80); },
         fav() { _tone(1318.51, 0.06, 'sine', 0.02, 0.006); setTimeout(() => _tone(1760, 0.08, 'sine', 0.016, 0.008), 55); },
         unlock() { _tone(659.25, 0.08, 'sine', 0.026, 0.012); setTimeout(() => _tone(987.77, 0.11, 'sine', 0.022, 0.014), 60); },
-        errorPin() { _tone(220, 0.1, 'sine', 0.03, 0.008); setTimeout(() => _tone(180, 0.14, 'sine', 0.024, 0.01), 70); }
+        errorPin() { _tone(220, 0.1, 'sine', 0.03, 0.008); setTimeout(() => _tone(180, 0.14, 'sine', 0.024, 0.01), 70); },
+        home() { _tone(523.25, 0.05, 'sine', 0.02, 0.008); }
     };
 
     // ═══ ICONS ═══
@@ -170,19 +171,19 @@
     let _dying = false;
     let _minimized = false;
     try { _minimized = localStorage.getItem(LS_MINIMIZED) === '1'; } catch(_) {}
-    let _view = 'lock';             // 'lock' | 'home' | 'app' | 'call'
+    let _view = 'lock';
     let _activeAppId = null;
     let _chamadasTab = 'contatos';
     let _pinBuf = '';
     let _pinSet = '';
     try { _pinSet = localStorage.getItem(LS_PIN) || ''; } catch(_) {}
-    let _prevView = 'home';         // para retornar após chamada
+    let _prevView = 'home';
 
     let _host = null, _shadow = null, _root = null;
     let _frameEl = null;
     let _screenEl = null;
     let _stageEl = null;
-    let _contentEl = null;          // #phContent — compartilhado com contacts.js
+    let _contentEl = null;
     let _clockTimer = null;
     let _phasePollTimer = null;
 
@@ -213,6 +214,7 @@
     function _injectBaseStyle() {
         _appendStyle(`
         :host, * { box-sizing: border-box; }
+
         @keyframes phFadeIn { from { opacity: 0; } to { opacity: 1; } }
         @keyframes phFadeOut { to { opacity: 0; } }
         @keyframes phDots { 0%,20%{opacity:.3} 50%{opacity:1} 80%,100%{opacity:.3} }
@@ -222,19 +224,24 @@
         @keyframes phToastIn { from{opacity:0;transform:translateY(-8px) scale(.94)} to{opacity:1;transform:none} }
         @keyframes phStackIn { from{opacity:0;transform:scale(.85)} to{opacity:1;transform:none} }
         @keyframes phRingGlow {
-            0%, 100% { box-shadow: 0 30px 80px rgba(0,0,0,.7), 0 0 0 2px rgba(255,255,255,.04), inset 0 1px 0 rgba(255,255,255,.12), inset 0 -1px 0 rgba(0,0,0,.5), 0 0 0 0 rgba(52,211,153,.5); }
-            50% { box-shadow: 0 30px 80px rgba(0,0,0,.7), 0 0 0 2px rgba(255,255,255,.04), inset 0 1px 0 rgba(255,255,255,.12), inset 0 -1px 0 rgba(0,0,0,.5), 0 0 0 12px rgba(52,211,153,0); }
+            0%, 100% { box-shadow: 0 30px 80px rgba(0,0,0,.75), 0 0 0 1px rgba(255,255,255,.03), inset 0 1px 0 rgba(255,255,255,.06), inset 0 -1px 0 rgba(0,0,0,.7), 0 0 0 0 rgba(52,211,153,.5); }
+            50% { box-shadow: 0 30px 80px rgba(0,0,0,.75), 0 0 0 1px rgba(255,255,255,.03), inset 0 1px 0 rgba(255,255,255,.06), inset 0 -1px 0 rgba(0,0,0,.7), 0 0 0 12px rgba(52,211,153,0); }
         }
         @keyframes phRecordPulse {
-            0%,100% { box-shadow: 0 30px 80px rgba(0,0,0,.7), 0 0 0 2px rgba(255,255,255,.04), inset 0 1px 0 rgba(255,255,255,.12), inset 0 -1px 0 rgba(0,0,0,.5), 0 0 0 0 rgba(251,113,133,.6); }
-            50% { box-shadow: 0 30px 80px rgba(0,0,0,.7), 0 0 0 2px rgba(255,255,255,.04), inset 0 1px 0 rgba(255,255,255,.12), inset 0 -1px 0 rgba(0,0,0,.5), 0 0 0 14px rgba(251,113,133,0); }
+            0%,100% { box-shadow: 0 30px 80px rgba(0,0,0,.75), 0 0 0 1px rgba(255,255,255,.03), inset 0 1px 0 rgba(255,255,255,.06), inset 0 -1px 0 rgba(0,0,0,.7), 0 0 0 0 rgba(251,113,133,.55); }
+            50% { box-shadow: 0 30px 80px rgba(0,0,0,.75), 0 0 0 1px rgba(255,255,255,.03), inset 0 1px 0 rgba(255,255,255,.06), inset 0 -1px 0 rgba(0,0,0,.7), 0 0 0 14px rgba(251,113,133,0); }
         }
-        @keyframes phAuroraLine { 0% { background-position: 0% 50%; } 100% { background-position: 200% 50%; } }
         @keyframes phPinShake { 10%,90%{transform:translateX(-3px)} 20%,80%{transform:translateX(4px)} 30%,50%,70%{transform:translateX(-6px)} 40%,60%{transform:translateX(6px)} }
         @keyframes phSwipeHint { 0%,100%{transform:translateY(0);opacity:.55} 50%{transform:translateY(-6px);opacity:.9} }
         @keyframes phStageFadeIn { from { opacity: 0; transform: scale(.985); } to { opacity: 1; transform: none; } }
-        @keyframes phStageFadeOut { from { opacity: 1; transform: none; } to { opacity: 0; transform: scale(1.015); } }
+        @keyframes phScreenGlow {
+            0%,100% { opacity: .5; }
+            50% { opacity: .8; }
+        }
 
+        /* ═══════════════════════════════════════════
+           FRAME — carcaça de metal escuro
+           ═══════════════════════════════════════════ */
         .ph-frame {
             position: fixed; top: 50%; right: 24px;
             margin-top: ${-FRAME_HALF_H}px;
@@ -243,68 +250,132 @@
             transform: translate(0, 0) rotate(0deg);
             transition: transform 1.05s cubic-bezier(.7, 0, .3, 1);
             pointer-events: auto;
-            border-radius: 42px;
-            padding: 10px;
-            background: linear-gradient(160deg, #2a2844 0%, #1e1c36 45%, #141228 100%);
+            border-radius: 44px;
+            padding: 9px;
+            background:
+                linear-gradient(155deg, #3a3a3f 0%, #2b2b30 22%, #1c1c20 55%, #131316 100%);
             box-shadow:
-                0 30px 80px rgba(0,0,0,.6),
-                0 0 0 2px rgba(255,255,255,.06),
-                inset 0 1px 0 rgba(255,255,255,.16),
-                inset 0 -1px 0 rgba(0,0,0,.55);
+                /* drop shadow externa */
+                0 26px 60px rgba(0,0,0,.72),
+                0 8px 20px rgba(0,0,0,.55),
+                /* rim highlight superior (metal pegando luz) */
+                inset 0 1px 1px rgba(255,255,255,.22),
+                /* rim dark inferior */
+                inset 0 -1px 1px rgba(0,0,0,.85),
+                /* bevel lateral — dá volume */
+                inset 1px 0 0 rgba(255,255,255,.06),
+                inset -1px 0 0 rgba(0,0,0,.5),
+                /* contorno fino */
+                0 0 0 1px rgba(0,0,0,.85);
             user-select: none;
             isolation: isolate;
             will-change: transform;
             animation: phFadeIn .35s ease;
         }
+        /* Borda interna escura — separa o vidro da carcaça */
         .ph-frame::before {
             content: '';
-            position: absolute; inset: 0;
-            border-radius: inherit; padding: 1px;
+            position: absolute; inset: 7px;
+            border-radius: 38px;
             pointer-events: none;
-            background: linear-gradient(140deg, rgba(34,211,238,.4), rgba(167,139,250,.4) 35%, rgba(244,114,182,.32) 65%, rgba(52,211,153,.36));
-            background-size: 200% 200%;
-            animation: phAuroraLine 10s linear infinite;
-            -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
-            -webkit-mask-composite: xor;
-            mask-composite: exclude;
+            background: transparent;
+            box-shadow:
+                inset 0 0 0 1px rgba(0,0,0,.9),
+                inset 0 0 0 2px rgba(255,255,255,.02);
+            z-index: 2;
+        }
+        /* Brilho sutil na quina superior esquerda do metal */
+        .ph-frame::after {
+            content: '';
+            position: absolute; inset: 0;
+            border-radius: inherit;
+            pointer-events: none;
+            background:
+                radial-gradient(140% 90% at 8% 4%, rgba(255,255,255,.14), transparent 42%),
+                radial-gradient(120% 90% at 100% 100%, rgba(0,0,0,.5), transparent 55%);
             z-index: 1;
+            mix-blend-mode: overlay;
             opacity: .9;
         }
         .ph-frame.min {
             transform: translate(${MIN_TUCK_X}px, ${MIN_TUCK_Y}px) rotate(-90deg);
-            box-shadow: 0 0 22px rgba(0,0,0,.5), 0 0 0 2px rgba(255,255,255,.05), inset 0 1px 0 rgba(255,255,255,.12);
+            box-shadow:
+                0 0 24px rgba(0,0,0,.55),
+                0 0 0 1px rgba(0,0,0,.85),
+                inset 0 1px 1px rgba(255,255,255,.16),
+                inset 0 -1px 1px rgba(0,0,0,.7);
         }
-        .ph-frame.min::before { opacity: .5; }
         .ph-frame.ringing:not(.min) { animation: phRingGlow 1.6s ease-in-out infinite; }
         .ph-frame.recording:not(.min) { animation: phRecordPulse 1.4s ease-in-out infinite; }
         .ph-frame.hidden { opacity: 0; pointer-events: none; }
         .ph-frame.min::after {
             content: ''; position: absolute; top: 14px; bottom: 14px; left: 0; width: 10px;
             border-radius: 42px 0 0 42px;
-            background: linear-gradient(90deg, rgba(34,211,238,.28), transparent);
+            background: linear-gradient(90deg, rgba(34,211,238,.22), transparent);
             animation: phSwipeHint 3.2s ease-in-out infinite;
             pointer-events: none;
+            mix-blend-mode: normal;
+            opacity: 1;
+            z-index: 4;
         }
-        .ph-side { position: absolute; right: -3px; width: 3px; border-radius: 2px; background: linear-gradient(180deg, rgba(255,255,255,.24), rgba(255,255,255,.06)); }
-        .ph-side.vol1 { top: 120px; height: 40px; }
-        .ph-side.vol2 { top: 168px; height: 40px; }
-        .ph-side.pwr  { top: 130px; right: auto; left: -3px; height: 60px; }
+
+        /* Botões laterais — metal com relevo */
+        .ph-side {
+            position: absolute; right: -2px; width: 3px;
+            border-radius: 2px;
+            background: linear-gradient(90deg, #2f2f34 0%, #4a4a52 40%, #2a2a2e 100%);
+            box-shadow:
+                inset 0 0 0 1px rgba(0,0,0,.7),
+                1px 0 3px rgba(0,0,0,.5);
+            z-index: 3;
+        }
+        .ph-side.vol1 { top: 118px; height: 42px; border-radius: 2px 2px 1px 1px; }
+        .ph-side.vol2 { top: 168px; height: 42px; border-radius: 2px 2px 1px 1px; }
+        .ph-side.pwr  {
+            top: 128px; right: auto; left: -2px; height: 62px;
+            border-radius: 1px 2px 2px 1px;
+            background: linear-gradient(90deg, #2a2a2e 0%, #4a4a52 60%, #2f2f34 100%);
+            box-shadow:
+                inset 0 0 0 1px rgba(0,0,0,.7),
+                -1px 0 3px rgba(0,0,0,.5);
+        }
+
+        /* Notch — vidro escuro embutido */
         .ph-notch {
-            position: absolute; top: 10px; left: 50%; transform: translateX(-50%);
-            width: 90px; height: 22px; border-radius: 0 0 16px 16px;
-            background: #05060a;
+            position: absolute; top: 9px; left: 50%; transform: translateX(-50%);
+            width: 88px; height: 22px;
+            border-radius: 0 0 16px 16px;
+            background: #030408;
             display: flex; align-items: center; justify-content: center; gap: 6px;
             z-index: 40; pointer-events: auto; cursor: pointer;
-            transition: background .2s, transform .2s;
+            transition: background .2s, transform .15s;
+            box-shadow:
+                inset 0 -1px 0 rgba(255,255,255,.06),
+                inset 0 1px 2px rgba(0,0,0,.9),
+                0 1px 0 rgba(255,255,255,.03);
         }
         .ph-notch:hover { background: #0a0c14; }
         .ph-notch:active { transform: translateX(-50%) scale(.94); }
-        .ph-notch::before { content: ''; width: 46px; height: 4px; border-radius: 2px; background: rgba(255,255,255,.08); box-shadow: inset 0 1px 0 rgba(0,0,0,.6); }
-        .ph-notch::after { content: ''; width: 6px; height: 6px; border-radius: 50%; background: radial-gradient(circle at 30% 30%, #1a1c26, #05060a); box-shadow: inset 0 0 3px rgba(80,160,220,.4); }
+        .ph-notch::before {
+            content: ''; width: 44px; height: 4px; border-radius: 2px;
+            background: linear-gradient(180deg, rgba(255,255,255,.04), rgba(255,255,255,.01));
+            box-shadow: inset 0 1px 1px rgba(0,0,0,.9);
+        }
+        .ph-notch::after {
+            content: ''; width: 6px; height: 6px; border-radius: 50%;
+            background:
+                radial-gradient(circle at 35% 30%, #1a1c26 0%, #05060a 70%);
+            box-shadow:
+                inset 0 0 3px rgba(80,160,220,.5),
+                0 0 2px rgba(80,160,220,.3);
+        }
 
+        /* ═══════════════════════════════════════════
+           SCREEN — vidro com profundidade
+           ═══════════════════════════════════════════ */
         .ph-screen {
             position: relative; width: 100%; height: 100%;
-            border-radius: 32px; overflow: hidden;
+            border-radius: 36px; overflow: hidden;
             background:
                 radial-gradient(circle at 15% 10%, rgba(34,211,238,.28), transparent 52%),
                 radial-gradient(circle at 88% 88%, rgba(167,139,250,.30), transparent 55%),
@@ -313,20 +384,43 @@
             display: flex; flex-direction: column;
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
             color: #e9ecf5;
-            box-shadow: inset 0 0 0 1px rgba(255,255,255,.08);
+            box-shadow:
+                /* profundidade: interior do vidro */
+                inset 0 0 30px rgba(0,0,0,.55),
+                inset 0 0 0 1px rgba(0,0,0,.95),
+                inset 0 1px 0 rgba(255,255,255,.05),
+                /* brilho do vidro na borda */
+                0 0 0 1px rgba(255,255,255,.03);
         }
+        /* Reflexo superior de vidro */
         .ph-screen::before {
             content: ''; position: absolute; inset: 0; pointer-events: none; z-index: 1;
-            background: linear-gradient(140deg, rgba(255,255,255,.06) 0%, transparent 28%);
-            border-radius: 32px;
+            background:
+                linear-gradient(155deg,
+                    rgba(255,255,255,.09) 0%,
+                    rgba(255,255,255,.03) 12%,
+                    transparent 32%);
+            border-radius: 36px;
+        }
+        /* Vinheta sutil nas bordas — profundidade */
+        .ph-screen::after {
+            content: ''; position: absolute; inset: 0; pointer-events: none; z-index: 4;
+            border-radius: 36px;
+            background:
+                radial-gradient(120% 90% at 50% 50%, transparent 60%, rgba(0,0,0,.35) 100%);
+            mix-blend-mode: multiply;
+            opacity: .85;
         }
 
-        /* ═══ STATUS BAR ═══ */
+        /* ═══════════════════════════════════════════
+           STATUS BAR
+           ═══════════════════════════════════════════ */
         .ph-status {
-            padding: 8px 18px 4px; display: flex; align-items: center; justify-content: space-between;
-            font-size: 10px; color: #c2c8dc; flex-shrink: 0; position: relative; z-index: 3;
+            padding: 10px 22px 4px; display: flex; align-items: center; justify-content: space-between;
+            font-size: 10px; color: #c2c8dc; flex-shrink: 0; position: relative; z-index: 6;
+            text-shadow: 0 1px 2px rgba(0,0,0,.5);
         }
-        .ph-status-time { font-weight: 700; font-variant-numeric: tabular-nums; }
+        .ph-status-time { font-weight: 700; font-variant-numeric: tabular-nums; letter-spacing: .02em; }
         .ph-status-icons { display: flex; align-items: center; gap: 5px; font-size: 9px; }
         .ph-status-icons .sig { display: inline-flex; gap: 1px; align-items: flex-end; height: 8px; }
         .ph-status-icons .sig i { display: inline-block; width: 2px; background: currentColor; border-radius: 1px; }
@@ -337,15 +431,17 @@
         .ph-status-icons .wifi svg { width: 10px; height: 10px; }
         .ph-status-icons .dot-notif {
             width: 5px; height: 5px; border-radius: 50%; background: #fb7185;
-            box-shadow: 0 0 6px rgba(251,113,133,.8);
+            box-shadow: 0 0 6px rgba(251,113,133,.85);
             animation: phPulseDot 1.8s ease-in-out infinite;
             display: none;
         }
         .ph-status-icons .dot-notif.on { display: inline-block; }
 
-        /* ═══ STAGE ═══ */
+        /* ═══════════════════════════════════════════
+           STAGE — profundidade com camada interna
+           ═══════════════════════════════════════════ */
         .ph-stage {
-            flex: 1; min-height: 0; position: relative; z-index: 2;
+            flex: 1; min-height: 0; position: relative; z-index: 3;
             display: flex; flex-direction: column;
         }
         .ph-view {
@@ -354,40 +450,36 @@
         }
         .ph-view.active { display: flex; animation: phStageFadeIn .32s cubic-bezier(.22,1,.36,1); }
 
-        /* ═══════════════════════════════════════════
-           LOCK SCREEN
-           ═══════════════════════════════════════════ */
+        /* ═══ LOCK SCREEN ═══ */
         .ph-lock {
             flex: 1; min-height: 0;
             display: flex; flex-direction: column;
             padding: 12px 20px 16px;
         }
-        .ph-lock-clock {
-            padding-top: 30px;
-            text-align: center;
-        }
+        .ph-lock-clock { padding-top: 30px; text-align: center; }
         .ph-lock-time {
             font-size: 60px; font-weight: 800; letter-spacing: -.035em;
             color: #f6f7fb; line-height: 1;
             font-variant-numeric: tabular-nums;
-            text-shadow: 0 4px 24px rgba(0,0,0,.45);
+            text-shadow: 0 4px 24px rgba(0,0,0,.55), 0 0 40px rgba(34,211,238,.15);
         }
         .ph-lock-date {
             font-size: 12px; color: #c2c8dc; margin-top: 6px;
             letter-spacing: .02em; font-weight: 600;
             text-transform: capitalize;
+            text-shadow: 0 1px 3px rgba(0,0,0,.5);
         }
         .ph-lock-mid { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; }
-
         .ph-lock-swipe {
             display: flex; flex-direction: column; align-items: center; gap: 8px;
             color: #b8bdd0; cursor: pointer; user-select: none;
             padding: 14px 22px; border-radius: 14px;
-            background: rgba(255,255,255,.05);
+            background: linear-gradient(180deg, rgba(255,255,255,.07), rgba(255,255,255,.02));
             border: 1px solid rgba(255,255,255,.1);
+            box-shadow: 0 6px 20px rgba(0,0,0,.35), inset 0 1px 0 rgba(255,255,255,.08);
             transition: background .2s, border-color .2s, transform .15s;
         }
-        .ph-lock-swipe:hover { background: rgba(255,255,255,.09); border-color: rgba(34,211,238,.35); }
+        .ph-lock-swipe:hover { background: linear-gradient(180deg, rgba(255,255,255,.11), rgba(255,255,255,.04)); border-color: rgba(34,211,238,.35); }
         .ph-lock-swipe:active { transform: scale(.96); }
         .ph-lock-swipe-icon { width: 34px; height: 34px; display: flex; align-items: center; justify-content: center;
             animation: phSwipeHint 2.6s ease-in-out infinite; }
@@ -398,10 +490,7 @@
             display: flex; flex-direction: column; align-items: center; gap: 14px;
             width: 100%; max-width: 220px;
         }
-        .ph-lock-pin-dots {
-            display: flex; gap: 14px; justify-content: center;
-            padding: 6px 0;
-        }
+        .ph-lock-pin-dots { display: flex; gap: 14px; justify-content: center; padding: 6px 0; }
         .ph-lock-pin-dot {
             width: 12px; height: 12px; border-radius: 50%;
             background: transparent; border: 2px solid rgba(255,255,255,.35);
@@ -409,7 +498,7 @@
         }
         .ph-lock-pin-dot.filled {
             background: #67e8f9; border-color: #67e8f9;
-            box-shadow: 0 0 12px rgba(34,211,238,.7);
+            box-shadow: 0 0 12px rgba(34,211,238,.75);
             transform: scale(1.1);
         }
         .ph-lock-pin-label {
@@ -418,36 +507,33 @@
         }
         .ph-lock-pin.shake .ph-lock-pin-dots { animation: phPinShake .5s cubic-bezier(.36,.07,.19,.97); }
 
-        /* Keypad reutilizável (lock + discador) */
-        .ph-keypad {
-            display: grid; grid-template-columns: repeat(3, 1fr);
-            gap: 8px;
-        }
+        /* Keypad */
+        .ph-keypad { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
         .ph-key {
             padding: 12px 0 10px; border-radius: 14px;
-            background: linear-gradient(180deg, rgba(255,255,255,.08), rgba(255,255,255,.035));
-            border: 1px solid rgba(255,255,255,.09);
+            background: linear-gradient(180deg, rgba(255,255,255,.09), rgba(255,255,255,.03));
+            border: 1px solid rgba(255,255,255,.1);
             color: #e5e7eb; font-family: inherit;
             font-size: 19px; font-weight: 700;
             display: flex; flex-direction: column; align-items: center; justify-content: center;
             cursor: pointer; user-select: none;
             transition: background .12s, border-color .12s, transform .12s, box-shadow .12s;
             line-height: 1;
-            box-shadow: inset 0 1px 0 rgba(255,255,255,.08);
+            box-shadow:
+                inset 0 1px 0 rgba(255,255,255,.1),
+                0 2px 6px rgba(0,0,0,.28);
         }
         .ph-key .sub { font-size: 7.5px; color: #7b8296; letter-spacing: .06em; margin-top: 3px; font-weight: 800; text-transform: uppercase; }
-        .ph-key:hover { background: linear-gradient(180deg, rgba(255,255,255,.12), rgba(255,255,255,.05)); border-color: rgba(34,211,238,.32); }
-        .ph-key:active { transform: scale(.94); background: linear-gradient(180deg, rgba(34,211,238,.2), rgba(34,211,238,.08)); }
+        .ph-key:hover { background: linear-gradient(180deg, rgba(255,255,255,.13), rgba(255,255,255,.05)); border-color: rgba(34,211,238,.32); }
+        .ph-key:active { transform: scale(.94); background: linear-gradient(180deg, rgba(34,211,238,.22), rgba(34,211,238,.08)); box-shadow: inset 0 1px 0 rgba(255,255,255,.12); }
         .ph-key.pressed { animation: phKeyPress .25s cubic-bezier(.22,1,.36,1); }
         .ph-key.util { color: #8890a4; font-size: 15px; }
         .ph-key.util:hover { color: #67e8f9; }
         .ph-key.util svg { width: 16px; height: 16px; }
         .ph-key.util.ok { color: #a7f3d0; }
-        .ph-key.util.ok:hover { color: #fff; background: rgba(52,211,153,.14); }
+        .ph-key.util.ok:hover { color: #fff; background: rgba(52,211,153,.16); }
 
-        /* ═══════════════════════════════════════════
-           HOME
-           ═══════════════════════════════════════════ */
+        /* ═══ HOME ═══ */
         .ph-home {
             flex: 1; min-height: 0;
             display: flex; flex-direction: column;
@@ -457,11 +543,12 @@
         .ph-home-time {
             font-size: 40px; font-weight: 800; letter-spacing: -.03em; color: #f6f7fb; line-height: 1;
             font-variant-numeric: tabular-nums;
-            text-shadow: 0 2px 14px rgba(0,0,0,.4);
+            text-shadow: 0 2px 14px rgba(0,0,0,.5);
         }
         .ph-home-date {
             font-size: 11px; color: #a8aec4; letter-spacing: .02em; margin-top: 3px;
             text-transform: capitalize; font-weight: 600;
+            text-shadow: 0 1px 2px rgba(0,0,0,.4);
         }
         .ph-home-me {
             display: flex; align-items: center; gap: 10px;
@@ -470,6 +557,7 @@
             border: 1px solid rgba(34,211,238,.32);
             cursor: pointer; font-family: inherit; color: inherit; text-align: left;
             width: 100%; margin-bottom: 10px;
+            box-shadow: 0 4px 14px rgba(0,0,0,.28), inset 0 1px 0 rgba(255,255,255,.08);
             transition: background .2s, border-color .2s, transform .15s;
         }
         .ph-home-me:hover { background: linear-gradient(120deg, rgba(34,211,238,.2), rgba(167,139,250,.2)); border-color: rgba(34,211,238,.5); }
@@ -499,7 +587,7 @@
             background: linear-gradient(120deg, #1eb4d0, #26c6d8);
             color: #fff; margin-bottom: 14px;
             font-size: 11px; font-weight: 700; letter-spacing: .02em;
-            box-shadow: 0 6px 18px rgba(30,180,208,.35), inset 0 1px 0 rgba(255,255,255,.28);
+            box-shadow: 0 6px 18px rgba(30,180,208,.35), inset 0 1px 0 rgba(255,255,255,.3);
             cursor: text;
         }
         .ph-home-search svg { width: 12px; height: 12px; margin-left: auto; opacity: .9; }
@@ -517,10 +605,7 @@
         .ph-home-grid-wrap::-webkit-scrollbar { width: 4px; }
         .ph-home-grid-wrap::-webkit-scrollbar-thumb { background: rgba(255,255,255,.14); border-radius: 2px; }
 
-        .ph-home-grid {
-            display: grid; grid-template-columns: repeat(4, 1fr);
-            gap: 8px 6px;
-        }
+        .ph-home-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px 6px; }
         .ph-home-app {
             display: flex; flex-direction: column; align-items: center; gap: 5px;
             padding: 8px 2px 6px; border-radius: 12px;
@@ -536,7 +621,7 @@
             display: inline-flex; align-items: center; justify-content: center;
             background: rgba(255,255,255,.1);
             border: 1px solid rgba(255,255,255,.14);
-            box-shadow: 0 6px 16px rgba(0,0,0,.28), inset 0 1px 0 rgba(255,255,255,.14);
+            box-shadow: 0 6px 16px rgba(0,0,0,.35), inset 0 1px 0 rgba(255,255,255,.16);
             position: relative;
         }
         .ph-home-app-icon svg { width: 22px; height: 22px; }
@@ -544,6 +629,7 @@
             font-size: 9px; font-weight: 700; color: #dfe3ef;
             max-width: 100%; overflow: hidden; text-overflow: ellipsis;
             white-space: nowrap; letter-spacing: .01em;
+            text-shadow: 0 1px 2px rgba(0,0,0,.6);
         }
         .ph-home-empty {
             grid-column: 1 / -1;
@@ -551,14 +637,8 @@
             font-size: 10.5px; color: #6b7280; line-height: 1.5;
         }
 
-        .ph-home-dots {
-            display: flex; gap: 5px; justify-content: center;
-            padding: 6px 0 8px; flex-shrink: 0;
-        }
-        .ph-home-dots span {
-            width: 5px; height: 5px; border-radius: 50%;
-            background: rgba(255,255,255,.32);
-        }
+        .ph-home-dots { display: flex; gap: 5px; justify-content: center; padding: 6px 0 8px; flex-shrink: 0; }
+        .ph-home-dots span { width: 5px; height: 5px; border-radius: 50%; background: rgba(255,255,255,.32); }
         .ph-home-dots span.active { background: #67e8f9; box-shadow: 0 0 6px rgba(34,211,238,.8); }
 
         .ph-dock {
@@ -566,9 +646,11 @@
             margin: 0 -6px;
             padding: 8px 10px 4px;
             border-radius: 18px;
-            background: rgba(255,255,255,.08);
-            backdrop-filter: blur(14px) saturate(140%);
-            border: 1px solid rgba(255,255,255,.1);
+            background: linear-gradient(180deg, rgba(255,255,255,.1), rgba(255,255,255,.04));
+            backdrop-filter: blur(16px) saturate(150%);
+            -webkit-backdrop-filter: blur(16px) saturate(150%);
+            border: 1px solid rgba(255,255,255,.11);
+            box-shadow: 0 8px 24px rgba(0,0,0,.35), inset 0 1px 0 rgba(255,255,255,.1);
             display: grid;
             grid-template-columns: repeat(${MAX_DOCK_APPS}, 1fr);
             gap: 4px;
@@ -579,22 +661,18 @@
         .ph-dock .ph-home-app-icon svg { width: 20px; height: 20px; }
         .ph-dock .ph-home-app-name { display: none; }
 
-        /* ═══════════════════════════════════════════
-           APP
-           ═══════════════════════════════════════════ */
-        .ph-app {
-            flex: 1; min-height: 0;
-            display: flex; flex-direction: column;
-        }
+        /* ═══ APP ═══ */
+        .ph-app { flex: 1; min-height: 0; display: flex; flex-direction: column; }
         .ph-app-bar {
             display: flex; align-items: center; gap: 8px;
             padding: 8px 12px; margin: 0 12px 8px;
             border-radius: 10px;
-            background: rgba(255,255,255,.06);
-            border: 1px solid rgba(255,255,255,.09);
+            background: linear-gradient(180deg, rgba(255,255,255,.08), rgba(255,255,255,.03));
+            border: 1px solid rgba(255,255,255,.1);
+            box-shadow: inset 0 1px 0 rgba(255,255,255,.08);
             flex-shrink: 0;
         }
-        .ph-app-bar > span { font-size: 12px; font-weight: 800; color: #e9ecf5; letter-spacing: .02em; }
+        .ph-app-bar > span { font-size: 12px; font-weight: 800; color: #e9ecf5; letter-spacing: .02em; text-shadow: 0 1px 2px rgba(0,0,0,.5); }
         .ph-app-back {
             width: 26px; height: 26px; border-radius: 7px;
             background: transparent; border: none;
@@ -602,33 +680,44 @@
             display: inline-flex; align-items: center; justify-content: center;
             transition: color .15s, background .15s;
         }
-        .ph-app-back:hover { color: #67e8f9; background: rgba(34,211,238,.12); }
+        .ph-app-back:hover { color: #67e8f9; background: rgba(34,211,238,.14); }
         .ph-app-back svg { width: 14px; height: 14px; }
 
         .ph-tabs {
-            display: flex; gap: 2px; padding: 0 14px 8px; flex-shrink: 0;
+            display: flex; gap: 2px; padding: 0 10px 8px; flex-shrink: 0;
             border-bottom: 1px solid rgba(255,255,255,.06);
             margin: 0 12px 8px;
         }
         .ph-tab {
-            flex: 1; padding: 8px 0; font-size: 9px; font-weight: 800;
-            text-transform: uppercase; letter-spacing: .06em;
+            flex: 1; padding: 8px 0; font-size: 8px; font-weight: 800;
+            text-transform: uppercase; letter-spacing: .03em;
             color: #8890a8; background: transparent; border: none; cursor: pointer;
             border-bottom: 2px solid transparent; font-family: inherit;
             transition: color .2s, border-color .2s;
+            display: inline-flex; align-items: center; justify-content: center; gap: 3px;
+            -webkit-tap-highlight-color: transparent;
         }
         .ph-tab:hover { color: #d1d5db; }
         .ph-tab.active { color: #7dd3fc; border-color: #22d3ee; }
+        .ph-tab .tab-badge {
+            display: none;
+            min-width: 11px; height: 11px;
+            padding: 0 3px;
+            border-radius: 6px;
+            background: linear-gradient(135deg, #fb7185, #f472b6);
+            color: #fff;
+            font-size: 7px; font-weight: 900;
+            line-height: 11px;
+            letter-spacing: 0;
+            box-shadow: 0 0 6px rgba(251,113,133,.55);
+            animation: phPulseDot 1.8s ease-in-out infinite;
+        }
+        .ph-tab .tab-badge.on { display: inline-flex; align-items: center; justify-content: center; }
 
         .ph-content { flex: 1; min-height: 0; overflow: hidden; display: flex; flex-direction: column; }
 
-        /* ═══════════════════════════════════════════
-           APP: CONFIGURAÇÕES
-           ═══════════════════════════════════════════ */
-        .ph-settings {
-            flex: 1; min-height: 0; overflow-y: auto;
-            padding: 4px 14px 14px;
-        }
+        /* ═══ CONFIGURAÇÕES ═══ */
+        .ph-settings { flex: 1; min-height: 0; overflow-y: auto; padding: 4px 14px 14px; }
         .ph-settings::-webkit-scrollbar { width: 4px; }
         .ph-settings::-webkit-scrollbar-thumb { background: rgba(255,255,255,.14); border-radius: 2px; }
         .ph-settings-group-title {
@@ -638,14 +727,15 @@
         .ph-setting-item {
             display: flex; align-items: center; justify-content: space-between;
             gap: 10px; padding: 12px 14px;
-            background: rgba(255,255,255,.05);
-            border: 1px solid rgba(255,255,255,.07);
+            background: linear-gradient(180deg, rgba(255,255,255,.06), rgba(255,255,255,.025));
+            border: 1px solid rgba(255,255,255,.08);
             border-radius: 12px; margin-bottom: 6px;
             cursor: pointer; font-family: inherit; color: inherit; text-align: left;
             width: 100%;
+            box-shadow: inset 0 1px 0 rgba(255,255,255,.06);
             transition: background .2s, border-color .2s, transform .15s;
         }
-        .ph-setting-item:hover { background: rgba(255,255,255,.09); border-color: rgba(34,211,238,.3); }
+        .ph-setting-item:hover { background: linear-gradient(180deg, rgba(255,255,255,.1), rgba(255,255,255,.04)); border-color: rgba(34,211,238,.3); }
         .ph-setting-item:active { transform: scale(.985); }
         .ph-setting-item-lbl { font-size: 12px; font-weight: 700; color: #e9ecf5; letter-spacing: .01em; }
         .ph-setting-item-sub { font-size: 9.5px; color: #8890a8; margin-top: 2px; }
@@ -654,23 +744,17 @@
         .ph-setting-item.danger .ph-setting-item-val { color: #fca5b1; }
         .ph-setting-item.danger:hover { border-color: rgba(251,113,133,.4); background: rgba(251,113,133,.08); }
 
-        /* Overlay de PIN (setup/change/remove) */
+        /* PIN Modal */
         .ph-pin-modal {
             position: absolute; inset: 0; z-index: 30;
             background: linear-gradient(175deg, rgba(20,18,40,.98), rgba(10,8,26,.99));
-            backdrop-filter: blur(10px);
+            backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
             display: flex; flex-direction: column; align-items: center; justify-content: center;
             gap: 14px; padding: 24px;
             animation: phFadeIn .22s ease;
         }
-        .ph-pin-modal-title {
-            font-size: 13px; font-weight: 800; color: #e9ecf5; text-align: center;
-            letter-spacing: .02em;
-        }
-        .ph-pin-modal-sub {
-            font-size: 10.5px; color: #8890a8; text-align: center;
-            line-height: 1.5; max-width: 200px;
-        }
+        .ph-pin-modal-title { font-size: 13px; font-weight: 800; color: #e9ecf5; text-align: center; letter-spacing: .02em; }
+        .ph-pin-modal-sub { font-size: 10.5px; color: #8890a8; text-align: center; line-height: 1.5; max-width: 200px; }
         .ph-pin-modal-cancel {
             background: transparent; border: 1px solid rgba(255,255,255,.14);
             color: #a8aec4; font-family: inherit; font-size: 10.5px; font-weight: 700;
@@ -679,19 +763,30 @@
         }
         .ph-pin-modal-cancel:hover { background: rgba(255,255,255,.06); color: #e9ecf5; }
 
-        /* ═══════════════════════════════════════════
-           CALL VIEW (overlay quando chamada ativa)
-           ═══════════════════════════════════════════ */
+        /* ═══ CALL VIEW ═══ */
         .ph-call-view { background: linear-gradient(175deg, #1c1a35 0%, #100e26 100%); }
 
-        /* Nav bar home indicator */
+        /* ═══ HOME BAR (clicável) ═══ */
         .ph-home-bar {
-            padding: 5px 0 6px; flex-shrink: 0; display: flex; justify-content: center;
-            position: relative; z-index: 3;
+            padding: 6px 0 8px; flex-shrink: 0; display: flex; justify-content: center;
+            position: relative; z-index: 6;
+            background: transparent; border: none; width: 100%; cursor: pointer;
+            font-family: inherit;
+            transition: background .18s, opacity .15s;
+            -webkit-tap-highlight-color: transparent;
         }
-        .ph-home-bar::before { content: ''; width: 100px; height: 4px; border-radius: 2px; background: rgba(255,255,255,.26); }
+        .ph-home-bar:hover { background: rgba(255,255,255,.03); }
+        .ph-home-bar:active { opacity: .55; }
+        .ph-home-bar::before {
+            content: ''; width: 100px; height: 4px; border-radius: 2px;
+            background: rgba(255,255,255,.28);
+            box-shadow: 0 1px 2px rgba(0,0,0,.4);
+            transition: background .2s, width .2s;
+        }
+        .ph-home-bar:hover::before { background: rgba(255,255,255,.5); width: 112px; }
+        .ph-home-bar:active::before { background: rgba(103,232,249,.8); }
 
-        /* Toast */
+        /* ═══ TOAST ═══ */
         .ph-toast { position: absolute; top: 74px; left: 50%; transform: translateX(-50%);
             padding: 8px 14px; border-radius: 9px; font-size: 10.5px; font-weight: 700; letter-spacing: .02em;
             background: linear-gradient(175deg, rgba(24,22,44,.98), rgba(14,12,32,.99));
@@ -741,7 +836,7 @@
                     <div class="ph-view ph-view-app" id="phViewApp"></div>
                     <div class="ph-view ph-view-call" id="phViewCall"></div>
                 </div>
-                <div class="ph-home-bar"></div>
+                <button class="ph-home-bar" id="phHomeBar" type="button" title="Início" aria-label="Ir para o início"></button>
             </div>
         `;
         _root.appendChild(_frameEl);
@@ -750,7 +845,6 @@
         ctx.frameEl = _frameEl;
         ctx.screenEl = _screenEl;
 
-        // Cria #phContent — container compartilhado com contacts.js
         _contentEl = document.createElement('div');
         _contentEl.className = 'ph-content';
         _contentEl.id = 'phContent';
@@ -765,6 +859,20 @@
             if (!_minimized) return;
             if (e.target.closest('#phNotch')) return;
             _setMinimized(false);
+        });
+
+        // ── Barra inferior → home ──
+        const homeBar = _frameEl.querySelector('#phHomeBar');
+        homeBar.addEventListener('click', (e) => {
+            e.stopPropagation();
+            // Bloqueado durante chamada ativa (o call view precisa permanecer)
+            if (_inCallView || (ctx.phase !== 'idle' && ctx.phase !== 'busy')) return;
+            // Bloqueado na lock screen (não furar o PIN)
+            if (_view === 'lock') return;
+            // Já está no home? Nada a fazer
+            if (_view === 'home') return;
+            try { ctx.tone.home(); } catch(_) {}
+            _goHome();
         });
     }
 
@@ -807,7 +915,6 @@
             views[k].classList.toggle('active', k === name);
         }
         if (name !== 'app' && name !== 'call') {
-            // Move phContent temporariamente para fora do fluxo para não duplicar
             if (_contentEl.parentElement) _contentEl.parentElement.removeChild(_contentEl);
         }
     }
@@ -824,7 +931,6 @@
         const dateStr = _fmtHomeDate(d);
 
         if (_pinSet) {
-            // Com PIN: pede senha direto
             view.innerHTML = `
                 <div class="ph-lock">
                     <div class="ph-lock-clock">
@@ -904,7 +1010,6 @@
         dots.forEach((d, i) => d.classList.toggle('filled', i < count));
     }
 
-    // Monta um keypad com dígitos e uma tecla de ação (padrão: check)
     function _wirePinPad(view, opts) {
         const pad = view.querySelector('#phLockPad');
         if (!pad) return;
@@ -1009,10 +1114,8 @@
 
     function _allAppsForGrid() {
         const list = [];
-        // built-ins
         list.push(_builtinCallsDef());
         list.push(_builtinSettingsDef());
-        // registrados externamente
         for (const a of ctx.apps.all()) list.push(a);
         return list;
     }
@@ -1058,7 +1161,6 @@
     }
 
     function _updateMyNumberUI() {
-        // Header antigo (não existe mais) — atualiza só o da home se estiver lá
         const homeNum = _frameEl?.querySelector('#phHomeNum');
         if (homeNum) {
             if (ctx.myNumber) {
@@ -1103,7 +1205,6 @@
         const app = _resolveAppDef(id);
         if (!app) return;
 
-        // Encerra app anterior se houver
         if (_activeAppId && _activeAppId !== id) {
             _unmountActiveApp();
         }
@@ -1124,19 +1225,32 @@
     }
     ctx.openApp = _openApp;
 
+    // Porta pública: navega direto para uma tab do app Chamadas
+    ctx.goToTab = (tabId) => {
+        if (!_frameEl) return false;
+        if (!['contatos','discar','recentes','recados'].includes(tabId)) return false;
+        _chamadasTab = tabId;
+        if (_view !== 'app' || _activeAppId !== 'calls') {
+            _openApp('calls');
+            return true;
+        }
+        const tabs = _frameEl.querySelector('#phViewApp .ph-tabs');
+        if (tabs) tabs.querySelectorAll('.ph-tab').forEach(b => b.classList.toggle('active', b.dataset.tab === tabId));
+        _renderChamadasContent();
+        return true;
+    };
+
     function _resolveAppDef(id) {
+        const registered = ctx.apps.get(id);
+        if (registered) return registered;
         if (id === 'calls') return _builtinCallsDef();
         if (id === 'settings') return _builtinSettingsDef();
-        return ctx.apps.get(id);
+        return null;
     }
 
     function _unmountActiveApp() {
         if (!_activeAppId) return;
-        if (_activeAppId === 'calls') {
-            // nada pra desmontar além do #phContent
-        } else if (_activeAppId === 'settings') {
-            // nada
-        } else {
+        if (_activeAppId !== 'calls' && _activeAppId !== 'settings') {
             const app = ctx.apps.get(_activeAppId);
             try { app?.unmount?.(); } catch(_) {}
         }
@@ -1156,6 +1270,7 @@
             <button class="ph-tab${_chamadasTab === 'contatos' ? ' active' : ''}" data-tab="contatos">Contatos</button>
             <button class="ph-tab${_chamadasTab === 'discar' ? ' active' : ''}" data-tab="discar">Discar</button>
             <button class="ph-tab${_chamadasTab === 'recentes' ? ' active' : ''}" data-tab="recentes">Recentes</button>
+            <button class="ph-tab${_chamadasTab === 'recados' ? ' active' : ''}" data-tab="recados" title="Recados de voz">Recados<span class="tab-badge" id="phBadgeRecados"></span></button>
         `;
         view.appendChild(tabs);
         view.appendChild(_contentEl);
@@ -1168,12 +1283,46 @@
             });
         });
         _renderChamadasContent();
+        _refreshRecadosBadge();
     }
 
     function _renderChamadasContent() {
         if (_chamadasTab === 'discar') ctx.contacts.renderDial?.();
         else if (_chamadasTab === 'recentes') ctx.contacts.renderHistory?.();
+        else if (_chamadasTab === 'recados') _renderRecadosTab();
         else ctx.contacts.renderContacts?.();
+    }
+
+    function _renderRecadosTab() {
+        if (!_contentEl) return;
+        _contentEl.innerHTML = '';
+        const inboxRoot = document.createElement('div');
+        inboxRoot.className = 'ph-inbox-root';
+        inboxRoot.style.cssText = 'flex:1;min-height:0;display:flex;flex-direction:column;';
+        _contentEl.appendChild(inboxRoot);
+        if (ctx.notes?.renderInbox) {
+            try { ctx.notes.renderInbox(inboxRoot); }
+            catch(e) {
+                console.warn('[Phone/shell] renderInbox falhou:', e);
+                inboxRoot.innerHTML = '<div class="ph-list"><div class="ph-empty">Erro ao abrir recados.</div></div>';
+            }
+        } else {
+            inboxRoot.innerHTML = '<div class="ph-list"><div class="ph-empty">Módulo de recados indisponível.</div></div>';
+        }
+    }
+
+    function _refreshRecadosBadge() {
+        const badge = _frameEl?.querySelector('#phBadgeRecados');
+        if (!badge) return;
+        let n = 0;
+        try { n = ctx.notes?.getUnreadCount?.() || 0; } catch(_) {}
+        if (n > 0) {
+            badge.textContent = n > 9 ? '9+' : String(n);
+            badge.classList.add('on');
+        } else {
+            badge.textContent = '';
+            badge.classList.remove('on');
+        }
     }
 
     // Chamado por contacts.js (compat)
@@ -1182,7 +1331,7 @@
     };
 
     // ═══ CONFIGURAÇÕES APP ═══
-    let _pinFlow = null;    // null | 'set-new' | 'set-confirm' | 'remove-current'
+    let _pinFlow = null;
     let _pinBufFlow = '';
     let _pinFirstFlow = '';
 
@@ -1261,7 +1410,7 @@
             _openPinModal(view, 'Confirmar', 'Digite o PIN atual para remover', { onSuccess: () => {
                 _pinSet = '';
                 try { localStorage.removeItem(LS_PIN); } catch(_) {}
-                try { ctx.tone.success?.(); } catch(_) {}
+                try { ctx.tone.unlock?.(); } catch(_) {}
                 _toast('PIN removido', 'ok');
                 _mountSettingsApp(view);
             }});
@@ -1272,7 +1421,6 @@
     }
 
     function _openPinModal(view, title, sub, opts) {
-        // Remove modal existente
         view.querySelector('.ph-pin-modal')?.remove();
         const modal = el('div', { class: 'ph-pin-modal' });
         modal.innerHTML = `
@@ -1314,7 +1462,6 @@
 
         const handleComplete = () => {
             const pin = _pinBufFlow;
-            // PIN atual?
             if (_pinFlow === 'remove-current') {
                 if (pin !== _pinSet) return _pinWrong();
                 if (opts?.onSuccess) return opts.onSuccess();
@@ -1391,8 +1538,6 @@
     }
 
     // ═══ CALL VIEW ═══
-    // Quando ctx.phase muda para outgoing/incoming/active, o shell mostra
-    // o container de chamada e o calls.js escreve nele via #phContent.
     let _inCallView = false;
     function _checkPhase() {
         const active = ctx.phase !== 'idle' && ctx.phase !== 'busy';
@@ -1407,7 +1552,6 @@
             }
         } else if (!active && _inCallView) {
             _inCallView = false;
-            // Retorna pra home se não estamos em um app
             if (_prevView === 'app' && _activeAppId) {
                 const view = _frameEl.querySelector('#phViewApp');
                 if (view) view.appendChild(_contentEl);
@@ -1431,16 +1575,12 @@
     ctx.clearCallGlow = () => _frameEl?.classList.remove('ringing');
     ctx.setRecording = (on) => _frameEl?.classList.toggle('recording', on);
 
-    // Compat: nada mais usa isso diretamente, mas mantemos pra não quebrar
-    ctx.updateMyNumberUI = _updateMyNumberUI;
-
     // ═══ TECLADO FÍSICO ═══
     function _handlePhysicalKeys(e) {
         if (_dying) return;
         if (!_frameEl || _frameEl.classList.contains('hidden')) return;
         if (_minimized) return;
 
-        // Ignora se um input real está focado (dentro ou fora do phone)
         const ae = _shadow?.activeElement;
         if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.isContentEditable)) return;
         const outAe = document.activeElement;
@@ -1450,15 +1590,11 @@
         let sel = null;
         let scope = null;
 
-        // Lock screen com PIN
         if (_view === 'lock' && _pinSet) {
             scope = _frameEl.querySelector('#phLockPad');
-        }
-        // Chamadas → Discar
-        else if (_view === 'app' && _activeAppId === 'calls' && _chamadasTab === 'discar') {
+        } else if (_view === 'app' && _activeAppId === 'calls' && _chamadasTab === 'discar') {
             scope = _frameEl.querySelector('#phContent');
-        }
-        else return;
+        } else return;
 
         if (!scope) return;
 
@@ -1507,7 +1643,6 @@
         _frameEl.classList.remove('hidden');
         _tickClock();
         if (!ctx.myNumber) ctx.contacts.ensureMyNumber?.();
-        // Sempre mostra o estado atual
         if (_inCallView) _showView('call');
         else if (_view === 'app' && _activeAppId) _showView('app');
         else if (_view === 'home') _renderHome();
@@ -1541,37 +1676,37 @@
         _injectBaseStyle();
         _ensureFrame();
 
-        // Estado inicial: lock screen
         _renderLock();
 
-        // Carrega módulos filhos em paralelo
         const base = MODULES_BASE;
         await Promise.all([
             _loadModule('contacts', base + '/contacts.js'),
             _loadModule('calls',    base + '/calls.js'),
             _loadModule('notes',    base + '/notes.js')
         ]);
+
         // Apps opcionais — descomente conforme forem adicionados:
         // await Promise.all([
         //   _loadModule('iptv', base + '/apps/iptv.js')
         // ]);
 
-        // Atualiza home se apps registrarem depois
         ctx.apps.onChange(() => {
             if (_view === 'home') _renderHome();
         });
 
-        // Aloca número
+        // Badge do tab de recados
+        try {
+            ctx.notes?.onUnreadChange?.(_refreshRecadosBadge);
+            _refreshRecadosBadge();
+        } catch(_) {}
+
         if (ctx.contacts.ensureMyNumber) {
             ctx.contacts.ensureMyNumber().then(n => {
                 if (n && !_minimized && _view === 'home') _toast('Seu número: ' + (ctx.contacts.fmtNumber?.(n) || n), 'ok');
             });
         }
 
-        // Inicia poll de recados
         ctx.notes.startNotesPoll?.();
-
-        // Inicia poll de fase (call view)
         _startPhasePoll();
     }
 
