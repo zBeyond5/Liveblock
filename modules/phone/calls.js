@@ -16,6 +16,7 @@
     ];
     const POLL_MS = 400;
     const CALL_TIMEOUT_MS = 45000;
+    const OFFER_STALE_MS = 60000;
     const RINGBACK_CYCLE_MS = 4000;
     const RING_CYCLE_MS = 1500;
     const BUSY_CYCLE_MS = 500;
@@ -43,6 +44,7 @@
     let _iceSeen = new Set();
     let _busyDismissTimer = null;
     let _iceRestartTimer = null;
+    let _groupRosterSig = '';
 
     let _hostState = { callId: null, createdAt: 0 };
     const _hostMembers = new Map();
@@ -58,7 +60,7 @@
     const tone = ctx.tone;
     function setPhase(p) { ctx.phase = p; }
 
-    // ═══ RTDB ═══
+    // ═══ RTDB HELPERS ═══
     const sigPath = (targetId, sub) => 'signaling/' + targetId + (sub ? '/' + sub : '');
     const sigGet = (targetId, sub) => bridge.rtdb.get(sigPath(targetId, sub));
     const sigPut = (targetId, sub, v) => bridge.rtdb.put(sigPath(targetId, sub), v);
@@ -88,7 +90,7 @@
         return _localStream;
     }
 
-    // [BUG 1] Resolve meu avatar: cache local → diretório Firestore.
+    // Resolve meu avatar: cache do player → diretório Firestore.
     async function _resolveMyAvatar() {
         let av = bridge.player?.avatarUrl || '';
         if (av) return av;
@@ -104,9 +106,8 @@
         return '';
     }
 
-    // [BUG 2] Promove a chamada para 'active' assim que qualquer membro estiver
-    // pronto (connectionState OU iceConnectionState), fechando a janela de corrida
-    // entre o answer aplicar e o connectionState virar 'connected'.
+    // Promove a chamada para 'active' assim que qualquer membro estiver pronto —
+    // cobre a corrida entre setRemoteDescription e connectionState virar 'connected'.
     function _promoteToActiveIfReady() {
         if (ctx.phase !== 'outgoing') return false;
         let ready = false;
@@ -220,6 +221,22 @@
         });
     }
 
+    // Aplica identidade (nome/avatar/número) do callee no entry, atualiza _peer
+    // se for o peer primário, e devolve true se algo mudou.
+    function _applyCalleeIdentity(entry, source) {
+        if (!entry || !source) return false;
+        let changed = false;
+        if (source.fromAvatar && entry.avatarUrl !== source.fromAvatar) { entry.avatarUrl = source.fromAvatar; changed = true; }
+        if (source.fromName && (!entry.name || entry.name === 'Sem nome')) { entry.name = source.fromName; changed = true; }
+        if (source.fromNumber && !entry.number) { entry.number = source.fromNumber; changed = true; }
+        if (_peer && entry === _hostMembers.get(_peer.id)) {
+            if (source.fromAvatar) { _peer.avatarUrl = source.fromAvatar; changed = true; }
+            if (source.fromName && (!_peer.name || _peer.name === 'Sem nome')) { _peer.name = source.fromName; changed = true; }
+            if (source.fromNumber && !_peer.number) { _peer.number = source.fromNumber; changed = true; }
+        }
+        return changed;
+    }
+
     // ═══ HOST: iniciar chamada ═══
     async function _call(targets) {
         if (ctx.phase !== 'idle' || !targets.length) return;
@@ -228,8 +245,24 @@
             return;
         }
         if (ctx.getMinimized()) ctx.setMinimized(false);
-        try { await _ensureStream(); }
+
+        let stream;
+        try { stream = await _ensureStream(); }
         catch (e) { _busyTone('Sem microfone', 'Permissão negada.'); return; }
+
+        // Enriquece avatar do target pelo diretório, se ainda não temos.
+        // Assim o caller mostra o avatar imediatamente em vez de esperar o answer.
+        for (const t of targets) {
+            if (t.avatarUrl) continue;
+            if (!t.number) continue;
+            try {
+                const doc = await bridge.firestore.request('GET', '/phone_numbers/' + t.number);
+                if (doc?.fields) {
+                    const parsed = bridge.firestore.parseDoc(doc);
+                    if (parsed.avatarUrl) t.avatarUrl = parsed.avatarUrl;
+                }
+            } catch(_) {}
+        }
 
         _hostState.callId = targets.length > 1 ? ('g' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6)) : null;
         _hostState.createdAt = Date.now();
@@ -238,6 +271,7 @@
         _iceSeen.clear();
         _hostMembers.clear();
         _individualMutes.clear();
+        _groupRosterSig = '';
 
         if (_hostState.callId) {
             try {
@@ -252,7 +286,7 @@
                 });
             } catch(_) {}
         }
-        _peer = { id: targets[0].id, name: targets[0].name, avatarUrl: targets[0].avatarUrl, number: targets[0].number };
+        _peer = { id: targets[0].id, name: targets[0].name, avatarUrl: targets[0].avatarUrl || '', number: targets[0].number };
         setPhase('outgoing');
         ctx.announceCall();
         _renderCall();
@@ -273,7 +307,10 @@
             name: target.name || 'Sem nome',
             avatarUrl: target.avatarUrl || '',
             number: target.number || '',
-            joinedAt: Date.now(), answered: false, iceSeen: new Set(),
+            joinedAt: Date.now(), answered: false,
+            iceSeen: new Set(),
+            icePending: [],
+            icePendingKeys: new Set(),
             disconnectedAt: 0
         };
         _hostMembers.set(devId, entry);
@@ -306,7 +343,6 @@
         };
         pc.onicecandidate = (ev) => { if (!ev.candidate) return; sigPost(devId, 'ice/caller', ev.candidate.toJSON()).catch(() => {}); };
 
-        // [BUG 2] Transição de estado — promove pela connectionState
         pc.onconnectionstatechange = () => {
             const s = pc.connectionState;
             if (s === 'connected') {
@@ -330,9 +366,7 @@
                 _removeHostMember(devId, true);
             }
         };
-
-        // [BUG 2] ICE pode chegar antes de connectionState em alguns browsers
-        // (notadamente Firefox). Ouvir aqui também fecha a janela de corrida.
+        // Alguns browsers disparam ICE antes do connectionState
         pc.oniceconnectionstatechange = () => {
             const ics = pc.iceConnectionState;
             if (ics === 'connected' || ics === 'completed') {
@@ -348,13 +382,14 @@
                 const offer = await pc.createOffer({ offerToReceiveAudio: true });
                 await pc.setLocalDescription(offer);
                 await _waitIce(pc, 2200);
-                // [BUG 1] Avatar confiável no offer também
                 const myAvatar = await _resolveMyAvatar();
                 const payload = {
                     type: 'offer', kind: 'phone', sdp: pc.localDescription.sdp,
-                    fromId: bridge.deviceId || '', fromName: bridge.player?.name || 'Usuário',
+                    fromId: bridge.deviceId || '',
+                    fromName: bridge.player?.name || 'Usuário',
                     fromAvatar: myAvatar || bridge.player?.avatarUrl || '',
-                    fromNumber: ctx.myNumber || '', ts: Date.now()
+                    fromNumber: ctx.myNumber || '',
+                    ts: Date.now()
                 };
                 if (_hostState.callId) { payload.groupId = _hostState.callId; payload.groupSize = _hostMembers.size; }
                 const ok = await sigPut(devId, 'offer', payload);
@@ -371,42 +406,70 @@
         if (!entry || !entry.pc) return;
         const doc = await sigGet(devId, '');
         if (!doc) return;
+
+        // Hangup remoto
         if (doc.offer && doc.offer.type === 'hangup' && doc.offer.fromId && doc.offer.fromId !== bridge.deviceId) {
-            _removeHostMember(devId, true); return;
+            _removeHostMember(devId, true);
+            return;
         }
+
+        // Reject ou Answer
         if (!entry.answered && doc.answer) {
-            if (doc.answer.type === 'reject') { ctx.toast((entry.name || 'Sessão') + ' recusou', 'err'); _removeHostMember(devId, false); return; }
+            if (doc.answer.type === 'reject') {
+                const reason = doc.answer.reason || 'rejected';
+                const label = reason === 'busy' ? 'Ocupado'
+                            : reason === 'blocked' ? 'Bloqueada'
+                            : reason === 'stale' ? 'Expirada'
+                            : reason === 'timeout' ? 'Sem resposta'
+                            : 'Recusada';
+                if (_hostMembers.size <= 1) {
+                    _endCall(false, label);
+                } else {
+                    ctx.toast((entry.name || 'Membro') + ' recusou', 'err');
+                    _removeHostMember(devId, false);
+                }
+                return;
+            }
             if (doc.answer.sdp) {
                 try {
                     await entry.pc.setRemoteDescription(new RTCSessionDescription({ type: 'answer', sdp: doc.answer.sdp }));
                     entry.answered = true;
+                    const changed = _applyCalleeIdentity(entry, doc.answer);
 
-                    // [BUG 1] Aplica name/avatar/number que vieram no answer
-                    let changed = false;
-                    if (doc.answer.fromAvatar && !entry.avatarUrl) { entry.avatarUrl = doc.answer.fromAvatar; changed = true; }
-                    if (doc.answer.fromName && (!entry.name || entry.name === 'Sem nome')) { entry.name = doc.answer.fromName; changed = true; }
-                    if (doc.answer.fromNumber && !entry.number) { entry.number = doc.answer.fromNumber; changed = true; }
-                    // Espelha em _peer se for o peer principal (1:1)
-                    if (_peer && entry === _hostMembers.get(_peer.id)) {
-                        if (doc.answer.fromAvatar) _peer.avatarUrl = doc.answer.fromAvatar;
-                        if (doc.answer.fromName) _peer.name = doc.answer.fromName;
-                        if (doc.answer.fromNumber) _peer.number = doc.answer.fromNumber;
-                        changed = true;
+                    // Drena ICE que chegou cedo demais
+                    if (entry.icePending?.length) {
+                        for (const cand of entry.icePending) {
+                            try { await entry.pc.addIceCandidate(new RTCIceCandidate(cand)); } catch(_) {}
+                        }
+                        entry.icePendingKeys.forEach(k => entry.iceSeen.add(k));
+                        entry.icePending = [];
+                        entry.icePendingKeys.clear();
                     }
-                    // [BUG 2] Tenta promover mesmo antes do connectionState virar 'connected'
+
                     _promoteToActiveIfReady();
-                    // Sempre re-render após answer pra sair visualmente de "Chamando…"
                     if (changed || ctx.phase === 'outgoing') _renderCall();
                 } catch(_) {}
             }
         }
+
+        // ICE do callee
         const remoteIce = await sigGet(devId, 'ice/callee');
         if (remoteIce) {
             for (const k in remoteIce) {
                 if (entry.iceSeen.has(k)) continue;
-                entry.iceSeen.add(k);
                 const cand = remoteIce[k];
-                if (cand && cand.candidate) { try { await entry.pc.addIceCandidate(new RTCIceCandidate(cand)); } catch(_) {} }
+                if (!cand || !cand.candidate) continue;
+                if (entry.pc.remoteDescription) {
+                    try {
+                        await entry.pc.addIceCandidate(new RTCIceCandidate(cand));
+                        entry.iceSeen.add(k);
+                    } catch(_) {}
+                } else {
+                    if (!entry.icePendingKeys.has(k)) {
+                        entry.icePendingKeys.add(k);
+                        entry.icePending.push(cand);
+                    }
+                }
             }
         }
     }
@@ -422,7 +485,10 @@
         try { entry.pc.close(); } catch(_) {}
         _hostMembers.delete(devId);
         _individualMutes.delete(devId);
-        if (notify) sigPut(devId, 'offer', { type: 'hangup', kind: 'phone', fromId: bridge.deviceId || '', ts: Date.now() }).catch(() => {});
+
+        if (notify) {
+            sigPut(devId, 'offer', { type: 'hangup', kind: 'phone', fromId: bridge.deviceId || '', ts: Date.now() }).catch(() => {});
+        }
         if (_hostState.callId && bridge.rtdb?.del) {
             bridge.rtdb.del(gcallPath(_hostState.callId) + '/members/' + devId).catch(() => {});
             bridge.rtdb.del(gcallPath(_hostState.callId) + '/speaking/' + devId).catch(() => {});
@@ -432,7 +498,6 @@
         _renderCall();
     }
 
-    // [BUG 3] Valida cada etapa, retorna bool, reverte o gcall se falhar.
     async function _addMemberToCall(target) {
         if (!target?.id) return false;
         if (_hostMembers.has(target.id)) return false;
@@ -489,20 +554,30 @@
     // ═══ INCOMING ═══
     function _onIncoming(offer) {
         if (!offer) return;
+
         if (offer.type === 'hangup') {
             if (_peer && offer.fromId === _peer.id) _endCall(false, 'Encerrada');
+            else if (_incomingOffer && _incomingOffer.fromId === offer.fromId) _rejectCall('canceled');
             return;
         }
         if (offer.type !== 'offer' || !offer.sdp) return;
+
+        // Oferta expirada — o caller já desistiu
+        if (offer.ts && Date.now() - offer.ts > OFFER_STALE_MS) {
+            try { sigPut(bridge.deviceId, 'answer', { type: 'reject', reason: 'stale', ts: Date.now() }); } catch(_) {}
+            return;
+        }
+        // Bloqueio — reject vai no PRÓPRIO path
         if (offer.fromNumber && ctx.contacts.isBlocked?.(offer.fromNumber)) {
-            try { sigPut(offer.fromId || 'unknown', 'answer', { type: 'reject', reason: 'blocked', ts: Date.now() }); } catch(_) {}
+            try { sigPut(bridge.deviceId, 'answer', { type: 'reject', reason: 'blocked', ts: Date.now() }); } catch(_) {}
             return;
         }
+        // Ocupado — reject no PRÓPRIO path
         if (ctx.phase !== 'idle') {
-            try { sigPut(offer.fromId || 'unknown', 'answer', { type: 'reject', reason: 'busy', ts: Date.now() }); } catch(_) {}
-            if (offer.fromId) bridge.rtdb.put('signaling/' + bridge.deviceId + '/answer', { type: 'reject', reason: 'busy', ts: Date.now() }).catch(() => {});
+            try { sigPut(bridge.deviceId, 'answer', { type: 'reject', reason: 'busy', ts: Date.now() }); } catch(_) {}
             return;
         }
+
         if (ctx.getMinimized()) ctx.setMinimized(false);
         _maybeNotify(offer.fromName, offer.fromAvatar);
 
@@ -522,7 +597,9 @@
             if (!document.hidden) return;
             if (typeof Notification === 'undefined') return;
             if (Notification.permission === 'granted') {
-                const n = new Notification(name || 'Chamada', { body: 'Chamando no celular…', tag: 'sang-phone-call' });
+                const opts = { body: 'Chamando no celular…', tag: 'sang-phone-call' };
+                if (avatar) opts.icon = avatar;
+                const n = new Notification(name || 'Chamada', opts);
                 n.onclick = () => { window.focus(); if (ctx.getMinimized()) ctx.setMinimized(false); n.close(); };
             } else if (Notification.permission === 'default' && !localStorage.getItem(LS_NOTIF)) {
                 localStorage.setItem(LS_NOTIF, '1');
@@ -536,8 +613,10 @@
         const offer = _incomingOffer;
         if (!offer || ctx.phase !== 'incoming') return;
         _stopRingLoop(); _cancelTimeout();
+
         let stream;
         try { stream = await _ensureStream(); } catch (e) { _rejectCall('no-mic'); return; }
+
         setPhase('active');
         ctx.clearCallGlow();
         _startedAt = Date.now();
@@ -548,13 +627,16 @@
 
         if (offer.groupId) {
             _groupRosterCache = { callId: offer.groupId, host: offer.fromId, members: [] };
+            _groupRosterSig = '';
             _groupPollTimer = setInterval(_pollGroupRoster, GROUP_POLL_MS);
             _pollGroupRoster();
         }
+
         try {
             const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
             _pc = pc;
             stream.getAudioTracks().forEach(t => pc.addTrack(t, stream));
+
             const remote = new MediaStream();
             pc.ontrack = (ev) => {
                 ev.streams[0].getAudioTracks().forEach(t => remote.addTrack(t));
@@ -579,11 +661,12 @@
                     _endCall(true, 'Conexão perdida');
                 }
             };
+
             await pc.setRemoteDescription(new RTCSessionDescription({ type: 'offer', sdp: offer.sdp }));
             const answer = await pc.createAnswer();
             await pc.setLocalDescription(answer);
 
-            // [BUG 1] Answer agora carrega identidade do atendedor — caller atualiza a UI
+            // Answer carrega identidade do atendedor — caller atualiza a UI
             const myAvatar = await _resolveMyAvatar();
             await sigPut(bridge.deviceId, 'answer', {
                 type: 'answer', sdp: answer.sdp, fromId: bridge.deviceId,
@@ -604,18 +687,31 @@
             const doc = await bridge.rtdb.get(RTDB_GCALL + '/' + _groupRosterCache.callId);
             if (!doc) return;
             const members = doc.members ? Object.entries(doc.members).map(([id, m]) => ({ id, ...m })) : [];
-            _groupRosterCache.members = members;
             if (doc.status === 'ended') { _endCall(false, 'Encerrada'); return; }
+
+            // Atualiza speaking set
             _speakingSet.clear();
             if (doc.speaking) for (const devId in doc.speaking) if (doc.speaking[devId]?.s === 1) _speakingSet.add(devId);
-            if (_peer && _incomingOffer?.groupId) _renderCall();
+
+            // Assinatura para evitar re-render desnecessário
+            const sig = members.map(m => m.id + '|' + (m.name || '') + '|' + (m.avatarUrl || '') + '|' + (m.isHost ? 1 : 0)).sort().join('#')
+                      + '#' + Array.from(_speakingSet).sort().join(',');
+            if (sig === _groupRosterSig) return;
+
+            _groupRosterCache.members = members;
+            _groupRosterSig = sig;
+            _renderCall();
         } catch(_) {}
     }
 
     function _rejectCall(reason) {
         const offer = _incomingOffer;
         _stopRingLoop(); _cancelTimeout();
-        if (offer && offer.fromId) sigPut(offer.fromId, 'answer', { type: 'reject', reason: reason || 'rejected', ts: Date.now() }).catch(() => {});
+        // Reject vai para o PRÓPRIO path — é de lá que o caller lê
+        try { sigPut(bridge.deviceId, 'answer', { type: 'reject', reason: reason || 'rejected', ts: Date.now() }); } catch(_) {}
+        // Limpa o próprio path depois que o caller teve tempo de ler
+        setTimeout(() => { sigDel(bridge.deviceId, '').catch(() => {}); }, 2500);
+
         _cleanupCall();
         setPhase('idle');
         _incomingOffer = null;
@@ -628,11 +724,18 @@
         if (ctx.phase === 'idle') return;
         const doc = await sigGet(targetId, '');
         if (!doc) return;
-        if (doc.offer && doc.offer.type === 'hangup' && doc.offer.fromId && doc.offer.fromId !== bridge.deviceId) { _endCall(false, 'Encerrada'); return; }
+        if (doc.offer && doc.offer.type === 'hangup' && doc.offer.fromId && doc.offer.fromId !== bridge.deviceId) {
+            _endCall(false, 'Encerrada');
+            return;
+        }
         if (role === 'caller' && doc.answer && !_answered) {
             if (doc.answer.type === 'reject') {
                 const reason = doc.answer.reason || 'rejected';
-                const label = reason === 'busy' ? 'Ocupado' : reason === 'timeout' ? 'Sem resposta' : reason === 'blocked' ? 'Bloqueada' : 'Recusada';
+                const label = reason === 'busy' ? 'Ocupado'
+                            : reason === 'blocked' ? 'Bloqueada'
+                            : reason === 'stale' ? 'Expirada'
+                            : reason === 'timeout' ? 'Sem resposta'
+                            : 'Recusada';
                 _endCall(true, label);
                 return;
             }
@@ -645,32 +748,36 @@
         if (remoteIce && _pc) {
             for (const k in remoteIce) {
                 if (_iceSeen.has(k)) continue;
-                _iceSeen.add(k);
                 const cand = remoteIce[k];
-                if (cand && cand.candidate) { try { await _pc.addIceCandidate(new RTCIceCandidate(cand)); } catch(_) {} }
+                if (cand && cand.candidate) {
+                    try { await _pc.addIceCandidate(new RTCIceCandidate(cand)); _iceSeen.add(k); } catch(_) {}
+                }
             }
         }
     }
 
     // ═══ ENCERRAR ═══
     function _endCall(notifyRemote, label) {
+        if (ctx.phase === 'idle') return;
         _stopRingLoop(); _cancelTimeout();
         _recordHistory(label);
 
         if (_hostMembers.size) {
+            // Host/caller side — hangup por membro
             for (const devId of _hostMembers.keys()) {
                 if (notifyRemote) sigPut(devId, 'offer', { type: 'hangup', kind: 'phone', fromId: bridge.deviceId || '', ts: Date.now() }).catch(() => {});
                 setTimeout(() => { sigDel(devId, '').catch(() => {}); }, 1500);
             }
-        } else if (notifyRemote && _peer && _peer.id) {
-            sigPut(_peer.id, 'offer', { type: 'hangup', kind: 'phone', fromId: bridge.deviceId || '', ts: Date.now() }).catch(() => {});
-            const targetId = _peer.id;
-            setTimeout(() => { sigDel(targetId, '').catch(() => {}); }, 1500);
+            if (_hostState.callId) {
+                bridge.rtdb.put(gcallPath(_hostState.callId) + '/status', 'ended').catch(() => {});
+                setTimeout(() => { bridge.rtdb.del(gcallPath(_hostState.callId)).catch(() => {}); }, 4000);
+            }
+        } else if (_peer && _peer.id) {
+            // Callee side — hangup vai pro PRÓPRIO path (o caller polla aqui)
+            if (notifyRemote) sigPut(bridge.deviceId, 'offer', { type: 'hangup', kind: 'phone', fromId: bridge.deviceId || '', ts: Date.now() }).catch(() => {});
+            setTimeout(() => { sigDel(bridge.deviceId, '').catch(() => {}); }, 1500);
         }
-        if (_hostState.callId) {
-            bridge.rtdb.put(gcallPath(_hostState.callId) + '/status', 'ended').catch(() => {});
-            setTimeout(() => { bridge.rtdb.del(gcallPath(_hostState.callId)).catch(() => {}); }, 4000);
-        }
+
         tone.hangup();
         _cleanupCall();
         setPhase('idle');
@@ -678,6 +785,7 @@
         _incomingOffer = null;
         _isGroupCaller = false;
         _groupRosterCache = null;
+        _groupRosterSig = '';
         ctx.clearCallGlow();
         ctx.renderTab();
         if (label) _busyTone(label, '');
@@ -686,7 +794,7 @@
     function _recordHistory(label) {
         if (!_peer && !_hostMembers.size) return;
         const dur = _startedAt ? (Date.now() - _startedAt) : 0;
-        const wasGroup = _hostMembers.size > 1 || (_hostMembers.size === 1 && _isGroupCaller) || (_incomingOffer?.groupId);
+        const wasGroup = _hostMembers.size > 1 || (_hostMembers.size === 1 && _isGroupCaller) || (_incomingOffer?.groupId && (_groupRosterCache?.members?.length || 0) > 2);
         const members = [];
         if (_hostMembers.size) for (const [, e] of _hostMembers) members.push({ number: e.number || '', name: e.name || '', avatarUrl: e.avatarUrl || '' });
         else if (_peer) members.push({ number: _peer.number || '', name: _peer.name || '', avatarUrl: _peer.avatarUrl || '' });
@@ -694,8 +802,8 @@
         const dir = _incomingOffer ? 'incoming' : 'outgoing';
         let status = 'answered';
         if (dur === 0) {
-            if (label === 'Recusada' || label === 'Bloqueada') status = 'rejected';
-            else if (['Sem resposta','Ocupado','Fora de área'].includes(label)) status = 'missed';
+            if (label === 'Recusada' || label === 'Bloqueada' || label === 'canceled') status = 'rejected';
+            else if (['Sem resposta','Ocupado','Fora de área','Expirada'].includes(label)) status = 'missed';
             else status = 'answered';
         }
         ctx.contacts.pushHistory?.({
@@ -725,6 +833,8 @@
         _hostState.callId = null;
         _individualMutes.clear();
         _speakingSet.clear();
+        _groupRosterCache = null;
+        _groupRosterSig = '';
         if (_pc) {
             try { _pc.getSenders().forEach(s => { try { s.track?.stop?.(); } catch(e) {} }); } catch(e) {}
             try { _pc.close(); } catch(e) {}
@@ -771,7 +881,8 @@
     function _renderCall() {
         const content = ctx.screenEl?.querySelector('#phContent');
         if (!content) return;
-        const isGroup = _hostState.callId || _incomingOffer?.groupId || _hostMembers.size > 1;
+        const isGroup = _hostMembers.size > 1
+            || (!_hostMembers.size && _groupRosterCache?.members && _groupRosterCache.members.length > 2);
         const members = _buildCallRoster();
         if (!isGroup && members.length <= 1) {
             const peer = members[0] || _peer || {};
@@ -919,8 +1030,6 @@
     }
 
     // ═══ ADD PICKER ═══
-    // [BUG 3] Usa contatos salvos (não sessões cruas), cruza com sessões online,
-    // exclui membros atuais, e propaga o resultado de _addMemberToCall.
     async function _openAddPicker() {
         if (!ctx.screenEl || _openAddPicker._open) return;
         if (!_hostMembers.size) { ctx.toast('Você não é o anfitrião', 'err'); return; }
