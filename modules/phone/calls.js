@@ -88,6 +88,45 @@
         return _localStream;
     }
 
+    // [BUG 1] Resolve meu avatar: cache local → diretório Firestore.
+    async function _resolveMyAvatar() {
+        let av = bridge.player?.avatarUrl || '';
+        if (av) return av;
+        const num = ctx.myNumber;
+        if (!num) return '';
+        try {
+            const doc = await bridge.firestore.request('GET', '/phone_numbers/' + num);
+            if (doc?.fields) {
+                const parsed = bridge.firestore.parseDoc(doc);
+                return parsed.avatarUrl || '';
+            }
+        } catch(_) {}
+        return '';
+    }
+
+    // [BUG 2] Promove a chamada para 'active' assim que qualquer membro estiver
+    // pronto (connectionState OU iceConnectionState), fechando a janela de corrida
+    // entre o answer aplicar e o connectionState virar 'connected'.
+    function _promoteToActiveIfReady() {
+        if (ctx.phase !== 'outgoing') return false;
+        let ready = false;
+        for (const [, e] of _hostMembers) {
+            if (!e.answered) continue;
+            const cs = e.pc.connectionState;
+            const ics = e.pc.iceConnectionState;
+            if (cs === 'connected' || ics === 'connected' || ics === 'completed') { ready = true; break; }
+        }
+        if (!ready) return false;
+        setPhase('active');
+        _startedAt = Date.now();
+        _stopRingLoop();
+        ctx.clearCallGlow();
+        tone.pickup();
+        _startTimers();
+        _renderCall();
+        return true;
+    }
+
     // ═══ MIXER ═══
     function _ensureMixCtx() {
         if (_mixCtx) return _mixCtx;
@@ -266,6 +305,8 @@
             _startVadFor(devId, remote);
         };
         pc.onicecandidate = (ev) => { if (!ev.candidate) return; sigPost(devId, 'ice/caller', ev.candidate.toJSON()).catch(() => {}); };
+
+        // [BUG 2] Transição de estado — promove pela connectionState
         pc.onconnectionstatechange = () => {
             const s = pc.connectionState;
             if (s === 'connected') {
@@ -273,19 +314,9 @@
                 if (entry.iceRestartTimer) { clearTimeout(entry.iceRestartTimer); entry.iceRestartTimer = null; }
                 if (!entry.answered) {
                     entry.answered = true;
-                    if (ctx.phase === 'outgoing') {
-                        setPhase('active');
-                        _startedAt = Date.now();
-                        _stopRingLoop();
-                        ctx.clearCallGlow();
-                        tone.pickup();
-                        _renderCall();
-                        _startTimers();
-                    } else {
-                        tone.join();
-                        _renderCall();
-                    }
+                    if (ctx.phase === 'active') { tone.join(); _renderCall(); }
                 }
+                _promoteToActiveIfReady();
             } else if (s === 'disconnected') {
                 if (!entry.disconnectedAt) {
                     entry.disconnectedAt = Date.now();
@@ -300,6 +331,16 @@
             }
         };
 
+        // [BUG 2] ICE pode chegar antes de connectionState em alguns browsers
+        // (notadamente Firefox). Ouvir aqui também fecha a janela de corrida.
+        pc.oniceconnectionstatechange = () => {
+            const ics = pc.iceConnectionState;
+            if (ics === 'connected' || ics === 'completed') {
+                if (!entry.answered) return;
+                _promoteToActiveIfReady();
+            }
+        };
+
         (async () => {
             try {
                 await sigDel(devId, '');
@@ -307,10 +348,13 @@
                 const offer = await pc.createOffer({ offerToReceiveAudio: true });
                 await pc.setLocalDescription(offer);
                 await _waitIce(pc, 2200);
+                // [BUG 1] Avatar confiável no offer também
+                const myAvatar = await _resolveMyAvatar();
                 const payload = {
                     type: 'offer', kind: 'phone', sdp: pc.localDescription.sdp,
                     fromId: bridge.deviceId || '', fromName: bridge.player?.name || 'Usuário',
-                    fromAvatar: bridge.player?.avatarUrl || '', fromNumber: ctx.myNumber || '', ts: Date.now()
+                    fromAvatar: myAvatar || bridge.player?.avatarUrl || '',
+                    fromNumber: ctx.myNumber || '', ts: Date.now()
                 };
                 if (_hostState.callId) { payload.groupId = _hostState.callId; payload.groupSize = _hostMembers.size; }
                 const ok = await sigPut(devId, 'offer', payload);
@@ -333,7 +377,27 @@
         if (!entry.answered && doc.answer) {
             if (doc.answer.type === 'reject') { ctx.toast((entry.name || 'Sessão') + ' recusou', 'err'); _removeHostMember(devId, false); return; }
             if (doc.answer.sdp) {
-                try { await entry.pc.setRemoteDescription(new RTCSessionDescription({ type: 'answer', sdp: doc.answer.sdp })); entry.answered = true; } catch(_) {}
+                try {
+                    await entry.pc.setRemoteDescription(new RTCSessionDescription({ type: 'answer', sdp: doc.answer.sdp }));
+                    entry.answered = true;
+
+                    // [BUG 1] Aplica name/avatar/number que vieram no answer
+                    let changed = false;
+                    if (doc.answer.fromAvatar && !entry.avatarUrl) { entry.avatarUrl = doc.answer.fromAvatar; changed = true; }
+                    if (doc.answer.fromName && (!entry.name || entry.name === 'Sem nome')) { entry.name = doc.answer.fromName; changed = true; }
+                    if (doc.answer.fromNumber && !entry.number) { entry.number = doc.answer.fromNumber; changed = true; }
+                    // Espelha em _peer se for o peer principal (1:1)
+                    if (_peer && entry === _hostMembers.get(_peer.id)) {
+                        if (doc.answer.fromAvatar) _peer.avatarUrl = doc.answer.fromAvatar;
+                        if (doc.answer.fromName) _peer.name = doc.answer.fromName;
+                        if (doc.answer.fromNumber) _peer.number = doc.answer.fromNumber;
+                        changed = true;
+                    }
+                    // [BUG 2] Tenta promover mesmo antes do connectionState virar 'connected'
+                    _promoteToActiveIfReady();
+                    // Sempre re-render após answer pra sair visualmente de "Chamando…"
+                    if (changed || ctx.phase === 'outgoing') _renderCall();
+                } catch(_) {}
             }
         }
         const remoteIce = await sigGet(devId, 'ice/callee');
@@ -368,30 +432,51 @@
         _renderCall();
     }
 
+    // [BUG 3] Valida cada etapa, retorna bool, reverte o gcall se falhar.
     async function _addMemberToCall(target) {
-        if (_hostMembers.has(target.id)) return;
+        if (!target?.id) return false;
+        if (_hostMembers.has(target.id)) return false;
+
         if (!_hostState.callId) {
+            // Promove 1:1 → grupo. Só spawna o novo peer depois que o gcall existe.
             _hostState.callId = 'g' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
             _hostState.createdAt = Date.now();
             _isGroupCaller = true;
             try {
-                await gcallPut({
+                const okRoot = await gcallPut({
                     hostId: bridge.deviceId || '', hostName: bridge.player?.name || 'Host',
                     hostAvatar: bridge.player?.avatarUrl || '', hostNumber: ctx.myNumber || '',
                     createdAt: _hostState.createdAt, status: 'active', members: {}, speaking: {}
                 });
-                await gcallMemberPut(bridge.deviceId, {
+                if (!okRoot) throw new Error('gcall root');
+                const okSelf = await gcallMemberPut(bridge.deviceId, {
                     name: bridge.player?.name || 'Host', avatarUrl: bridge.player?.avatarUrl || '',
                     number: ctx.myNumber || '', joinedAt: _hostState.createdAt, isHost: true
                 });
+                if (!okSelf) throw new Error('gcall self');
                 for (const [devId, e] of _hostMembers) {
-                    await gcallMemberPut(devId, { name: e.name, avatarUrl: e.avatarUrl, number: e.number, joinedAt: e.joinedAt });
+                    const ok = await gcallMemberPut(devId, {
+                        name: e.name, avatarUrl: e.avatarUrl, number: e.number, joinedAt: e.joinedAt
+                    });
+                    if (!ok) throw new Error('gcall member ' + devId);
                 }
-            } catch(_) {}
+            } catch(e) {
+                console.warn('[Phone/calls] promover a grupo falhou:', e);
+                _hostState.callId = null;
+                _isGroupCaller = false;
+                ctx.toast('Falha ao criar grupo', 'err');
+                return false;
+            }
         } else {
-            await gcallMemberPut(target.id, { name: target.name, avatarUrl: target.avatarUrl, number: target.number, joinedAt: Date.now() }).catch(() => {});
+            const ok = await gcallMemberPut(target.id, {
+                name: target.name, avatarUrl: target.avatarUrl,
+                number: target.number, joinedAt: Date.now()
+            }).catch(() => false);
+            if (!ok) { ctx.toast('Falha ao registrar membro', 'err'); return false; }
         }
+
         _spawnHostPeer(target, false);
+        return true;
     }
 
     function _toggleMuteMember(devId) {
@@ -497,7 +582,17 @@
             await pc.setRemoteDescription(new RTCSessionDescription({ type: 'offer', sdp: offer.sdp }));
             const answer = await pc.createAnswer();
             await pc.setLocalDescription(answer);
-            await sigPut(bridge.deviceId, 'answer', { type: 'answer', sdp: answer.sdp, fromId: bridge.deviceId, ts: Date.now() });
+
+            // [BUG 1] Answer agora carrega identidade do atendedor — caller atualiza a UI
+            const myAvatar = await _resolveMyAvatar();
+            await sigPut(bridge.deviceId, 'answer', {
+                type: 'answer', sdp: answer.sdp, fromId: bridge.deviceId,
+                fromName: bridge.player?.name || '',
+                fromAvatar: myAvatar || bridge.player?.avatarUrl || '',
+                fromNumber: ctx.myNumber || '',
+                ts: Date.now()
+            });
+
             _pollTimer = setInterval(() => _pollSignal(bridge.deviceId, 'callee'), POLL_MS);
             _pollSignal(bridge.deviceId, 'callee');
         } catch (e) { _endCall(true, 'Erro ao atender'); }
@@ -824,12 +919,14 @@
     }
 
     // ═══ ADD PICKER ═══
+    // [BUG 3] Usa contatos salvos (não sessões cruas), cruza com sessões online,
+    // exclui membros atuais, e propaga o resultado de _addMemberToCall.
     async function _openAddPicker() {
         if (!ctx.screenEl || _openAddPicker._open) return;
         if (!_hostMembers.size) { ctx.toast('Você não é o anfitrião', 'err'); return; }
         if ((_hostMembers.size + 1) >= MAX_GROUP_MEMBERS) { ctx.toast('Limite de ' + MAX_GROUP_MEMBERS + ' pessoas', 'err'); return; }
         _openAddPicker._open = true;
-        const inCall = new Set(_hostMembers.keys());
+
         const ov = ctx.el('div', { class: 'ph-add-overlay' });
         ov.innerHTML = `<div class="ph-add-head"><div class="ph-add-title">Adicionar à chamada</div><button class="ph-add-close" id="phAddClose">✕</button></div>
             <div class="ph-add-body" id="phAddBody"><div class="ph-empty">Carregando…</div></div>`;
@@ -837,29 +934,56 @@
         const body = ov.querySelector('#phAddBody');
         const close = () => { _openAddPicker._open = false; ov.remove(); };
         ov.querySelector('#phAddClose').addEventListener('click', close);
+
         await ctx.contacts.fetchSessions?.(false);
-        const sessions = ctx.contacts.sessionsCache || [];
-        const myId = bridge.deviceId;
-        const now = Date.now();
-        const candidates = sessions
-            .filter(s => s.id !== myId && (now - (s.lastSeen || 0)) < 5 * 60 * 1000 && !inCall.has(s.id))
-            .sort((a, b) => (a.name || '').localeCompare(b.name || ''));
-        if (!candidates.length) { body.innerHTML = `<div class="ph-empty">Nenhum contato disponível.<br><span class="hint">Só é possível adicionar contatos online que ainda não estão na chamada.</span></div>`; return; }
-        body.innerHTML = candidates.map(s => {
-            const initial = (s.name || '?')[0] || '?';
-            const av = s.avatarUrl
-                ? `<div class="ph-av sm"><img src="${esc(s.avatarUrl)}" alt="" /><span class="dot-online"></span></div>`
+
+        const inCall = new Set(_hostMembers.keys());
+        const contactsList = ctx.contacts.contacts || [];
+        const candidates = [];
+
+        for (const c of contactsList) {
+            if (!c?.username) continue;
+            if (ctx.contacts.isBlocked?.(c.number)) continue;
+            const live = ctx.contacts.findLiveSession?.(c.username);
+            if (!live) continue;
+            if (inCall.has(live.id)) continue;
+            candidates.push({
+                id: live.id,
+                name: live.name || c.savedName || c.username || '',
+                avatarUrl: live.avatarUrl || c.savedAvatar || '',
+                number: c.number
+            });
+        }
+        candidates.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+
+        if (!candidates.length) {
+            body.innerHTML = `<div class="ph-empty">Nenhum contato disponível.<br><span class="hint">Só é possível adicionar contatos online que ainda não estão na chamada.</span></div>`;
+            return;
+        }
+
+        body.innerHTML = candidates.map(c => {
+            const initial = (c.name || '?')[0] || '?';
+            const av = c.avatarUrl
+                ? `<div class="ph-av sm"><img src="${esc(c.avatarUrl)}" alt="" /><span class="dot-online"></span></div>`
                 : `<div class="ph-av sm">${esc(initial.toUpperCase())}<span class="dot-online"></span></div>`;
-            return `<div class="ph-contact" data-add-id="${esc(s.id)}" data-add-name="${esc(s.name || '')}" data-add-avatar="${esc(s.avatarUrl || '')}" data-add-number="${esc(s.phoneNumber || '')}">
+            const numTxt = ctx.contacts.fmtNumber?.(c.number) || c.number || '';
+            return `<div class="ph-contact" data-add-id="${esc(c.id)}" data-add-name="${esc(c.name)}" data-add-avatar="${esc(c.avatarUrl)}" data-add-number="${esc(c.number)}">
                 ${av}
-                <div class="ph-info"><div class="ph-name">${esc(s.name || '—')}</div><div class="ph-meta">online</div></div>
+                <div class="ph-info"><div class="ph-name">${esc(c.name)}</div><div class="ph-meta">${numTxt ? `<span class="num">${esc(numTxt)}</span> · online` : 'online'}</div></div>
                 <button class="ph-call-btn" style="border-color:rgba(34,211,238,.4);background:rgba(34,211,238,.1);color:#67e8f9;">${I.plus}</button>
             </div>`;
         }).join('');
+
         body.querySelectorAll('.ph-contact').forEach(row => {
             row.addEventListener('click', async () => {
-                const target = { id: row.dataset.addId, name: row.dataset.addName, avatarUrl: row.dataset.addAvatar, number: row.dataset.addNumber };
-                await _addMemberToCall(target);
+                if (row.dataset._busy === '1') return;
+                row.dataset._busy = '1';
+                const target = {
+                    id: row.dataset.addId, name: row.dataset.addName,
+                    avatarUrl: row.dataset.addAvatar, number: row.dataset.addNumber
+                };
+                const ok = await _addMemberToCall(target);
+                if (!ok) { row.dataset._busy = '0'; return; }
                 ctx.toast(target.name + ' adicionado', 'ok');
                 close();
                 _renderCall();
@@ -881,7 +1005,7 @@
             display: flex; align-items: center; justify-content: center;
             overflow: hidden; position: relative; color: #a8aec4; font-size: 34px; font-weight: 800;
             box-shadow: 0 20px 50px rgba(0,0,0,.55), inset 0 1px 0 rgba(255,255,255,.14); }
-        .ph-call-av img { position: absolute; top: -25%; left: -40%; width: 210%; height: 210%; object-fit: cover; }
+        .ph-call-av img { position: absolute; top: 50%; left: 50%; width: 210%; height: 210%; object-fit: cover; transform: translate(-50%, -50%); }
         .ph-call.outgoing .ph-call-av { box-shadow: 0 20px 50px rgba(0,0,0,.55), 0 0 0 6px rgba(34,211,238,.1), inset 0 1px 0 rgba(255,255,255,.14); }
         .ph-call.incoming .ph-call-av { box-shadow: 0 20px 50px rgba(0,0,0,.55), 0 0 0 6px rgba(52,211,153,.18), inset 0 1px 0 rgba(255,255,255,.14); }
         .ph-call.active  .ph-call-av { box-shadow: 0 20px 50px rgba(0,0,0,.55), 0 0 0 6px rgba(52,211,153,.28), inset 0 1px 0 rgba(255,255,255,.14); }
