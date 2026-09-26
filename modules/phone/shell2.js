@@ -2,6 +2,9 @@
 // Núcleo: cria _phoneCtx, valida bridge, define P.config + P.state,
 // carrega os 4 módulos internos (style, core, home, apps) e depois os externos.
 // Não monta DOM, não desenha nada, não tem lógica de home nem de PIN.
+//
+// Ciclo de vida: montado pelo hub (killInstance + loadModule).
+// Toda operação é idempotente e resistente a re-mount.
 (function() {
     'use strict';
     const UID = '_phone';
@@ -24,62 +27,60 @@
         console.warn('[Phone] Firestore off.'); return;
     }
 
-    // CONFIG (imutável — leitura por todos os módulos via P.config)
-    P.config = Object.freeze({
-        ANDROID_VERSION: '14',
-        PHONE_VERSION:   '1.4.2',
-        MIN_TUCK_X:      260,
-        MIN_TUCK_Y:     -140,
-        FRAME_HALF_H:    285,
-        LS_MINIMIZED:    'sanghub_phone_minimized',
-        LS_PIN:          'sanghub_phone_pin',
-        LS_LAYOUT:       'sanghub_phone_layout',
-        LS_HOME_CFG:     'sanghub_phone_home_cfg',
-        MODULES_BASE:    'https://raw.githubusercontent.com/zBeyond5/Liveblock/main/modules/phone',
-        MAX_DOCK_APPS:   4,
-        GRID_COLS:       4,
-        GRID_ROWS:       4,
-        PAGE_SIZE:       16,
-        DEFAULT_APP_BG:       'linear-gradient(180deg, #16181c 0%, #0d0f12 100%)',
-        DEFAULT_APP_BG_SOLID: '#0f1115',
-        // Caminhos relativos a MODULES_BASE
-        URLS: Object.freeze({
-            style:    '/style.js',
-            core:     '/core.js',
-            home:     '/home.js',
-            apps:     '/apps.js',
-            contacts: '/contacts.js',
-            calls:    '/calls.js',
-            notes:    '/notes.js',
-            config:   '/apps/config.js',
-            sangzap:  '/apps/sangzap/shell.js'
-        })
-    });
+    // CONFIG — imutável; preservado entre mounts para consistência de referências.
+    // Se precisares de campo mutável, NÃO edite P.config; usa P.state.
+    if (!P.config) {
+        P.config = Object.freeze({
+            ANDROID_VERSION: '14',
+            PHONE_VERSION:   '1.4.2',
+            MIN_TUCK_X:      260,
+            MIN_TUCK_Y:     -140,
+            FRAME_HALF_H:    285,
+            LS_MINIMIZED:    'sanghub_phone_minimized',
+            LS_PIN:          'sanghub_phone_pin',
+            LS_LAYOUT:       'sanghub_phone_layout',
+            LS_HOME_CFG:     'sanghub_phone_home_cfg',
+            MODULES_BASE:    'https://raw.githubusercontent.com/zBeyond5/Liveblock/main/modules/phone',
+            MAX_DOCK_APPS:   4,
+            GRID_COLS:       4,
+            GRID_ROWS:       4,
+            PAGE_SIZE:       16,
+            DEFAULT_APP_BG:       'linear-gradient(180deg, #16181c 0%, #0d0f12 100%)',
+            DEFAULT_APP_BG_SSOLID: '#0f1115',
+            DEFAULT_APP_BG_SOLID:  '#0f1115',
+            URLS: Object.freeze({
+                style:    '/style.js',
+                core:     '/core.js',
+                home:     '/home.js',
+                apps:     '/apps.js',
+                contacts: '/contacts.js',
+                calls:    '/calls.js',
+                notes:    '/notes.js',
+                config:   '/apps/config.js',
+                sangzap:  '/apps/sangzap/shell.js'
+            })
+        });
+    }
     const C = P.config;
 
     ctx.moduleBase = C.MODULES_BASE;
     ctx.deviceId   = bridge.deviceId || '';
     ctx.bridge     = bridge;
 
-    // STATE (mutável — compartilhado entre home/apps/core/shell)
-    // Regra: qualquer campo lido por 2+ módulos mora aqui.
-    // Campos internos de um módulo (ex: _layout, _homeCfg) ficam no próprio arquivo.
-    P.state = {
-        view:         'lock',      // 'lock' | 'home' | 'app' | 'call'
-        activeAppId:  null,        // id do app atualmente montado (ou null)
-        chamadasTab:  'contatos',  // aba ativa dentro do app Chamadas
-        pinSet:       '',          // PIN string ('' = sem PIN)
-        minimized:    false,       // frame minimizado
-        inCallView:   false,       // view de chamada ativa
-        dying:        false,       // kill() em andamento — bloqueia novas ações
-        // Preenchidos por core.js quando o frame é construído:
-        frameEl:      null,
-        screenEl:     null,
-        stageEl:      null,
-        contentEl:    null
-    };
-
-    // Restauração mínima do localStorage (layout/homeCfg ficam em home.js)
+    // STATE — referência preservada entre mounts (home/apps/core capturam
+    // `const S = P.state` no topo; reassinar P.state quebraria essas closures).
+    // bootToken NÃO é resetado aqui — só incrementado em _boot() e kill().
+    if (!P.state) P.state = {};
+    Object.assign(P.state, {
+        view:         'lock',
+        activeAppId:  null,
+        chamadasTab:  'contatos',
+        inCallView:   false,
+        prevView:     'home',
+        dying:        false,
+        frameEl:      null, screenEl: null, stageEl: null, contentEl: null
+    });
+    if (typeof P.state.bootToken !== 'number') P.state.bootToken = 0;
     try { P.state.minimized = localStorage.getItem(C.LS_MINIMIZED) === '1'; } catch(_) {}
     try { P.state.pinSet    = localStorage.getItem(C.LS_PIN) || ''; }        catch(_) {}
 
@@ -102,22 +103,29 @@
 
     // BOOT
     async function _boot() {
+        const myToken = ++P.state.bootToken;
+        // alive() cobre os dois casos de invalidação:
+        //  - kill() chamado durante o boot (dying=true, token++)
+        //  - novo shell montou por cima (token++ no top-level do novo _boot)
+        const alive = () => P.state.bootToken === myToken && !P.state.dying;
+
         const base = C.MODULES_BASE;
 
         // 1) style — só define a string CSS, não depende de nada
         await P.loadModule('style', base + C.URLS.style);
+        if (!alive()) return;
 
         // 2) core — infra + frame. Se falhar, aborta (sem core não há frame)
         await P.loadModule('core', base + C.URLS.core);
+        if (!alive()) return;
         if (!P.core) { console.error('[Phone] core.js falhou — abortando boot.'); return; }
 
-        // 3) home + apps — paralelo. Ambos dependem só de core.
-        //    Referências cruzadas (P.home ↔ P.apps) são resolvidas em runtime,
-        //    nunca no top-level do módulo — por isso paralelo é seguro.
+        // 3) home + apps — paralelo. Dependências cruzadas só em runtime.
         await Promise.all([
             P.loadModule('home', base + C.URLS.home),
             P.loadModule('apps', base + C.URLS.apps)
         ]);
+        if (!alive()) return;
         if (!P.home) console.warn('[Phone] home.js falhou — telefone em modo degradado.');
         if (!P.apps) console.warn('[Phone] apps.js falhou — telefone em modo degradado.');
 
@@ -138,20 +146,26 @@
             P.loadModule('config',   base + C.URLS.config),
             P.loadModule('sangzap',  base + C.URLS.sangzap)
         ]);
+        if (!alive()) return;
 
         // 7) Reações cruzadas entre módulos
         ctx.apps.onChange(() => {
-            if (P.state.view === 'home') P.home?.renderHome();
-            if (P.state.view === 'app' && P.state.activeAppId === 'calls') P.apps?.updateMyNumberUI();
+            if (!alive()) return;
+            if (P.state.view === 'home') P.home?.renderHome?.();
+            if (P.state.view === 'app' && P.state.activeAppId === 'calls') P.apps?.updateMyNumberUI?.();
         });
 
         try {
-            ctx.notes?.onUnreadChange?.(() => P.apps?.refreshRecadosBadge?.());
+            ctx.notes?.onUnreadChange?.(() => {
+                if (alive()) P.apps?.refreshRecadosBadge?.();
+            });
             P.apps?.refreshRecadosBadge?.();
         } catch(_) {}
 
         if (ctx.contacts.ensureMyNumber) {
-            ctx.contacts.ensureMyNumber().then(() => P.apps?.updateMyNumberUI?.());
+            ctx.contacts.ensureMyNumber().then(() => {
+                if (alive()) P.apps?.updateMyNumberUI?.();
+            });
         }
 
         ctx.notes.startNotesPoll?.();
@@ -172,24 +186,41 @@
         if (!ctx.myNumber) ctx.contacts.ensureMyNumber?.();
 
         const s = P.state;
-        if (s.inCallView)                       P.core.showView('call');
-        else if (s.view === 'app' && s.activeAppId) P.core.showView('app');
-        else if (s.view === 'home')             P.home?.renderHome?.();
-        else                                    P.home?.renderLock?.();
+        if (s.inCallView)                           P.core?.showView?.('call');
+        else if (s.view === 'app' && s.activeAppId) P.core?.showView?.('app');
+        else if (s.view === 'home')                 P.home?.renderHome?.();
+        else                                        P.home?.renderLock?.();
     }
 
     function kill() {
         const s = P.state;
         if (s.dying) return;
         s.dying = true;
+        s.bootToken++;   // invalida _boot() em execução mesmo se o próximo mount resetar dying
 
-        try { ctx.calls.cleanup?.(); }   catch(_) {}
+        try { ctx.calls.cleanup?.(); }    catch(_) {}
         try { ctx.notes.cancelNote?.(); } catch(_) {}
-        try { ctx.notes.stopPoll?.(); }  catch(_) {}
+        try { ctx.notes.stopPoll?.(); }   catch(_) {}
+
+        // Listeners globais — mesmas referências usadas nos addEventListener abaixo
         try { document.removeEventListener('keydown', _onPhysicalKey, true); } catch(_) {}
+        try { window.removeEventListener('sang:phone-incoming', _onPhoneIncoming); } catch(_) {}
+        try { window.removeEventListener('sang:player-updated', _onPlayerUpdated); } catch(_) {}
+
         P.home?.teardown?.();
         P.apps?.teardown?.();
         P.core?.teardown?.();
+
+        // Limpa listeners internos do registry; preserva _registry (módulos externos registram ali)
+        if (ctx.apps && Array.isArray(ctx.apps._listeners)) ctx.apps._listeners.length = 0;
+
+        // Deleta namespaces para forçar re-execução dos IIFEs no próximo mount.
+        // Os guards `if (P.<ns>) return` em cada arquivo dependem disso.
+        delete P.home;
+        delete P.apps;
+        delete P.core;
+        delete ctx._phoneCss;
+
         try { delete window[UID]; } catch(_) {}
     }
 
@@ -234,20 +265,22 @@
         e.stopPropagation();
         btn.click();
     }
-    document.addEventListener('keydown', _onPhysicalKey, true);
 
-    // LISTENERS GLOBAIS — registrados só depois do boot para não chamar P.apps cedo demais
-    function _wireGlobalListeners() {
-        window.addEventListener('sang:phone-incoming', (e) => {
-            if (!P.apps) return;  // ainda não bootou — descarta
-            try { ctx.calls.onIncoming?.(e?.detail); } catch(_) {}
-        });
-        window.addEventListener('sang:player-updated', () => {
-            if (!P.apps) return;
-            if (ctx.myNumber) ctx.contacts.refreshMyDirectory?.();
-        });
+    // LISTENERS GLOBAIS — nomeados para permitir remoção em kill()
+    function _onPhoneIncoming(e) {
+        if (P.state.dying) return;
+        if (!P.apps) return;  // boot incompleto — descarta
+        try { ctx.calls.onIncoming?.(e?.detail); } catch(_) {}
     }
-    _wireGlobalListeners();
+    function _onPlayerUpdated() {
+        if (P.state.dying) return;
+        if (!P.apps) return;
+        if (ctx.myNumber) ctx.contacts.refreshMyDirectory?.();
+    }
+
+    document.addEventListener('keydown', _onPhysicalKey, true);
+    window.addEventListener('sang:phone-incoming', _onPhoneIncoming);
+    window.addEventListener('sang:player-updated', _onPlayerUpdated);
 
     // EXPORT
     window[UID] = {
@@ -258,5 +291,5 @@
         get ctx() { return ctx; }
     };
 
-    _boot();
+    _boot().catch(e => console.error('[Phone] boot falhou:', e));
 })();
