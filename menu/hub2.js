@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Sang Hub
 // @namespace    http://tampermonkey.net/
-// @version      1.4.1
+// @version      1.4.2
 // @description  Gerenciador de módulos
 // @author       Sang
 // @match        *://*.habblive.in/bigclient*
@@ -136,7 +136,7 @@
     const HERR  = (...a) => console.error('🔶 [Hub]', ...a);
 
     // ═══ CONSTANTES ═══
-    const HUB_VERSION = "1.4.1";
+    const HUB_VERSION = "1.4.2";
     const HUB_UPDATE_URL = "https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/menu/hub2.js";
     const MANIFEST_URL = "https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/menu/manifest.json";
     const UPDATE_INTERVAL_MS = 3 * 60 * 1000;
@@ -738,6 +738,39 @@
         document.addEventListener('click', () => { try { ctx()?.resume(); } catch(e) {} }, { once: true, capture: true });
     })();
 
+    // ═══ RTDB — helpers ═══
+    function _rtdbUrl(path) { return RTDB_URL + '/' + path + '.json'; }
+    async function _rtdbGet(path) {
+        try {
+            const res = await fetch(_rtdbUrl(path), { cache: 'no-store' });
+            if (!res.ok) return null;
+            return await res.json();
+        } catch(e) { return null; }
+    }
+    async function _rtdbPut(path, value) {
+        try {
+            const res = await fetch(_rtdbUrl(path), {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(value)
+            });
+            return res.ok;
+        } catch(e) { return false; }
+    }
+    async function _rtdbPost(path, value) {
+        try {
+            const res = await fetch(_rtdbUrl(path), {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(value)
+            });
+            return res.ok;
+        } catch(e) { return false; }
+    }
+    async function _rtdbDelete(path) {
+        try { await fetch(_rtdbUrl(path), { method: 'DELETE' }); } catch(e) {}
+    }
+
     // ═══ MIC — recepção (WebRTC + RTDB signaling) ═══
     let _micReady = null;
     let _mic = { es: null, pc: null, iceEs: null, audio: null, offer: null, banner: null, ringTimer: null, active: false };
@@ -762,6 +795,13 @@
                 const envelope = JSON.parse(raw);
                 const offer = envelope?.data;
                 if (!offer || !offer.type) return;
+
+                // Chamadas de celular (P2P entre usuários) vão para o módulo phone
+                if (offer.kind === 'phone') {
+                    try { window.dispatchEvent(new CustomEvent('sang:phone-incoming', { detail: offer })); } catch(_) {}
+                    return;
+                }
+
                 if (offer.type === 'hangup') {
                     if (_mic.offer && _mic.offer.fromId && offer.fromId === _mic.offer.fromId) {
                         _micReject();
@@ -2060,13 +2100,11 @@
                 play: (name) => { try { window._hubSFX?.[name]?.(); } catch(_) {} }
             },
 
-            // ── Classe ADMIN: expõe estado do token de admin para outros módulos ──
             admin: {
                 unlocked: _adminUnlocked,
                 notify() { try { window.dispatchEvent(new CustomEvent('sang:admin-state')); } catch(_) {} }
             },
 
-            // ── Mic recebido do admin panel via RTDB + WebRTC ──
             mic: {
                 available: () => !!(_micReady && _micReady.ok),
                 state: () => _mic.active ? 'connected' : (_mic.banner ? 'incoming' : 'idle'),
@@ -2113,6 +2151,13 @@
                 request: fsRequest,
                 parseDoc: fsParseDoc,
                 value: fsValue
+            },
+            rtdb: {
+                url: RTDB_URL,
+                get: _rtdbGet,
+                put: _rtdbPut,
+                post: _rtdbPost,
+                del: _rtdbDelete
             }
         };
 
@@ -2135,7 +2180,6 @@
                 HLOG('📥 Cache do jogador atualizado em outra aba — reenviando heartbeat');
                 _aplicarCacheJogador();
             }
-            // Admin logou/deslogou em outra aba → re-renderiza lista local
             if (e.key === ADMIN_TOKEN_KEY) {
                 try { if (renderListFn) renderListFn(); } catch(_) {}
             }
@@ -2151,7 +2195,6 @@
         await refreshManifest(false);
         setTimeout(_carregarAdmin, 1500);
 
-        // Sobe listener de chamadas do mic (RTDB + WebRTC)
         setTimeout(() => { _micStartListener().catch(e => HWARN('Mic listener falhou:', e)); }, 2500);
 
         playtime.flushTimer = setInterval(flushPlaytime, PLAYTIME_FLUSH_MS);
