@@ -99,7 +99,7 @@
     const C = {};
 
     // ═══ CONFIG ═══
-    const POLL_MS         = 1500;
+    const POLL_MS         = 4000;
     const TYPING_TTL      = 4000;
     const EDIT_WINDOW     = 15 * 60 * 1000;
     const PAGE_SIZE       = 40;
