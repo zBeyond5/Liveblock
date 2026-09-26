@@ -10,7 +10,7 @@
 
     // ═══ CONFIG ═══
     const ANDROID_VERSION = '14';
-    const PHONE_VERSION = '1.4.0';
+    const PHONE_VERSION = '1.4.1';
     const MIN_TUCK_X = 260;
     const MIN_TUCK_Y = -140;
     const FRAME_HALF_H = 285;
@@ -237,8 +237,8 @@
         searchX: 0, searchY: 0,
         showClock: true,
         showSearch: true,
-        iconSize: 'normal',   // small | normal | large
-        gridGap: 'normal'     // tight | normal | wide
+        iconSize: 'normal',
+        gridGap: 'normal'
     };
     (function _loadHomeCfg() {
         try {
@@ -619,37 +619,55 @@
             display: flex; flex-direction: column;
             padding: 10px 14px 0;
         }
-        .ph-home-clock { padding: 4px 6px 8px; flex-shrink: 0; }
+        .ph-home-clock {
+            position: relative;
+            z-index: 20;
+            padding: 4px 6px 6px;
+            flex-shrink: 0;
+            cursor: grab;
+            touch-action: none;
+            user-select: none;
+            transition: transform .18s cubic-bezier(.22,1,.36,1);
+        }
+        .ph-home-clock.dragging { cursor: grabbing; transition: none; }
         .ph-home-time {
-            font-size: 56px; font-weight: 800; letter-spacing: -.04em; color: #f6f7fb; line-height: 1;
+            font-size: 48px; font-weight: 800; letter-spacing: -.035em; color: #f6f7fb; line-height: 1;
             font-variant-numeric: tabular-nums;
             text-shadow: 0 2px 14px rgba(0,0,0,.5);
         }
         .ph-home-date {
-            font-size: 11px; color: #a8aec4; letter-spacing: .02em; margin-top: 3px;
+            font-size: 11px; color: #a8aec4; letter-spacing: .02em; margin-top: 2px;
             text-transform: capitalize; font-weight: 600;
             text-shadow: 0 1px 2px rgba(0,0,0,.4);
         }
 
         .ph-home-search {
+            position: relative;
+            z-index: 20;
             display: flex; align-items: center; gap: 8px;
             padding: 7px 14px; border-radius: 22px;
             background: linear-gradient(120deg, #10a37f, #16c596);
-            color: #fff; margin-bottom: 12px;
+            color: #fff; margin-bottom: 10px;
             font-size: 11px; font-weight: 700; letter-spacing: .02em;
             box-shadow: 0 6px 18px rgba(16,163,127,.4), inset 0 1px 0 rgba(255,255,255,.28);
-            cursor: text;
+            cursor: grab;
             flex-shrink: 0;
+            touch-action: none;
+            user-select: none;
+            transition: transform .18s cubic-bezier(.22,1,.36,1);
         }
+        .ph-home-search.dragging { cursor: grabbing; transition: none; }
         .ph-home-search svg { width: 12px; height: 12px; margin-left: auto; opacity: .9; }
         .ph-home-search input {
             flex: 1; background: transparent; border: none; outline: none;
             color: #fff; font-family: inherit; font-size: 11px; font-weight: 700;
             padding: 0;
+            cursor: text;
+            user-select: text;
+            -webkit-user-select: text;
         }
         .ph-home-search input::placeholder { color: rgba(255,255,255,.75); }
 
-        /* ═══ MULTI-PAGE WRAPPER ═══ */
         .ph-home-pages-wrap {
             flex: 1; min-height: 0;
             margin: 0 -14px;
@@ -669,19 +687,18 @@
             height: 100%;
             overflow-y: auto;
             overflow-x: hidden;
-            padding: 0 14px 12px;
+            padding: 0 14px 10px;
             box-sizing: border-box;
             -webkit-overflow-scrolling: touch;
         }
         .ph-home-page::-webkit-scrollbar { width: 4px; }
         .ph-home-page::-webkit-scrollbar-thumb { background: rgba(255,255,255,.14); border-radius: 2px; }
 
-        /* ═══ GRID 4×4 ═══ */
         .ph-home-grid {
             display: grid;
             grid-template-columns: repeat(${GRID_COLS}, 1fr);
-            grid-auto-rows: minmax(72px, auto);
-            gap: 6px 4px;
+            grid-auto-rows: minmax(68px, auto);
+            gap: 4px 4px;
         }
         .ph-home-slot {
             position: relative;
@@ -689,7 +706,7 @@
             border: 1px dashed rgba(255,255,255,0);
             background: transparent;
             transition: border-color .16s, background .16s;
-            min-height: 72px;
+            min-height: 68px;
         }
         .ph-home-slot.drag-over {
             border-color: rgba(110,231,183,.6);
@@ -710,7 +727,7 @@
             color: inherit; text-align: center;
             transition: background .18s, transform .15s, opacity .15s;
             -webkit-tap-highlight-color: transparent;
-            min-height: 72px;
+            min-height: 68px;
             justify-content: flex-start;
         }
         .ph-home-app:hover { background: rgba(255,255,255,.08); }
@@ -749,7 +766,7 @@
             font-size: 10.5px; color: #6b7280; line-height: 1.5;
         }
 
-        .ph-home-dots { display: flex; gap: 5px; justify-content: center; padding: 6px 0 8px; flex-shrink: 0; }
+        .ph-home-dots { display: flex; gap: 5px; justify-content: center; padding: 6px 0 6px; flex-shrink: 0; }
         .ph-home-dots span {
             width: 5px; height: 5px; border-radius: 50%;
             background: rgba(255,255,255,.32);
@@ -771,7 +788,7 @@
             display: grid;
             grid-template-columns: repeat(${MAX_DOCK_APPS}, 1fr);
             gap: 4px;
-            margin-bottom: 8px;
+            margin-bottom: 6px;
             min-height: 56px;
         }
         .ph-dock .ph-home-app { padding: 4px 2px; min-height: 0; }
@@ -791,7 +808,6 @@
             background: rgba(52,211,153,.1);
         }
 
-        /* ═══ APP BAR ═══ */
         .ph-app-bar {
             display: flex; align-items: center; gap: 8px;
             padding: 9px 12px; margin: 0 12px 8px;
@@ -820,7 +836,6 @@
         .ph-app-back:hover { color: #a7f3d0; background: rgba(52,211,153,.2); }
         .ph-app-back svg { width: 14px; height: 14px; }
 
-        /* ═══ NUMBER PILL (my number no app-bar) ═══ */
         .ph-app-num {
             display: inline-flex; align-items: center; gap: 5px;
             padding: 4px 9px;
@@ -841,7 +856,6 @@
         .ph-app-num svg { width: 10px; height: 10px; opacity: .85; }
         .ph-app-num.loading { color: #5c6280; background: rgba(255,255,255,.05); border-color: rgba(255,255,255,.1); letter-spacing: .14em; }
 
-        /* ═══ TABS ═══ */
         .ph-tabs {
             display: flex; gap: 2px;
             padding: 6px 10px 0;
@@ -960,33 +974,13 @@
         .ph-toast.fav { color: #fde68a; border-color: rgba(251,191,36,.6); }
         .ph-toast.out { opacity: 0; transform: translateX(-50%) translateY(-8px); }
 
-        /* ═══ HOME: RELÓGIO E BUSCA MOVÍVEIS ═══ */
-        .ph-home-clock {
-            position: relative;
-            cursor: grab;
-            touch-action: none;
-            user-select: none;
-            transition: transform .18s cubic-bezier(.22,1,.36,1);
-        }
-        .ph-home-clock.dragging { cursor: grabbing; transition: none; }
-
-        .ph-home-search {
-            cursor: grab;
-            touch-action: none;
-            transition: transform .18s cubic-bezier(.22,1,.36,1);
-        }
-        .ph-home-search.dragging { cursor: grabbing; transition: none; }
-        .ph-home-search input { cursor: text; }
-
-        /* ═══ HOME: TAMANHO E ESPAÇAMENTO ═══ */
         .ph-home[data-icon-size="small"] .ph-home-app-icon { width: 36px; height: 36px; border-radius: 11px; }
         .ph-home[data-icon-size="small"] .ph-home-app-icon svg { width: 18px; height: 18px; }
         .ph-home[data-icon-size="large"] .ph-home-app-icon { width: 48px; height: 48px; border-radius: 14px; }
         .ph-home[data-icon-size="large"] .ph-home-app-icon svg { width: 26px; height: 26px; }
-        .ph-home[data-grid-gap="tight"] .ph-home-grid { gap: 4px 2px; }
-        .ph-home[data-grid-gap="wide"]  .ph-home-grid { gap: 12px 8px; }
+        .ph-home[data-grid-gap="tight"] .ph-home-grid { gap: 2px 2px; }
+        .ph-home[data-grid-gap="wide"]  .ph-home-grid { gap: 10px 8px; }
 
-        /* ═══ HOME: MENU DE CONTEXTO ═══ */
         .ph-ctx-menu {
             position: fixed;
             z-index: 60;
@@ -1272,7 +1266,7 @@
         });
     }
 
-    // ═══ HOME (multi-page grid) ═══
+    // ═══ HOME ═══
     function _renderHome() {
         _showView('home');
         _syncLayout();
@@ -1306,7 +1300,6 @@
             `<span${i === _currentPage ? ' class="active"' : ''} data-dot="${i}"></span>`
         ).join('');
 
-        // dock: apps existentes + slots vazios (alvos de drop)
         const dockHtml = [];
         for (let i = 0; i < MAX_DOCK_APPS; i++) {
             const a = dockApps[i];
@@ -1421,7 +1414,6 @@
         return list;
     }
 
-    // Sincroniza layout com registry — remove órfãos, semeia novos (dock:true vai pro dock)
     function _syncLayout() {
         const all = [..._builtinFallbacks(), ...ctx.apps.all()];
         const validIds = new Set(all.map(a => a.id));
@@ -1475,7 +1467,7 @@
         });
     }
 
-    // ═══ DRAG & DROP — grid + dock + multi-page ═══
+    // ═══ DRAG & DROP ═══
     function _clearDropHints() {
         _frameEl?.querySelectorAll('.drop-before, .drop-after, .drag-over')
             .forEach(el => el.classList.remove('drop-before', 'drop-after', 'drag-over'));
@@ -1509,11 +1501,9 @@
         if (_dragPageTimer) { clearTimeout(_dragPageTimer); _dragPageTimer = null; }
     }
 
-    // Position: { kind: 'page', page, slot } | { kind: 'dock', index }
     function _wireDrag(container) {
         if (!container) return;
 
-        // slots vazios da grade
         container.querySelectorAll('.ph-home-slot').forEach(slotEl => {
             slotEl.addEventListener('dragover', (e) => {
                 if (!_dragSrc) return;
@@ -1533,7 +1523,6 @@
             });
         });
 
-        // slots vazios do dock
         container.querySelectorAll('.ph-dock-slot').forEach(slotEl => {
             slotEl.addEventListener('dragover', (e) => {
                 if (!_dragSrc) return;
@@ -1552,7 +1541,6 @@
             });
         });
 
-        // apps (grid ou dock)
         container.querySelectorAll('.ph-home-app').forEach(btn => {
             btn.addEventListener('dragstart', e => {
                 const id = btn.dataset.appId;
@@ -1648,7 +1636,6 @@
 
         let startX = 0, startY = 0, deltaX = 0, deltaY = 0;
         let active = false, decided = false, horizontal = false;
-        let startPage = _currentPage;
         const THRESHOLD = 0.22;
 
         const setTranslate = (px) => {
@@ -1668,7 +1655,6 @@
             active = true; decided = false; horizontal = false;
             startX = e.clientX; startY = e.clientY;
             deltaX = 0; deltaY = 0;
-            startPage = _currentPage;
         });
         wrap.addEventListener('pointermove', (e) => {
             if (!active) return;
@@ -1687,7 +1673,7 @@
             const eff = (atStart || atEnd) ? deltaX * 0.32 : deltaX;
             setTranslate(eff);
         });
-        const finish = (e) => {
+        const finish = () => {
             if (!active) return;
             active = false;
             if (!horizontal) return;
@@ -1734,54 +1720,63 @@
         _bindAppClicks(grid.querySelectorAll('.ph-home-app'));
     }
 
-    // ═══ MOVÍVEIS: RELÓGIO E BUSCA ═══
+    // ═══ MOVÍVEIS — RELÓGIO E BUSCA ═══
     function _wireHomeMovables(view) {
         const items = [
-            { el: view.querySelector('.ph-home-clock'),  x: 'clockX',  y: 'clockY'  },
-            { el: view.querySelector('.ph-home-search'), x: 'searchX', y: 'searchY' }
+            { el: view.querySelector('.ph-home-clock'),  x: 'clockX',  y: 'clockY',  isSearch: false },
+            { el: view.querySelector('.ph-home-search'), x: 'searchX', y: 'searchY', isSearch: true  }
         ];
-        items.forEach(({ el: node, x: xKey, y: yKey }) => {
+        items.forEach(({ el: node, x: xKey, y: yKey, isSearch }) => {
             if (!node) return;
+            let active = false, moved = false, pid = null;
             let startX = 0, startY = 0, baseX = 0, baseY = 0;
-            let dragging = false, moved = false, pid = null;
-            node.addEventListener('pointerdown', (e) => {
-                if (e.pointerType === 'mouse' && e.button !== 0) return;
-                dragging = true; moved = false; pid = e.pointerId;
-                startX = e.clientX; startY = e.clientY;
-                baseX = _homeCfg[xKey] || 0;
-                baseY = _homeCfg[yKey] || 0;
-            });
-            node.addEventListener('pointermove', (e) => {
-                if (!dragging || e.pointerId !== pid) return;
+
+            const onMove = (e) => {
+                if (!active || e.pointerId !== pid) return;
                 const dx = e.clientX - startX;
                 const dy = e.clientY - startY;
                 if (!moved) {
-                    if (Math.abs(dx) < 5 && Math.abs(dy) < 5) return;
+                    if (Math.abs(dx) < 6 && Math.abs(dy) < 6) return;
                     moved = true;
                     node.classList.add('dragging');
-                    try { node.setPointerCapture(pid); } catch(_) {}
-                    if (node.classList.contains('ph-home-search')) node.querySelector('input')?.blur();
+                    if (isSearch) { try { node.querySelector('input')?.blur(); } catch(_) {} }
                 }
                 e.preventDefault();
                 node.style.transition = 'none';
-                node.style.transform  = `translate(${baseX + dx}px, ${baseY + dy}px)`;
-            });
-            const finish = (e) => {
-                if (!dragging) return;
-                dragging = false;
+                node.style.transform = `translate(${baseX + dx}px, ${baseY + dy}px)`;
+            };
+            const onUp = (e) => {
+                if (!active || e.pointerId !== pid) return;
+                document.removeEventListener('pointermove', onMove);
+                document.removeEventListener('pointerup', onUp);
+                document.removeEventListener('pointercancel', onUp);
                 const wasMoved = moved;
-                moved = false;
+                const fx = baseX + (e.clientX - startX);
+                const fy = baseY + (e.clientY - startY);
+                active = false; moved = false; pid = null;
                 node.classList.remove('dragging');
                 node.style.transition = '';
-                if (wasMoved && e.pointerId === pid) {
-                    _homeCfg[xKey] = baseX + (e.clientX - startX);
-                    _homeCfg[yKey] = baseY + (e.clientY - startY);
+                if (wasMoved) {
+                    _homeCfg[xKey] = fx;
+                    _homeCfg[yKey] = fy;
                     _saveHomeCfg();
+                    node.style.transform = `translate(${fx}px, ${fy}px)`;
+                } else if (isSearch) {
+                    try { node.querySelector('input')?.focus(); } catch(_) {}
                 }
-                pid = null;
             };
-            node.addEventListener('pointerup', finish);
-            node.addEventListener('pointercancel', finish);
+
+            node.addEventListener('pointerdown', (e) => {
+                if (e.pointerType === 'mouse' && e.button !== 0) return;
+                if (active) return;
+                active = true; moved = false; pid = e.pointerId;
+                startX = e.clientX; startY = e.clientY;
+                baseX = _homeCfg[xKey] || 0;
+                baseY = _homeCfg[yKey] || 0;
+                document.addEventListener('pointermove', onMove, { passive: false });
+                document.addEventListener('pointerup', onUp);
+                document.addEventListener('pointercancel', onUp);
+            });
         });
     }
 
@@ -2033,7 +2028,7 @@
         if (_view === 'app' && _activeAppId === 'calls') _renderChamadasContent();
     };
 
-    // ═══ CONFIGURAÇÕES APP (fallback builtin) ═══
+    // ═══ CONFIGURAÇÕES APP ═══
     let _pinFlow = null;
     let _pinBufFlow = '';
     let _pinFirstFlow = '';
