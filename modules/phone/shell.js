@@ -17,7 +17,7 @@
     const LS_MINIMIZED = 'sanghub_phone_minimized';
     const LS_PIN = 'sanghub_phone_pin';
     const LS_LAYOUT = 'sanghub_phone_layout';
-    const MODULES_BASE = 'https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/modules/phone';
+    const MODULES_BASE = 'https://cdn.jsdelivr.net/gh/zBeyond5/Liveblock@main/modules/phone';
     const MAX_DOCK_APPS = 4;
     const GRID_COLS = 4;
     const GRID_ROWS = 4;
@@ -27,6 +27,7 @@
 
     // ═══ CTX ═══
     const ctx = window._phoneCtx = window._phoneCtx || {};
+    ctx.moduleBase = MODULES_BASE;
     ctx.phase = 'idle';
     ctx.myNumber = null;
     ctx.deviceId = bridge.deviceId || '';
