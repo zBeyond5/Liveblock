@@ -184,13 +184,27 @@
       "url": "https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/modules/groq.js"
     },
     {
+    "id": "phone",
+    "name": "Celular",
+    "description": "Ligue para outros usuários online",
+    "icon": "https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/assets/GIF/celular.gif",
+    "enabled": true,
+    "autoload": false,
+    "secret": false,
+    "misc": true,
+    "admin": true,    
+    "instanceKey": "_phone",
+    "url": "https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/modules/celular.js"
+    },
+    {
       "id": "bot",
       "name": "BOT",
       "description": "Transforme-se em bot.",
       "icon": "https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/assets/GIF/bot.gif",
-      "enabled": false,
+      "enabled": true,
       "autoload": false,
       "secret": false,
+      "admin": true, 
       "instanceKey": "_bot",
       "url": "https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/modules/bot.js"
     }
