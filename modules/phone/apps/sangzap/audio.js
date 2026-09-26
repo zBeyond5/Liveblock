@@ -13,8 +13,8 @@
     const MIN_MS       = 700;
     const PEAK_BARS    = 48;
     const LEVEL_HZ     = 30;
-    const CANCEL_DX    = -70;   // deslizar pra esquerda o suficiente
-    const LOCK_DY      = -80;   // deslizar pra cima o suficiente
+    const CANCEL_DX    = -70;
+    const LOCK_DY      = -80;
 
     const MIME_CANDIDATES = [
         'audio/webm;codecs=opus',
@@ -25,9 +25,13 @@
         'audio/mp4'
     ];
 
+    const ICON_PLAY  = `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M6 4l14 8-14 8z"/></svg>`;
+    const ICON_PAUSE = `<svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg>`;
+
     // ═══ STATE ═══
-    let _session = null;                // sessão ativa (recorder)
+    let _session = null;                // sessão de gravação ativa
     const _urlCache = new Map();        // msgId -> objectURL
+    const _playing = new Set();         // <audio> em reprodução (para stopAll)
 
     // ═══ UTIL ═══
     function pickMime() {
@@ -307,6 +311,15 @@
         return true;
     };
 
+    // ═══ PUBLIC — PLAYBACK STOP-ALL ═══
+    // Usado por chat.js no C.close() para parar qualquer áudio tocando.
+    A.stopAll = function() {
+        for (const a of _playing) {
+            try { a.pause(); a.currentTime = 0; } catch(_) {}
+        }
+        _playing.clear();
+    };
+
     // ═══ PUBLIC — GESTURE ═══
     A.startGesture = function(opts) {
         const trigger = opts?.trigger;
@@ -344,7 +357,6 @@
         document.addEventListener('pointerup', earlyUp, { once: true });
         try { trigger.setPointerCapture(pointerId); } catch(_) {}
 
-        // adquire stream
         let stream;
         try { stream = await acquireStream(); }
         catch(_) {
@@ -353,13 +365,11 @@
             return;
         }
 
-        // se o usuário soltou durante o await, aborta
         if (releasedEarly && performance.now() - earlyReleasedAt < 150) {
             stream.getTracks().forEach(t => t.stop());
             return;
         }
 
-        // backend
         let backend;
         try { backend = makeBackend(stream); }
         catch(e) {
@@ -373,7 +383,7 @@
 
         const session = {
             backend, stream, meter, startedAt,
-            state: 'rec',             // rec | cancel | locked | paused | processing
+            state: 'rec',
             pausedAt: 0, pausedTotal: 0,
             pointerId, originX, originY,
             completed: false,
@@ -384,7 +394,6 @@
         backend.start();
         onState('rec', { duration: 0, level: 0, supportsPause: !!backend.supportsPause });
 
-        // ── level loop ──
         let levelRAF = null;
         let lastEmit = 0;
         function levelLoop() {
@@ -402,7 +411,6 @@
         levelRAF = requestAnimationFrame(levelLoop);
         session.levelRAF = levelRAF;
 
-        // ── gesture listeners ──
         function onMove(ev) {
             if (ev.pointerId !== pointerId) return;
             if (session.state === 'locked' || session.state === 'paused' || session.state === 'processing') return;
@@ -442,7 +450,6 @@
         document.addEventListener('pointerup', onUp);
         document.addEventListener('pointercancel', onCancelGesture);
 
-        // cleanup idempotente (referenciado por stop/cancel)
         session.cleanup = () => {
             _detach();
             document.removeEventListener('pointerup', earlyUp);
@@ -453,9 +460,8 @@
         };
     }
 
-    // ═══ PUBLIC — LEGACY (compat até o shell ser atualizado) ═══
+    // ═══ PUBLIC — LEGACY (start sem gesto) ═══
     A.start = async function(onState, onDone) {
-        // Shim: sem gesto, sem lock. Só grava até stop() manual ou MAX_MS.
         if (_session) return false;
         let stream;
         try { stream = await acquireStream(); }
@@ -566,27 +572,35 @@
 
         const bars = peaks.map(h => {
             const px = Math.max(3, Math.round(3 + h * 20));
-            return `<span style="height:${px}px"></span>`;
+            return `<span class="sz-bar" style="height:${px}px"></span>`;
         }).join('');
 
         wrap.innerHTML = `
-            <button class="sz-audio-btn" type="button" aria-label="Reproduzir">▶</button>
-            <div class="sz-audio-wave" role="slider" tabindex="0" aria-label="Posição" data-real="${realPeaks ? '1' : '0'}">${bars}</div>
-            <span class="sz-audio-time">${dur ? fmtDur(dur) : '--:--'}</span>
-            <button class="sz-audio-rate" type="button" title="Velocidade" aria-label="Velocidade">1x</button>
+            <button class="sz-audio-play" type="button" aria-label="Reproduzir">${ICON_PLAY}</button>
+            <div class="sz-audio-body">
+                <div class="sz-audio-wave" role="slider" tabindex="0" aria-label="Posição" data-real="${realPeaks ? '1' : '0'}">
+                    ${bars}
+                    <span class="sz-audio-cursor" style="left:0%"></span>
+                </div>
+                <div class="sz-audio-meta">
+                    <span class="sz-audio-time">${dur ? fmtDur(dur) : '--:--'}</span>
+                    <button class="sz-audio-speed" type="button" title="Velocidade" aria-label="Velocidade">1x</button>
+                </div>
+            </div>
             <audio preload="metadata" src="${src}"></audio>
         `;
 
-        const btn = wrap.querySelector('.sz-audio-btn');
-        const rateBtn = wrap.querySelector('.sz-audio-rate');
-        const audio = wrap.querySelector('audio');
-        const time = wrap.querySelector('.sz-audio-time');
-        const wave = wrap.querySelector('.sz-audio-wave');
-        const spans = wrap.querySelectorAll('.sz-audio-wave span');
+        const btn      = wrap.querySelector('.sz-audio-play');
+        const rateBtn  = wrap.querySelector('.sz-audio-speed');
+        const audio    = wrap.querySelector('audio');
+        const time     = wrap.querySelector('.sz-audio-time');
+        const wave     = wrap.querySelector('.sz-audio-wave');
+        const cursor   = wrap.querySelector('.sz-audio-cursor');
+        const spans    = wrap.querySelectorAll('.sz-audio-wave .sz-bar');
 
         if (!src) {
             btn.disabled = true;
-            btn.textContent = '×';
+            btn.innerHTML = '×';
             rateBtn.disabled = true;
             return wrap;
         }
@@ -597,13 +611,17 @@
             ratio = Math.max(0, Math.min(1, ratio || 0));
             const n = Math.round(spans.length * ratio);
             for (let i = 0; i < spans.length; i++) {
-                spans[i].classList.toggle('on', i < n);
+                spans[i].classList.toggle('played', i < n);
             }
+            if (cursor) cursor.style.left = (ratio * 100).toFixed(2) + '%';
         }
 
         function setPlayingUI(playing) {
-            btn.textContent = playing ? '❚❚' : '▶';
+            btn.innerHTML = playing ? ICON_PAUSE : ICON_PLAY;
+            btn.setAttribute('aria-label', playing ? 'Pausar' : 'Reproduzir');
             wrap.classList.toggle('playing', playing);
+            if (playing) _playing.add(audio);
+            else _playing.delete(audio);
         }
 
         btn.addEventListener('click', (ev) => {
@@ -640,7 +658,11 @@
 
         audio.addEventListener('play',  () => setPlayingUI(true));
         audio.addEventListener('pause', () => setPlayingUI(false));
-        audio.addEventListener('ended', () => { setPlayingUI(false); paintProgress(0); time.textContent = fmtDur(dur); });
+        audio.addEventListener('ended', () => {
+            setPlayingUI(false);
+            paintProgress(0);
+            time.textContent = fmtDur(dur);
+        });
         audio.addEventListener('loadedmetadata', () => {
             if (isFinite(audio.duration) && audio.duration > 0) {
                 time.textContent = fmtDur(audio.duration * 1000);
@@ -654,13 +676,17 @@
         });
         audio.addEventListener('error', () => {
             btn.disabled = true;
-            btn.textContent = '×';
+            btn.innerHTML = '×';
             wrap.classList.add('error');
+            _playing.delete(audio);
         });
 
         return wrap;
     };
 
+    // ═══ RENDER INTO CONTAINER ═══
+    // Uso: S.audio.renderInto(el, msg) — el é o `.sz-audio-container` no bubble.
+    // Idempotente por msgId — se já renderizou, não recria.
     A.renderInto = function(bubble, msg) {
         if (!bubble || !msg) return null;
         if (bubble.dataset.audioRendered === String(msg.id || '')) return null;
