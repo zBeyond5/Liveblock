@@ -25,15 +25,16 @@
     const DEFAULT_APP_BG = 'linear-gradient(180deg, #16181c 0%, #0d0f12 100%)';
     const DEFAULT_APP_BG_SOLID = '#0f1115';
 
-    // ═══ CTX ═══
-    const ctx = window._phoneCtx = window._phoneCtx || {};
-    ctx.moduleBase = MODULES_BASE;
-    ctx.phase = 'idle';
-    ctx.myNumber = null;
-    ctx.deviceId = bridge.deviceId || '';
-    ctx.contacts = ctx.contacts || {};
-    ctx.calls = ctx.calls || {};
-    ctx.notes = ctx.notes || {};
+   // ═══ CTX ═══
+const ctx = window._phoneCtx = window._phoneCtx || {};
+ctx.moduleBase = MODULES_BASE;
+ctx.phase = 'idle';
+ctx.myNumber = null;
+ctx.deviceId = bridge.deviceId || '';
+ctx.bridge = bridge;                  
+ctx.contacts = ctx.contacts || {};
+ctx.calls = ctx.calls || {};
+ctx.notes = ctx.notes || {};
 
     // ═══ UTILS ═══
     function el(tag, attrs, ...children) {
