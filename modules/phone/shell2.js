@@ -1,10 +1,4 @@
 // modules/phone/shell.js
-// Núcleo: cria _phoneCtx, valida bridge, define P.config + P.state,
-// carrega os 4 módulos internos (style, core, home, apps) e depois os externos.
-// Não monta DOM, não desenha nada, não tem lógica de home nem de PIN.
-//
-// Ciclo de vida: montado pelo hub (killInstance + loadModule).
-// Toda operação é idempotente e resistente a re-mount.
 (function() {
     'use strict';
     const UID = '_phone';
@@ -81,7 +75,7 @@
         frameEl:      null, screenEl: null, stageEl: null, contentEl: null
     });
     if (typeof P.state.bootToken !== 'number') P.state.bootToken = 0;
-    try { P.state.minimized = localStorage.getItem(C.LS_MINIMIZED) === '1'; } catch(_) {}
+    P.state.minimized = true;
     try { P.state.pinSet    = localStorage.getItem(C.LS_PIN) || ''; }        catch(_) {}
 
     // MODULE LOADER
