@@ -18,7 +18,7 @@
     const LS_PIN = 'sanghub_phone_pin';
     const LS_LAYOUT = 'sanghub_phone_layout';
     const LS_HOME_CFG = 'sanghub_phone_home_cfg';
-    const MODULES_BASE = 'https://cdn.jsdelivr.net/gh/zBeyond5/Liveblock@main/modules/phone';
+    const MODULES_BASE = 'https://raw.githubusercontent.com/zBeyond5/Liveblock/main/modules/phone';
     const MAX_DOCK_APPS = 4;
     const GRID_COLS = 4;
     const GRID_ROWS = 4;
