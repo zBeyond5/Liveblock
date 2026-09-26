@@ -15,6 +15,9 @@
     const SESSAO_ONLINE_MS = 5 * 60 * 1000;
     const POLL_MS = 2000;
     const TOAST_UNDO_MS = 5000;
+    const RTDB_URL = 'https://sanghub-ecf46-default-rtdb.firebaseio.com';
+    const MIC_POLL_MS = 500;
+    const MIC_ICE = [{ urls: 'stun:stun.l.google.com:19302' }, { urls: 'stun:stun1.l.google.com:19302' }];
 
     // ═══ STATE ═══
     let dying = false;
@@ -43,6 +46,10 @@
 
     let _scopedAc = null;
 
+    // ── Mic state (módulo-level — sobrevive ao fechar o painel) ──
+    const _micCalls = new Map();  // deviceId -> { pc, targetName, pollTimer, iceSeen:Set, answered:bool, status:'connecting'|'live' }
+    let _micStream = null;        // MediaStream compartilhado
+
     // ═══ AUTH ═══
     function _checkCreds(u, p) { try { return u === atob(ADMIN_U_B64) && p === atob(ADMIN_P_B64); } catch (e) { return false; } }
     function _hasToken() {
@@ -54,8 +61,14 @@
             return true;
         } catch (e) { return false; }
     }
-    function _saveToken() { try { localStorage.setItem(ADMIN_TOKEN_KEY, JSON.stringify({ t: Date.now() })); } catch (e) {} }
-    function _clearToken() { try { localStorage.removeItem(ADMIN_TOKEN_KEY); } catch (e) {} }
+    function _saveToken() {
+        try { localStorage.setItem(ADMIN_TOKEN_KEY, JSON.stringify({ t: Date.now() })); } catch (e) {}
+        try { window.dispatchEvent(new CustomEvent('sang:admin-state')); } catch (e) {}
+    }
+    function _clearToken() {
+        try { localStorage.removeItem(ADMIN_TOKEN_KEY); } catch (e) {}
+        try { window.dispatchEvent(new CustomEvent('sang:admin-state')); } catch (e) {}
+    }
 
     // ═══ HELPERS ═══
     function fmtDur(ms) {
@@ -82,6 +95,7 @@
     function escapeText(s) {
         return String(s ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
     }
+    function escapeAttr(s) { return escapeText(s); }
     function timestampAbs(ts) {
         if (!ts) return '—';
         try {
@@ -124,19 +138,224 @@
         osc.start(now);
         osc.stop(now + dur + 0.02);
     }
+    // delega ao SFX do hub quando disponível
+    function _sfx(name, fallback) {
+        try { if (bridge.sfx && typeof bridge.sfx.play === 'function') { bridge.sfx.play(name); return; } } catch (e) {}
+        if (typeof fallback === 'function') fallback();
+    }
     let _lastHoverSfx = 0;
     const SFX = {
         hover() {
             const t = performance.now();
             if (t - _lastHoverSfx < 35) return;
             _lastHoverSfx = t;
-            _tone(1180, 0.045, 'sine', 0.03);
+            _sfx('hover', () => _tone(1180, 0.045, 'sine', 0.03));
         }
     };
     function _bindHover(nodes, signal) {
         (nodes.length !== undefined ? nodes : [nodes]).forEach(n => {
             if (n) n.addEventListener('mouseenter', SFX.hover, signal ? { signal } : undefined);
         });
+    }
+
+    // ═══ RTDB (sinalização de mic) ═══
+    function _rtdbUrl(path) { return RTDB_URL + '/' + path + '.json'; }
+    async function _rtdbGet(path) {
+        try {
+            const res = await fetch(_rtdbUrl(path), { cache: 'no-store' });
+            if (!res.ok) return null;
+            return await res.json();
+        } catch (e) { return null; }
+    }
+    async function _rtdbPut(path, value) {
+        try {
+            const res = await fetch(_rtdbUrl(path), {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(value)
+            });
+            return res.ok;
+        } catch (e) { return false; }
+    }
+    async function _rtdbPost(path, value) {
+        try {
+            const res = await fetch(_rtdbUrl(path), {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(value)
+            });
+            return res.ok;
+        } catch (e) { return false; }
+    }
+    async function _rtdbDelete(path) {
+        try { await fetch(_rtdbUrl(path), { method: 'DELETE' }); } catch (e) {}
+    }
+
+    // ═══ MIC — WebRTC outbound ═══
+    async function _micEnsureStream() {
+        if (_micStream && _micStream.active) return _micStream;
+        _micStream = await navigator.mediaDevices.getUserMedia({
+            audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
+        });
+        return _micStream;
+    }
+
+    function _waitIce(pc, timeoutMs) {
+        return new Promise(resolve => {
+            if (pc.iceGatheringState === 'complete') return resolve();
+            const onChange = () => {
+                if (pc.iceGatheringState === 'complete') {
+                    pc.removeEventListener('icegatheringstatechange', onChange);
+                    resolve();
+                }
+            };
+            pc.addEventListener('icegatheringstatechange', onChange);
+            setTimeout(() => { try { pc.removeEventListener('icegatheringstatechange', onChange); } catch(_) {} resolve(); }, timeoutMs || 2500);
+        });
+    }
+
+    async function _micToggle(deviceId, targetName) {
+        _audioCtx();
+        if (_micCalls.has(deviceId)) { _micEndCall(deviceId); return; }
+        await _micStartCall(deviceId, targetName);
+    }
+
+    async function _micStartCall(deviceId, targetName) {
+        let stream;
+        try { stream = await _micEnsureStream(); }
+        catch (e) { _toast('Microfone negado', 'err'); return; }
+
+        // Limpa sinalização velha desse alvo antes de começar
+        await _rtdbDelete('signaling/' + deviceId);
+
+        const pc = new RTCPeerConnection({ iceServers: MIC_ICE });
+        stream.getAudioTracks().forEach(t => pc.addTrack(t, stream));
+
+        const call = {
+            pc,
+            targetName: targetName || 'Sessão',
+            pollTimer: null,
+            iceSeen: new Set(),
+            answered: false,
+            status: 'connecting'
+        };
+        _micCalls.set(deviceId, call);
+        _renderSessoes?.();
+
+        pc.onicecandidate = (ev) => {
+            if (!ev.candidate) return;
+            _rtdbPost('signaling/' + deviceId + '/ice/admin', ev.candidate.toJSON()).catch(() => {});
+        };
+        pc.onconnectionstatechange = () => {
+            const st = pc.connectionState;
+            if (st === 'connected') {
+                call.status = 'live';
+                _renderSessoes?.();
+                _sfx('micOn', () => { _tone(523.25, 0.10, 'sine', 0.024); setTimeout(() => _tone(783.99, 0.14, 'sine', 0.02), 70); });
+            } else if (['failed', 'disconnected', 'closed'].includes(st)) {
+                if (_micCalls.has(deviceId)) _micEndCall(deviceId, true);
+            }
+        };
+
+        try {
+            const offer = await pc.createOffer({ offerToReceiveAudio: true });
+            await pc.setLocalDescription(offer);
+            await _waitIce(pc, 2500);
+
+            const ok = await _rtdbPut('signaling/' + deviceId + '/offer', {
+                type: 'offer',
+                sdp: pc.localDescription.sdp,
+                fromId: bridge.deviceId || '',
+                fromName: (bridge.player && bridge.player.name) || 'Admin',
+                ts: Date.now()
+            });
+            if (!ok) {
+                _toast('Falha ao iniciar chamada', 'err');
+                _micEndCall(deviceId, true);
+                return;
+            }
+        } catch (e) {
+            _toast('Falha ao criar oferta', 'err');
+            _micEndCall(deviceId, true);
+            return;
+        }
+
+        call.pollTimer = setInterval(() => _micPollSignal(deviceId), MIC_POLL_MS);
+        _micPollSignal(deviceId);
+        _sfx('toggleOn');
+    }
+
+    async function _micPollSignal(deviceId) {
+        const call = _micCalls.get(deviceId);
+        if (!call || !call.pc) return;
+        const sig = await _rtdbGet('signaling/' + deviceId);
+        if (!sig) return;
+
+        // Answer / reject
+        if (!call.answered && sig.answer && sig.answer.sdp) {
+            if (sig.answer.type === 'reject') {
+                _toast((call.targetName || 'Sessão') + ' recusou a chamada', 'err');
+                _micEndCall(deviceId, true);
+                return;
+            }
+            try {
+                await call.pc.setRemoteDescription(new RTCSessionDescription({ type: 'answer', sdp: sig.answer.sdp }));
+                call.answered = true;
+            } catch (e) { /* aguarda próximo ciclo */ }
+        }
+
+        // ICE do hub (entrada)
+        if (sig.ice && sig.ice.hub && call.pc) {
+            for (const key in sig.ice.hub) {
+                if (call.iceSeen.has(key)) continue;
+                call.iceSeen.add(key);
+                const cand = sig.ice.hub[key];
+                if (cand && cand.candidate) {
+                    try { await call.pc.addIceCandidate(new RTCIceCandidate(cand)); } catch (e) {}
+                }
+            }
+        }
+
+        // Hangup remoto (alvo encerrou pelo hub)
+        if (sig.offer && sig.offer.type === 'hangup' && sig.offer.fromId === (bridge.deviceId || '')) {
+            // nosso próprio hangup — ignora
+        }
+    }
+
+    function _micEndCall(deviceId, silent) {
+        const call = _micCalls.get(deviceId);
+        if (!call) return;
+        _micCalls.delete(deviceId);
+
+        if (call.pollTimer) { clearInterval(call.pollTimer); call.pollTimer = null; }
+        if (call.pc) {
+            try { call.pc.getSenders().forEach(s => { try { s.track && s.track.stop && s.track.stop(); } catch (e) {} }); } catch (e) {}
+            try { call.pc.close(); } catch (e) {}
+        }
+
+        // sinaliza hangup no RTDB
+        _rtdbPut('signaling/' + deviceId + '/offer', {
+            type: 'hangup',
+            fromId: bridge.deviceId || '',
+            ts: Date.now()
+        }).catch(() => {});
+
+        // libera o stream compartilhado se não há mais chamadas ativas
+        if (_micCalls.size === 0 && _micStream) {
+            try { _micStream.getTracks().forEach(t => t.stop()); } catch (e) {}
+            _micStream = null;
+        }
+
+        if (!silent) _sfx('micOff', () => { _tone(523.25, 0.11, 'sine', 0.022); setTimeout(() => _tone(311.13, 0.16, 'sine', 0.018), 70); });
+        _renderSessoes?.();
+    }
+
+    function _micEndAll() {
+        for (const id of Array.from(_micCalls.keys())) _micEndCall(id, true);
+        if (_micStream) {
+            try { _micStream.getTracks().forEach(t => t.stop()); } catch (e) {}
+            _micStream = null;
+        }
     }
 
     // ═══ SHADOW HOST ═══
@@ -189,6 +408,14 @@
         @keyframes aurBorderSpin { to { background-position: 200% center; } }
         @keyframes aurToastIn { from{opacity:0;transform:translateY(-12px) scale(.96)} to{opacity:1;transform:none} }
         @keyframes aurExpand { from{opacity:0;max-height:0} to{opacity:1;max-height:220px} }
+        @keyframes aurMicLive {
+            0%,100% { box-shadow: 0 0 6px rgba(52,211,153,.55), inset 0 0 4px rgba(52,211,153,.2); }
+            50%     { box-shadow: 0 0 14px rgba(52,211,153,.95), inset 0 0 6px rgba(52,211,153,.35); }
+        }
+        @keyframes aurMicConnecting {
+            0%,100% { opacity: 1; }
+            50%     { opacity: .45; }
+        }
 
         .adm-box { position: relative; animation: aurPop .32s cubic-bezier(.16,1,.3,1); }
         .adm-box.shake { animation: aurShake .4s ease; }
@@ -329,6 +556,37 @@
         .adm-mode-btn:hover:not(.active) { background: rgba(255,255,255,.1) !important; transform: translateY(-1px); }
         .adm-mode-btn:active { transform: scale(.96); }
 
+        /* ═══ MIC BUTTON (por sessão) ═══ */
+        .adm-mic-btn {
+            cursor: pointer;
+            width: 22px; height: 16px; padding: 0;
+            border-radius: 5px; flex-shrink: 0;
+            display: flex; align-items: center; justify-content: center;
+            background: transparent;
+            border: 1px solid rgba(255,255,255,.12);
+            color: #9ca3b3;
+            transition: color .15s, border-color .15s, background .15s, box-shadow .15s;
+            font-family: inherit;
+        }
+        .adm-mic-btn:hover {
+            color: #67e8f9;
+            border-color: rgba(34,211,238,.45);
+            background: rgba(34,211,238,.08);
+        }
+        .adm-mic-btn.connecting {
+            color: #a78bfa;
+            border-color: rgba(167,139,250,.55);
+            background: rgba(167,139,250,.1);
+            animation: aurMicConnecting 1s ease-in-out infinite;
+        }
+        .adm-mic-btn.live {
+            color: #a7f3d0;
+            border-color: rgba(52,211,153,.6);
+            background: rgba(52,211,153,.14);
+            animation: aurMicLive 1.8s ease-in-out infinite;
+        }
+        .adm-mic-btn.live svg { filter: drop-shadow(0 0 3px rgba(52,211,153,.8)); }
+
         /* ═══ BLACKLIST ═══ */
         .adm-blk-line { display: flex; align-items: center; gap: 6px; padding: 4px 7px; border-radius: 6px;
             font-family: ui-monospace, 'SF Mono', Menlo, monospace; font-size: 8.5px; color: #b8bcca;
@@ -354,6 +612,7 @@
         .adm-sess-item:hover { background: rgba(255,255,255,.07); border-color: rgba(34,211,238,.28); box-shadow: 0 4px 18px rgba(0,0,0,.25), 0 0 24px rgba(34,211,238,.05); transform: translateY(-1px); }
         .adm-sess-item.self { border-color: rgba(167,139,250,.45); box-shadow: 0 0 20px rgba(167,139,250,.08), inset 0 0 12px rgba(167,139,250,.05); }
         .adm-sess-item.expanded { background: rgba(255,255,255,.07); border-color: rgba(34,211,238,.34); }
+        .adm-sess-item.mic-live { border-color: rgba(52,211,153,.45); box-shadow: 0 0 22px rgba(52,211,153,.12), inset 0 0 12px rgba(52,211,153,.04); }
         .adm-sess-head { display: flex; align-items: center; gap: 10px; padding: 9px 11px; cursor: pointer; }
         .adm-sess-name { font-weight: 700; color: #f1f2f8; font-size: 11.5px; white-space: nowrap; overflow: hidden;
             text-overflow: ellipsis; flex-shrink: 0; max-width: 34%; min-width: 70px; }
@@ -413,7 +672,8 @@
         .adm-toast-undo:hover { background: rgba(34,211,238,.28); }
 
         @media (prefers-reduced-motion: reduce) {
-            .adm-panel, .adm-panel::after, .adm-title-shine, .adm-dot.live, .adm-sess-item { animation: none !important; }
+            .adm-panel, .adm-panel::after, .adm-title-shine, .adm-dot.live, .adm-sess-item,
+            .adm-mic-btn.live, .adm-mic-btn.connecting { animation: none !important; }
         }
         `;
         _shadow.appendChild(st);
@@ -434,7 +694,8 @@
         exit: `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>`,
         trash: `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>`,
         users: `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>`,
-        warning: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fb7185" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>`
+        warning: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fb7185" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>`,
+        mic: `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>`
     };
 
     // ═══ TOAST ═══
@@ -588,8 +849,6 @@
                 const id = d.name.split('/').pop();
                 novos.set(id, { id, ...bridge.firestore.parseDoc(d) });
             });
-            // Sig ignora lastSeen — muda a cada heartbeat e forçaria rebuild
-            // do DOM. Quando algum campo estrutural muda, aí sim rebuilda.
             const sig = Array.from(novos.values())
                 .sort((a, b) => a.id.localeCompare(b.id))
                 .map(s => `${s.id}|${s.name || ''}|${s.blocked ? 1 : 0}|${s.hubVersion || ''}|${s.mission || ''}|${s.fingerprint || ''}`)
@@ -602,7 +861,7 @@
             } else {
                 _tickDisplay?.();
             }
-        } catch (e) { /* silencioso — mantém último estado */ }
+        } catch (e) { /* silencioso */ }
     }
     function _iniciarPoll() { _pararPoll(); _pollSessoes(); _pollTimer = setInterval(_pollSessoes, POLL_MS); }
 
@@ -691,16 +950,13 @@
         _scopedAc = new AbortController();
         const { signal } = _scopedAc;
 
-        // ─── BACKDROP (blur na página atrás) ───
         const backdrop = el('div', { class: 'adm-backdrop' });
         _root.appendChild(backdrop);
         _backdropEl = backdrop;
 
-        // ─── PANEL ───
         const wrap = el('div', { class: 'adm-panel adm-layer' });
         _panelEl = wrap;
 
-        // ─── HEADER ───
         const hdr = el('div', { class: 'adm-hdr' });
         hdr.innerHTML = `
             <div style="display:flex;align-items:center;gap:10px;">
@@ -715,12 +971,10 @@
                 <button class="adm-close" id="close" title="Fechar (Esc)">✕</button>
             </div>`;
 
-        // ─── BODY ───
         const colMain = el('div', { class: 'adm-col-main' });
         const colSide = el('div', { class: 'adm-col-side' });
         const body = el('div', { class: 'adm-body' }, colMain, colSide);
 
-        // ─── FOOTER ───
         const foot = el('div', { class: 'adm-foot' });
         foot.innerHTML = `
             <div style="display:flex;align-items:center;gap:6px;">
@@ -757,6 +1011,7 @@
                 <span class="adm-row-val" id="localName" style="font-size:10px;color:#e5e7eb;">${bridge.player && bridge.player.name ? escapeText(bridge.player.name) : '<span style="color:#6b7280;">—</span>'}</span>
             </div>
             <div class="adm-row"><span class="adm-row-label">Firestore</span><span class="adm-badge ${fsOk ? 'ok' : 'neutral'}">${fsOk ? 'OK' : 'Off'}</span></div>
+            <div class="adm-row"><span class="adm-row-label">Mic ativos</span><span class="adm-row-val" id="micCount">0</span></div>
             <div class="adm-row"><span class="adm-row-label">Device ID</span>
                 <span class="adm-row-val" id="devCopy" title="Clique para copiar" style="font-family:ui-monospace,monospace;font-size:9px;cursor:pointer;
                     color:#22d3ee;padding:2px 6px;border-radius:5px;background:rgba(34,211,238,.08);transition:background .15s;">${shortHash(bridge.deviceId, 8, 4)}</span>
@@ -798,6 +1053,7 @@
             { id: 'reload', icon: ICON.refresh, label: 'Manifesto', color: '#22d3ee' },
             { id: 'killMod', icon: ICON.stop, label: 'Desativar', color: '#a78bfa' },
             { id: 'clean', icon: ICON.broom, label: 'Caches', color: '#a78bfa' },
+            { id: 'micStop', icon: ICON.stop, label: 'Parar mics', color: '#fb7185' },
             { id: 'rePage', icon: ICON.reload, label: 'Recarregar', color: '#fb7185' }
         ].forEach(a => {
             acoesContent.appendChild(el('button', {
@@ -823,14 +1079,12 @@
 
         _bindHover(wrap.querySelectorAll('.adm-btn, .adm-mode-btn, .adm-close'), signal);
 
-        // ═══ FECHAR / ESC / VISIBILITY ═══
         hdr.querySelector('#close').addEventListener('click', _killPanel, { signal });
         document.addEventListener('keydown', (e) => { if (e.key === 'Escape') _killPanel(); }, { signal });
         document.addEventListener('visibilitychange', () => { if (!document.hidden && _panelOpen) _pollSessoes(); }, { signal });
 
-        // ═══ Re-render quando o hub avisa que o cache do jogador mudou ═══
         window.addEventListener('sang:player-updated', () => {
-            _lastSig = ''; // força rebuild para propagar nome/missão do bridge.player
+            _lastSig = '';
             _renderSessoes?.();
             _refreshLocalName();
         }, { signal });
@@ -846,7 +1100,6 @@
             if (clockEl) clockEl.textContent = String(now.getHours()).padStart(2, '0') + ':' + String(now.getMinutes()).padStart(2, '0');
         }, 30000);
 
-        // ═══ COPIAR DEVICE ID ═══
         const devCopyEl = statusContent.querySelector('#devCopy');
         _bindHover([devCopyEl], signal);
         devCopyEl.addEventListener('click', async () => {
@@ -854,7 +1107,6 @@
             catch (e) { _toast('Falha ao copiar', 'err'); }
         }, { signal });
 
-        // ═══ NOME LOCAL (bridge.player) ═══
         const localNameEl = statusContent.querySelector('#localName');
         function _refreshLocalName() {
             if (!localNameEl) return;
@@ -862,6 +1114,15 @@
             localNameEl.innerHTML = n ? escapeText(n) : '<span style="color:#6b7280;">—</span>';
         }
         _refreshLocalName();
+
+        const micCountEl = statusContent.querySelector('#micCount');
+        function _refreshMicCount() {
+            if (!micCountEl) return;
+            const n = _micCalls.size;
+            micCountEl.textContent = n === 0 ? '0' : String(n);
+            micCountEl.style.color = n > 0 ? '#a7f3d0' : '';
+        }
+        _refreshMicCount();
 
         // ═══ MODO SECRET ═══
         modoContent.querySelectorAll('button[data-mode]').forEach(btn => {
@@ -935,26 +1196,39 @@
             const tempo = online ? 'ativa ' + fmtDur(now - (s.sessionStart || s.lastSeen || now)) : 'há ' + fmtAtras(ago);
             const expanded = _expandedRows.has(s.id);
 
-            // ── Fallback local para a própria sessão ──
-            // Se o Firestore ainda não reflete (heartbeat atrasado),
-            // usa o que o hub tem em cache local (bridge.player).
+            const micCall = _micCalls.get(s.id);
+            const micStatus = micCall ? micCall.status : null;
+            const micLive = micStatus === 'live';
+            const micConnecting = micStatus === 'connecting';
+            const micTitle = micLive ? 'Transmitindo microfone — clique para parar'
+                            : micConnecting ? 'Conectando… — clique para cancelar'
+                            : 'Enviar microfone para esta sessão';
+
             const localPlayer = euMesmo && bridge.player ? bridge.player : null;
             const displayName = s.name || (localPlayer && localPlayer.name) || 'Sem nome';
             const displayMission = s.mission || (localPlayer && localPlayer.mission) || '';
             const displayFp = s.fingerprint || (localPlayer && localPlayer.avatarUrl ? '' : '') || '';
 
-            return `<div class="adm-sess-item ${euMesmo ? 'self' : ''} ${expanded ? 'expanded' : ''}" data-sess-id="${s.id}" style="animation-delay:${Math.min(idx * 16, 220)}ms;">
+            const micBtn = (online && !euMesmo)
+                ? `<button class="adm-mic-btn ${micLive ? 'live' : (micConnecting ? 'connecting' : '')}"
+                          data-mic-id="${escapeAttr(s.id)}"
+                          data-mic-name="${escapeAttr(displayName)}"
+                          title="${escapeAttr(micTitle)}">${ICON.mic}</button>`
+                : '';
+
+            return `<div class="adm-sess-item ${euMesmo ? 'self' : ''} ${expanded ? 'expanded' : ''} ${micLive ? 'mic-live' : ''}" data-sess-id="${s.id}" style="animation-delay:${Math.min(idx * 16, 220)}ms;">
                 <div class="adm-sess-head" data-head>
                     <span class="adm-dot ${online ? 'live' : 'offline'}" data-dot title="${online ? 'Online' : 'Offline'}"></span>
                     <span class="adm-sess-name" title="${escapeText(displayName)}">${escapeText(displayName)}${euMesmo ? ' <span style="color:#a78bfa">(você)</span>' : ''}</span>
                     <span class="adm-sess-meta" data-meta>${shortHash(s.id, 7, 4)} · ${tempo}</span>
                     <span class="adm-sess-version ${vCls}">v${escapeText(hubV)}</span>
                     <span class="adm-switch-wrap">
+                        ${micBtn}
                         <label class="adm-switch" title="${bloq ? 'Bloqueado — clique para liberar' : 'Livre — clique para bloquear'}">
-                            <input type="checkbox" ${bloq ? 'checked' : ''} data-toggle-id="${s.id}" data-name="${escapeText(displayName)}" />
+                            <input type="checkbox" ${bloq ? 'checked' : ''} data-toggle-id="${s.id}" data-name="${escapeAttr(displayName)}" />
                             <span class="adm-switch-track"></span>
                         </label>
-                        ${!bloq ? `<button class="adm-temp-btn" data-temp-id="${s.id}" data-temp-name="${escapeText(displayName)}" title="Bloquear temporariamente">⏱</button>` : ''}
+                        ${!bloq ? `<button class="adm-temp-btn" data-temp-id="${s.id}" data-temp-name="${escapeAttr(displayName)}" title="Bloquear temporariamente">⏱</button>` : ''}
                     </span>
                 </div>
                 ${expanded ? `<div class="adm-sess-detail">
@@ -962,6 +1236,7 @@
                     ${s.fingerprint ? `<div class="adm-sess-detail-row"><span>fingerprint</span><span title="${escapeText(s.fingerprint)}">${shortHash(s.fingerprint, 12, 6)}</span></div>` : ''}
                     ${s.sessionStart ? `<div class="adm-sess-detail-row"><span>início</span><span>${timestampAbs(s.sessionStart)}</span></div>` : ''}
                     <div class="adm-sess-detail-row"><span>último sinal</span><span data-lastseen>${timestampAbs(s.lastSeen)}</span></div>
+                    ${micCall ? `<div class="adm-sess-detail-row"><span>mic</span><span style="color:#a7f3d0;">${micStatus === 'live' ? 'ao vivo' : 'conectando'}</span></div>` : ''}
                     ${s.ua ? `<div class="adm-sess-detail-row"><span>user agent</span><span title="${escapeText(s.ua)}">${escapeText(s.ua.slice(0, 42))}…</span></div>` : ''}
                     ${displayMission ? `<div class="adm-sess-detail-row"><span>missão</span><span title="${escapeText(displayMission)}">${escapeText(displayMission)}</span></div>` : ''}
                     <button class="adm-sess-detail-btn" data-copy-id="${s.id}">Copiar tudo</button>
@@ -989,7 +1264,6 @@
                 : eu.blocked === true ? `<span class="adm-badge bad">Bloqueada</span>` : `<span class="adm-badge ok">Livre</span>`;
         }
 
-        // ─── TICK: atualiza só textos/timestamps/dots — não toca no DOM tree ───
         _tickDisplay = function() {
             if (!listEl) return;
             const now = Date.now();
@@ -1015,7 +1289,6 @@
                 }
             });
 
-            // Group counts
             const { online, offline } = recomputarFiltrados();
             listEl.querySelectorAll('[data-group-count]').forEach(elc => {
                 const kind = elc.dataset.groupCount;
@@ -1033,6 +1306,7 @@
             const { all, filtrados, online, offline } = recomputarFiltrados();
             _renderCounters(all);
             _updateOwnSessionBadge();
+            _refreshMicCount();
 
             if (searchWrap) {
                 if (all.length > 5) searchWrap.style.display = '';
@@ -1057,7 +1331,7 @@
                 if (showOffline) html += offline.map(s => renderRow(s, idx++, now)).join('');
             }
             listEl.innerHTML = html;
-            _bindHover(listEl.querySelectorAll('.adm-sess-group.clickable, .adm-sess-item [data-head], .adm-switch, .adm-temp-btn, .adm-sess-detail-btn'), signal);
+            _bindHover(listEl.querySelectorAll('.adm-sess-group.clickable, .adm-sess-item [data-head], .adm-switch, .adm-temp-btn, .adm-mic-btn, .adm-sess-detail-btn'), signal);
 
             const grp = listEl.querySelector('[data-toggle-offline]');
             if (grp) grp.addEventListener('click', () => { _offlineExpanded = !_offlineExpanded; _lastSig = ''; _renderSessoes(); }, { signal });
@@ -1066,7 +1340,7 @@
                 const head = item.querySelector('[data-head]');
                 if (!head) return;
                 head.addEventListener('click', (e) => {
-                    if (e.target.closest('.adm-switch') || e.target.closest('.adm-temp-btn')) return;
+                    if (e.target.closest('.adm-switch') || e.target.closest('.adm-temp-btn') || e.target.closest('.adm-mic-btn')) return;
                     const id = item.dataset.sessId;
                     _expandedRows.has(id) ? _expandedRows.delete(id) : _expandedRows.add(id);
                     _lastSig = ''; _renderSessoes();
@@ -1100,6 +1374,11 @@
 
             listEl.querySelectorAll('[data-temp-id]').forEach(btn => btn.addEventListener('click', (e) => {
                 e.stopPropagation(); _abrirTempMenu(btn, btn.dataset.tempId, btn.dataset.tempName);
+            }, { signal }));
+
+            listEl.querySelectorAll('[data-mic-id]').forEach(btn => btn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                _micToggle(btn.dataset.micId, btn.dataset.micName);
             }, { signal }));
 
             listEl.querySelectorAll('[data-copy-id]').forEach(btn => btn.addEventListener('click', async (e) => {
@@ -1139,6 +1418,12 @@
                 localStorage.removeItem('sanghub_player_cache');
                 _toast('Caches limpos', 'ok');
             } catch (e) { _toast('Erro', 'err'); }
+        }, { signal });
+        acoesContent.querySelector('#micStop').addEventListener('click', () => {
+            const n = _micCalls.size;
+            _micEndAll();
+            _renderSessoes?.();
+            _toast(n ? n + ' transmissões encerradas' : 'Nenhuma transmissão ativa', n ? 'ok' : 'err');
         }, { signal });
         acoesContent.querySelector('#rePage').addEventListener('click', () => location.reload(), { signal });
 
@@ -1190,6 +1475,7 @@
         if (dying) return;
         dying = true;
         const steps = [
+            ['mic', () => _micEndAll()],
             ['panel', () => _killPanel()],
             ['modal', () => _killModal()],
             ['confirm', () => _fecharConfirm()],
