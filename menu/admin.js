@@ -18,6 +18,8 @@
     const RTDB_URL = 'https://sanghub-ecf46-default-rtdb.firebaseio.com';
     const MIC_POLL_MS = 500;
     const MIC_ICE = [{ urls: 'stun:stun.l.google.com:19302' }, { urls: 'stun:stun1.l.google.com:19302' }];
+    const PTT_KEY_STORAGE = 'sanghub_admin_ptt_key';
+    const PTT_DEFAULT_KEY = 'ControlLeft';
 
     // ═══ STATE ═══
     let dying = false;
@@ -49,6 +51,15 @@
     // ── Mic state (módulo-level — sobrevive ao fechar o painel) ──
     const _micCalls = new Map();  // deviceId -> { pc, targetName, pollTimer, iceSeen:Set, answered:bool, status:'connecting'|'live' }
     let _micStream = null;        // MediaStream compartilhado
+
+    // ── PTT state ──
+    let _pttKey = PTT_DEFAULT_KEY;
+    let _pttTalking = false;
+    let _pttBound = false;
+    let _pttCapturing = false;
+    let _pttButtonEl = null;
+    let _pttStatusEl = null;
+    try { const saved = localStorage.getItem(PTT_KEY_STORAGE); if (saved) _pttKey = saved; } catch (_) {}
 
     // ═══ AUTH ═══
     function _checkCreds(u, p) { try { return u === atob(ADMIN_U_B64) && p === atob(ADMIN_P_B64); } catch (e) { return false; } }
@@ -138,7 +149,6 @@
         osc.start(now);
         osc.stop(now + dur + 0.02);
     }
-    // delega ao SFX do hub quando disponível
     function _sfx(name, fallback) {
         try { if (bridge.sfx && typeof bridge.sfx.play === 'function') { bridge.sfx.play(name); return; } } catch (e) {}
         if (typeof fallback === 'function') fallback();
@@ -191,12 +201,136 @@
         try { await fetch(_rtdbUrl(path), { method: 'DELETE' }); } catch (e) {}
     }
 
+    // ═══ PTT — push-to-talk (Ctrl esquerdo padrão) ═══
+    function _pttLabel(code) {
+        if (!code) return '—';
+        const map = {
+            ControlLeft: 'Ctrl Esq', ControlRight: 'Ctrl Dir',
+            AltLeft: 'Alt Esq', AltRight: 'Alt Dir',
+            ShiftLeft: 'Shift Esq', ShiftRight: 'Shift Dir',
+            Space: 'Espaço', CapsLock: 'Caps Lock', Tab: 'Tab',
+            Backquote: '`', Backslash: '\\'
+        };
+        if (map[code]) return map[code];
+        if (/^Key[A-Z]$/.test(code)) return code.slice(3);
+        if (/^Digit[0-9]$/.test(code)) return code.slice(5);
+        if (/^F[0-9]{1,2}$/.test(code)) return code;
+        if (code === 'Escape') return 'Esc';
+        return code;
+    }
+
+    function _pttEstaDigitando() {
+        let el = document.activeElement;
+        while (el?.shadowRoot?.activeElement) el = el.shadowRoot.activeElement;
+        if (!el) return false;
+        const tag = el.tagName;
+        return tag === 'INPUT' || tag === 'TEXTAREA' || el.isContentEditable;
+    }
+
+    function _pttRefreshUI() {
+        const temChamada = _micCalls.size > 0;
+        if (_pttButtonEl) {
+            _pttButtonEl.textContent = _pttCapturing ? 'Pressione uma tecla…' : _pttLabel(_pttKey);
+            _pttButtonEl.classList.toggle('capturing', _pttCapturing);
+        }
+        if (_pttStatusEl) {
+            if (!temChamada) {
+                _pttStatusEl.textContent = 'sem sessão ativa';
+                _pttStatusEl.className = 'adm-ptt-state idle';
+            } else if (_pttTalking) {
+                _pttStatusEl.textContent = '● transmitindo';
+                _pttStatusEl.className = 'adm-ptt-state talking';
+            } else {
+                _pttStatusEl.textContent = 'armado — segure para falar';
+                _pttStatusEl.className = 'adm-ptt-state armed';
+            }
+        }
+        const botoes = _root ? _root.querySelectorAll('.adm-mic-btn') : [];
+        botoes.forEach(b => b.classList.toggle('talk', _pttTalking && _micCalls.has(b.dataset.micId)));
+    }
+
+    function _pttApplyTracks(enabled) {
+        if (!_micStream) return;
+        try { _micStream.getAudioTracks().forEach(t => { t.enabled = !!enabled; }); } catch (e) {}
+    }
+
+    function _pttStart() {
+        if (_pttTalking) return;
+        if (_micCalls.size === 0) return;
+        _pttTalking = true;
+        _pttApplyTracks(true);
+        _pttRefreshUI();
+        _sfx('pttOn', () => _tone(880, 0.045, 'sine', 0.018));
+    }
+
+    function _pttStop() {
+        if (!_pttTalking) return;
+        _pttTalking = false;
+        _pttApplyTracks(false);
+        _pttRefreshUI();
+        _sfx('pttOff', () => _tone(660, 0.05, 'sine', 0.014));
+    }
+
+    function _pttOnKeyDown(e) {
+        if (_pttCapturing) {
+            e.preventDefault(); e.stopPropagation();
+            if (e.code === 'Escape') {
+                _pttCapturing = false;
+                _pttRefreshUI();
+                return;
+            }
+            if (e.repeat) return;
+            _pttKey = e.code || _pttKey;
+            try { localStorage.setItem(PTT_KEY_STORAGE, _pttKey); } catch (_) {}
+            _pttCapturing = false;
+            _pttRefreshUI();
+            _toast('PTT: ' + _pttLabel(_pttKey), 'ok');
+            return;
+        }
+        if (e.code !== _pttKey) return;
+        if (e.repeat) return;
+        if (_pttEstaDigitando()) return;
+        if (_micCalls.size === 0) return;
+        _pttStart();
+    }
+
+    function _pttOnKeyUp(e) {
+        if (e.code !== _pttKey) return;
+        _pttStop();
+    }
+
+    function _pttAttach() {
+        if (_pttBound) return;
+        _pttBound = true;
+        document.addEventListener('keydown', _pttOnKeyDown, true);
+        document.addEventListener('keyup', _pttOnKeyUp, true);
+        window.addEventListener('blur', _pttForceRelease);
+        _pttRefreshUI();
+    }
+
+    function _pttDetach() {
+        if (!_pttBound) return;
+        _pttBound = false;
+        document.removeEventListener('keydown', _pttOnKeyDown, true);
+        document.removeEventListener('keyup', _pttOnKeyUp, true);
+        window.removeEventListener('blur', _pttForceRelease);
+        _pttStop();
+    }
+
+    function _pttForceRelease() {
+        if (_pttTalking) _pttStop();
+    }
+
     // ═══ MIC — WebRTC outbound ═══
     async function _micEnsureStream() {
         if (_micStream && _micStream.active) return _micStream;
         _micStream = await navigator.mediaDevices.getUserMedia({
             audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
         });
+        // Gate inicial: PTT começa mudo. Só destrava ao segurar a tecla.
+        _micStream.getAudioTracks().forEach(t => { t.enabled = false; });
+        _pttAttach();
+        _pttRefreshUI();
         return _micStream;
     }
 
@@ -282,6 +416,8 @@
 
         call.pollTimer = setInterval(() => _micPollSignal(deviceId), MIC_POLL_MS);
         _micPollSignal(deviceId);
+        _pttAttach();
+        _pttRefreshUI();
         _sfx('toggleOn');
     }
 
@@ -291,7 +427,6 @@
         const sig = await _rtdbGet('signaling/' + deviceId);
         if (!sig) return;
 
-        // Answer / reject
         if (!call.answered && sig.answer && sig.answer.sdp) {
             if (sig.answer.type === 'reject') {
                 _toast((call.targetName || 'Sessão') + ' recusou a chamada', 'err');
@@ -304,7 +439,6 @@
             } catch (e) { /* aguarda próximo ciclo */ }
         }
 
-        // ICE do hub (entrada)
         if (sig.ice && sig.ice.hub && call.pc) {
             for (const key in sig.ice.hub) {
                 if (call.iceSeen.has(key)) continue;
@@ -315,11 +449,6 @@
                 }
             }
         }
-
-        // Hangup remoto (alvo encerrou pelo hub)
-        if (sig.offer && sig.offer.type === 'hangup' && sig.offer.fromId === (bridge.deviceId || '')) {
-            // nosso próprio hangup — ignora
-        }
     }
 
     function _micEndCall(deviceId, silent) {
@@ -328,8 +457,8 @@
         _micCalls.delete(deviceId);
 
         if (call.pollTimer) { clearInterval(call.pollTimer); call.pollTimer = null; }
+        // Fechar a pc destaca os senders sem tocar na track compartilhada
         if (call.pc) {
-            try { call.pc.getSenders().forEach(s => { try { s.track && s.track.stop && s.track.stop(); } catch (e) {} }); } catch (e) {}
             try { call.pc.close(); } catch (e) {}
         }
 
@@ -340,13 +469,17 @@
             ts: Date.now()
         }).catch(() => {});
 
-        // libera o stream compartilhado se não há mais chamadas ativas
-        if (_micCalls.size === 0 && _micStream) {
-            try { _micStream.getTracks().forEach(t => t.stop()); } catch (e) {}
-            _micStream = null;
+        // Só para PTT e libera o stream quando não há mais chamadas ativas
+        if (_micCalls.size === 0) {
+            _pttStop();
+            if (_micStream) {
+                try { _micStream.getTracks().forEach(t => t.stop()); } catch (e) {}
+                _micStream = null;
+            }
         }
 
         if (!silent) _sfx('micOff', () => { _tone(523.25, 0.11, 'sine', 0.022); setTimeout(() => _tone(311.13, 0.16, 'sine', 0.018), 70); });
+        _pttRefreshUI();
         _renderSessoes?.();
     }
 
@@ -356,6 +489,8 @@
             try { _micStream.getTracks().forEach(t => t.stop()); } catch (e) {}
             _micStream = null;
         }
+        _pttStop();
+        _pttRefreshUI();
     }
 
     // ═══ SHADOW HOST ═══
@@ -587,6 +722,47 @@
         }
         .adm-mic-btn.live svg { filter: drop-shadow(0 0 3px rgba(52,211,153,.8)); }
 
+        /* ═══ PTT ═══ */
+        .adm-mic-btn.talk {
+            color: #fff !important;
+            border-color: #34d399 !important;
+            background: linear-gradient(120deg, rgba(52,211,153,.42), rgba(34,211,238,.42)) !important;
+            box-shadow: 0 0 14px rgba(52,211,153,.65), inset 0 0 6px rgba(52,211,153,.35);
+            transform: scale(1.1);
+            animation: aurMicLive 1s ease-in-out infinite;
+        }
+        .adm-mic-btn.talk svg { filter: drop-shadow(0 0 5px rgba(52,211,153,1)); }
+
+        .adm-ptt-chip {
+            display: inline-flex; align-items: center; justify-content: center;
+            min-width: 74px;
+            padding: 4px 10px; border-radius: 6px;
+            font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+            font-size: 9.5px; font-weight: 800; letter-spacing: .03em;
+            color: #67e8f9;
+            background: rgba(34,211,238,.1);
+            border: 1px solid rgba(34,211,238,.35);
+            cursor: pointer;
+            transition: all .16s cubic-bezier(.16,1,.3,1);
+            user-select: none;
+        }
+        .adm-ptt-chip:hover { background: rgba(34,211,238,.2); border-color: rgba(34,211,238,.55); transform: translateY(-1px); }
+        .adm-ptt-chip.capturing {
+            color: #0b0b10; background: linear-gradient(120deg, #22d3ee, #a78bfa);
+            border-color: transparent; animation: aurMicConnecting 1s ease-in-out infinite;
+        }
+        .adm-ptt-state {
+            display: inline-flex; align-items: center; gap: 5px;
+            padding: 3px 9px; border-radius: 6px;
+            font-size: 9px; font-weight: 800; letter-spacing: .03em; text-transform: uppercase;
+            border: 1px solid transparent;
+        }
+        .adm-ptt-state.idle    { color: #8b8fa3; background: rgba(255,255,255,.04); border-color: rgba(255,255,255,.08); }
+        .adm-ptt-state.armed   { color: #a7f3d0; background: rgba(52,211,153,.1); border-color: rgba(52,211,153,.32); }
+        .adm-ptt-state.talking { color: #fff; background: linear-gradient(120deg, rgba(52,211,153,.35), rgba(34,211,238,.35));
+                                 border-color: rgba(52,211,153,.6); box-shadow: 0 0 14px rgba(52,211,153,.45);
+                                 animation: aurMicLive 1s ease-in-out infinite; }
+
         /* ═══ BLACKLIST ═══ */
         .adm-blk-line { display: flex; align-items: center; gap: 6px; padding: 4px 7px; border-radius: 6px;
             font-family: ui-monospace, 'SF Mono', Menlo, monospace; font-size: 8.5px; color: #b8bcca;
@@ -673,7 +849,7 @@
 
         @media (prefers-reduced-motion: reduce) {
             .adm-panel, .adm-panel::after, .adm-title-shine, .adm-dot.live, .adm-sess-item,
-            .adm-mic-btn.live, .adm-mic-btn.connecting { animation: none !important; }
+            .adm-mic-btn.live, .adm-mic-btn.connecting, .adm-mic-btn.talk, .adm-ptt-state.talking, .adm-ptt-chip.capturing { animation: none !important; }
         }
         `;
         _shadow.appendChild(st);
@@ -1047,6 +1223,31 @@
         });
         colSide.appendChild(sec('Blacklist local', ICON.shield, blkContent));
 
+        // ═══ SIDEBAR — Push-to-talk ═══
+        const pttContent = el('div', {
+            html: `
+            <div class="adm-row"><span class="adm-row-label">Tecla</span>
+                <span class="adm-row-val"><span class="adm-ptt-chip" id="pttKey">${_pttLabel(_pttKey)}</span></span>
+            </div>
+            <div class="adm-row"><span class="adm-row-label">Estado</span>
+                <span class="adm-row-val"><span class="adm-ptt-state idle" id="pttState">—</span></span>
+            </div>
+            <div style="font-size:8.5px;color:#8b8fa3;margin-top:7px;line-height:1.5;">
+                Segure a tecla para falar. Clique no chip para trocar a tecla — depois pressione a nova.
+                <b style="color:#c7cad6;">Esc</b> cancela a captura.
+            </div>`
+        });
+        colSide.appendChild(sec('Push-to-talk', ICON.mic, pttContent));
+
+        _pttButtonEl = pttContent.querySelector('#pttKey');
+        _pttStatusEl = pttContent.querySelector('#pttState');
+        _bindHover([_pttButtonEl], signal);
+        _pttButtonEl.addEventListener('click', () => {
+            _pttCapturing = true;
+            _pttRefreshUI();
+        }, { signal });
+        _pttRefreshUI();
+
         // ═══ SIDEBAR — Ações ═══
         const acoesContent = el('div', { style: 'display:grid;grid-template-columns:1fr 1fr;gap:5px;' });
         [
@@ -1200,6 +1401,7 @@
             const micStatus = micCall ? micCall.status : null;
             const micLive = micStatus === 'live';
             const micConnecting = micStatus === 'connecting';
+            const micTalk = micCall && _pttTalking;
             const micTitle = micLive ? 'Transmitindo microfone — clique para parar'
                             : micConnecting ? 'Conectando… — clique para cancelar'
                             : 'Enviar microfone para esta sessão';
@@ -1207,10 +1409,9 @@
             const localPlayer = euMesmo && bridge.player ? bridge.player : null;
             const displayName = s.name || (localPlayer && localPlayer.name) || 'Sem nome';
             const displayMission = s.mission || (localPlayer && localPlayer.mission) || '';
-            const displayFp = s.fingerprint || (localPlayer && localPlayer.avatarUrl ? '' : '') || '';
 
             const micBtn = (online && !euMesmo)
-                ? `<button class="adm-mic-btn ${micLive ? 'live' : (micConnecting ? 'connecting' : '')}"
+                ? `<button class="adm-mic-btn ${micTalk ? 'talk' : (micLive ? 'live' : (micConnecting ? 'connecting' : ''))}"
                           data-mic-id="${escapeAttr(s.id)}"
                           data-mic-name="${escapeAttr(displayName)}"
                           title="${escapeAttr(micTitle)}">${ICON.mic}</button>`
@@ -1297,6 +1498,7 @@
 
             _renderCounters(Array.from(_sessionsMap.values()));
             _updateOwnSessionBadge();
+            _pttRefreshUI();
         };
 
         _renderSessoes = function (skipRebuild) {
@@ -1397,6 +1599,8 @@
                 ].join('\n');
                 try { await navigator.clipboard.writeText(txt); _toast('Copiado', 'ok'); } catch (err) { _toast('Falha ao copiar', 'err'); }
             }, { signal }));
+
+            _pttRefreshUI();
         };
 
         // ═══ AÇÕES ═══
@@ -1457,6 +1661,8 @@
         }
         _renderSessoes = null;
         _tickDisplay = null;
+        _pttButtonEl = null;
+        _pttStatusEl = null;
     }
 
     // ═══ OPEN / TOGGLE ═══
@@ -1476,6 +1682,7 @@
         dying = true;
         const steps = [
             ['mic', () => _micEndAll()],
+            ['ptt', () => _pttDetach()],
             ['panel', () => _killPanel()],
             ['modal', () => _killModal()],
             ['confirm', () => _fecharConfirm()],
