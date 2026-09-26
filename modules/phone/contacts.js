@@ -16,6 +16,7 @@
     const HISTORY_MAX = 40;
     const MAX_CLAIM_ATTEMPTS = 8;
     const SESSIONS_REFRESH_MS = 8000;
+    const LAST_SEEN_WRITE_MS = 5 * 60 * 1000;
 
     const LS_MY_NUMBER = 'sanghub_phone_my_number';
     const LS_CONTACTS  = 'sanghub_phone_contacts';
@@ -58,6 +59,7 @@
         return Math.floor(m / 60) + 'h ' + (m % 60) + 'min';
     }
     function timeAgo(ts) {
+        if (!ts) return '';
         const s = Math.floor((Date.now() - ts) / 1000);
         if (s < 60) return 'agora';
         if (s < 3600) return Math.floor(s / 60) + 'min';
@@ -73,6 +75,36 @@
             return pad(d.getDate()) + '/' + pad(d.getMonth() + 1) + '/' + d.getFullYear() + ' às ' +
                    pad(d.getHours()) + ':' + pad(d.getMinutes());
         } catch(_) { return ''; }
+    }
+    function shortDate(ts) {
+        try {
+            const d = new Date(ts);
+            const pad = n => String(n).padStart(2, '0');
+            return pad(d.getDate()) + '/' + pad(d.getMonth() + 1) + '/' + d.getFullYear();
+        } catch(_) { return ''; }
+    }
+    // Busca com normalização: "Jose" acha "José", "ANGELO" acha "Ângelo"
+    function _norm(s) {
+        return String(s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
+    }
+
+    // ═══ AVATAR HELPER ═══
+    // Renderiza o avatar com fallback: se a URL falhar (404/hotlink/CORS),
+    // o <img> é removido via onerror e a inicial por baixo aparece.
+    function _avatarHtml(contact, opts) {
+        opts = opts || {};
+        const displayName = contact.name || contact.savedName || contact.username || '?';
+        const initial = (displayName[0] || '?').toUpperCase();
+        const url = contact.avatarUrl || contact.savedAvatar || '';
+        const sizeCls = opts.size ? ' ' + opts.size : '';
+        const extras = [];
+        if (opts.showFav && contact.fav) extras.push('<span class="fav-badge">★</span>');
+        if (opts.showOnline && contact.online && !contact.blocked) extras.push('<span class="dot-online"></span>');
+        const extrasHtml = extras.join('');
+        if (!url) {
+            return `<div class="ph-av${sizeCls}"><span class="ph-av-ini">${esc(initial)}</span>${extrasHtml}</div>`;
+        }
+        return `<div class="ph-av${sizeCls}"><span class="ph-av-ini">${esc(initial)}</span><img src="${esc(url)}" alt="" onerror="this.remove()" />${extrasHtml}</div>`;
     }
 
     // ═══ DIRETÓRIO ═══
@@ -187,7 +219,12 @@
         await _fetchSessions(false);
         const live = username ? _findLiveSession(username) : null;
         if (live) { name = live.name || name; avatarUrl = live.avatarUrl || avatarUrl; }
-        _contacts.push({ number: clean, username, savedName: name, savedAvatar: avatarUrl, savedAt: Date.now(), fav: false });
+        _contacts.push({
+            number: clean, username,
+            savedName: name, savedAvatar: avatarUrl,
+            savedAt: Date.now(), fav: false,
+            manualName: false, lastSeenAt: live ? Date.now() : 0
+        });
         saveContacts();
         return { ok: true };
     }
@@ -239,7 +276,6 @@
     function pushHistory(entry) { _history.unshift(entry); saveHistory(); }
     function removeHistoryAt(id) { _history = _history.filter(h => h.id !== id); saveHistory(); }
 
-    // Retorna a última interação registrada com um número (1:1 only)
     function _lastCallWith(number) {
         for (const h of _history) {
             if (h.kind !== '1:1') continue;
@@ -285,24 +321,34 @@
             .find(s => s.name === username || s.username === username) || null;
     }
 
-    // Prioridade: manualName (respeita override) > live > savedName > username > número
+    // Prioridade do nome: manualName > live > savedName > username > número
+    // Prioridade do avatar: live > savedAvatar
+    // Rastreia lastSeenAt quando online (refresh a cada 5min para não spammar writes)
     function _enrichContact(c) {
         const live = _findLiveSession(c.username);
         let name;
         if (c.manualName) name = c.savedName || c.username || fmtNumber(c.number);
         else name = live?.name || c.savedName || c.username || fmtNumber(c.number);
-        const avatarUrl = live?.avatarUrl || c.savedAvatar || '';
+
+        const liveAvatar = live?.avatarUrl || '';
+        const avatarUrl = liveAvatar || c.savedAvatar || '';
+
         if (live) {
             const patch = {};
-            if (live.avatarUrl && live.avatarUrl !== c.savedAvatar) patch.savedAvatar = live.avatarUrl;
+            if (liveAvatar && liveAvatar !== c.savedAvatar) patch.savedAvatar = liveAvatar;
             if (!c.manualName && live.name && live.name !== c.savedName) patch.savedName = live.name;
+            // Só atualiza lastSeenAt a cada 5 min para não spammar writes
+            if (!c.lastSeenAt || Date.now() - c.lastSeenAt > LAST_SEEN_WRITE_MS) patch.lastSeenAt = Date.now();
             if (Object.keys(patch).length) updateContactMeta(c.number, patch);
         }
         return {
             number: c.number, username: c.username, name, avatarUrl,
             online: !!live, sessionId: live?.id || null,
             fav: !!c.fav, blocked: isBlocked(c.number),
-            manualName: !!c.manualName
+            manualName: !!c.manualName,
+            savedAt: c.savedAt || 0,
+            lastSeenAt: c.lastSeenAt || 0,
+            liveLastSeen: live?.lastSeen || 0
         };
     }
 
@@ -312,9 +358,17 @@
         if (!content) return;
         content.innerHTML = `<div class="ph-list"><div class="ph-empty">Carregando…</div></div>`;
         await _fetchSessions(false);
+
         const all = _contacts.map(_enrichContact);
-        const q = _searchQuery.trim().toLowerCase();
-        const filtered = q ? all.filter(c => (c.name || '').toLowerCase().includes(q) || c.number.includes(q) || (c.username || '').toLowerCase().includes(q)) : all;
+        const q = _norm(_searchQuery);
+        const filtered = q
+            ? all.filter(c =>
+                _norm(c.name).includes(q) ||
+                c.number.includes(q.replace(/\D/g, '')) ||
+                _norm(c.username).includes(q)
+            )
+            : all;
+
         const onlineCount = all.filter(c => c.online && !c.blocked).length;
         const cntEl = ctx.frameEl?.querySelector('#phCount');
         if (cntEl) cntEl.textContent = String(onlineCount);
@@ -374,20 +428,17 @@
             const noteBtn = row.querySelector('.ph-note-btn');
             const rmBtn = row.querySelector('.ph-rm');
 
-            // Clique no row → abre o card
             row.addEventListener('click', (e) => {
                 if (e.target.closest('.ph-call-btn') || e.target.closest('.ph-note-btn') || e.target.closest('.ph-rm')) return;
                 const c = all.find(x => x.number === num);
                 if (c) _openContactCard(c);
             });
-            // Duplo clique → liga direto
             row.addEventListener('dblclick', (e) => {
                 e.preventDefault();
                 if (isBlocked(num)) { ctx.toast('Contato bloqueado', 'err'); return; }
                 ctx.tone.dial();
                 _callByNumber(num);
             });
-            // Botão ligar rápido
             if (callBtn && !callBtn.disabled) callBtn.addEventListener('click', (e) => {
                 e.stopPropagation();
                 if (isBlocked(num)) { ctx.toast('Contato bloqueado', 'err'); return; }
@@ -405,10 +456,7 @@
     }
 
     function _rowHtml(c) {
-        const initial = (c.name || '?')[0] || '?';
-        const av = c.avatarUrl
-            ? `<div class="ph-av"><img src="${esc(c.avatarUrl)}" alt="" />${c.fav ? '<span class="fav-badge">★</span>' : ''}${c.online && !c.blocked ? '<span class="dot-online"></span>' : ''}</div>`
-            : `<div class="ph-av">${esc(initial.toUpperCase())}${c.fav ? '<span class="fav-badge">★</span>' : ''}${c.online && !c.blocked ? '<span class="dot-online"></span>' : ''}</div>`;
+        const av = _avatarHtml(c, { showFav: true, showOnline: true });
         const meta = c.blocked
             ? `<span class="num">${esc(fmtNumber(c.number))}</span> · <span class="off">bloqueado</span>`
             : c.online
@@ -441,10 +489,7 @@
         _cardOpenNumber = contact.number;
 
         const c = contact;
-        const initial = (c.name || '?')[0] || '?';
-        const av = c.avatarUrl
-            ? `<div class="cc-av"><img src="${esc(c.avatarUrl)}" alt="" />${c.online && !c.blocked ? '<span class="dot-online"></span>' : ''}</div>`
-            : `<div class="cc-av">${esc(initial.toUpperCase())}${c.online && !c.blocked ? '<span class="dot-online"></span>' : ''}</div>`;
+        const av = _avatarHtml(c, { size: 'cc-av', showOnline: true });
 
         const last = _lastCallWith(c.number);
         let lastLine = `<span class="cc-last-empty">Nenhuma conversa ainda</span>`;
@@ -466,6 +511,21 @@
 
         const statusTxt = c.blocked ? 'Bloqueado' : (c.online ? 'Online agora' : 'Offline');
         const statusCls = c.blocked ? 'bad' : (c.online ? 'ok' : 'neutral');
+
+        // Linhas adicionais de metadata
+        const extraRows = [];
+        if (c.savedAt) {
+            extraRows.push(`<div class="cc-meta-row">
+                <span class="cc-meta-label">Adicionado</span>
+                <span class="cc-meta-val">${esc(shortDate(c.savedAt))}</span>
+            </div>`);
+        }
+        if (!c.online && c.lastSeenAt) {
+            extraRows.push(`<div class="cc-meta-row">
+                <span class="cc-meta-label">Visto por último</span>
+                <span class="cc-meta-val">há ${esc(timeAgo(c.lastSeenAt))}</span>
+            </div>`);
+        }
 
         const card = el('div', { class: 'cc-overlay' });
         card.innerHTML = `
@@ -503,6 +563,7 @@
                         <span class="cc-meta-label">Última chamada</span>
                         <span class="cc-meta-val">${lastLine}</span>
                     </div>
+                    ${extraRows.join('')}
                 </div>
 
                 <div class="cc-actions-main">
@@ -544,8 +605,7 @@
         _cardEl = card;
 
         // ─── Eventos ───
-        const closeBtn = card.querySelector('.cc-close');
-        closeBtn.addEventListener('click', _closeCard);
+        card.querySelector('.cc-close').addEventListener('click', _closeCard);
         card.addEventListener('click', (e) => { if (e.target === card) _closeCard(); });
 
         // Copiar número
@@ -556,10 +616,7 @@
                 copyBtn.classList.add('copied');
                 copyBtn.innerHTML = '✓';
                 ctx.toast('Número copiado', 'ok');
-                setTimeout(() => {
-                    copyBtn.classList.remove('copied');
-                    copyBtn.innerHTML = I.copy;
-                }, 1200);
+                setTimeout(() => { copyBtn.classList.remove('copied'); copyBtn.innerHTML = I.copy; }, 1200);
             } catch(_) { ctx.toast('Falha ao copiar', 'err'); }
         });
 
@@ -588,7 +645,6 @@
             ctx.tone.fav();
             ctx.toast('Nome atualizado', 'ok');
             exitEditMode();
-            // re-renderiza card e lista
             _closeCard();
             _renderContacts();
         };
@@ -608,17 +664,13 @@
             _callByNumber(c.number);
         });
 
-        // Recado — fecha o card e dispara o fluxo de gravação segurando
+        // Recado
         const noteBtn = card.querySelector('#ccNote');
         if (noteBtn && !noteBtn.disabled) {
-            // Reaproveita o wire do notes.js: ele usa pointerdown/up no botão.
-            // Aqui fechamos o card antes para liberar o overlay de gravação.
             noteBtn.addEventListener('pointerdown', (e) => {
                 e.preventDefault();
                 e.stopPropagation();
                 _closeCard();
-                // Redispatch manual no botão original da lista não é viável;
-                // chamamos os helpers do próprio notes via ctx.
                 if (ctx.notes.startFromCard) ctx.notes.startFromCard({ number: c.number, name: c.name }, noteBtn);
             });
         }
@@ -632,7 +684,7 @@
             _renderContacts();
         });
 
-        // Restaurar nome automático (só aparece se manualName)
+        // Restaurar nome automático
         const resetBtn = card.querySelector('#ccReset');
         if (resetBtn) resetBtn.addEventListener('click', () => {
             clearManualName(c.number);
@@ -676,10 +728,9 @@
         }
         const rows = _history.map(h => {
             const first = h.members[0] || {};
-            const initial = (first.name || '?')[0] || '?';
-            const av = first.avatarUrl
-                ? `<div class="ph-av"><img src="${esc(first.avatarUrl)}" alt="" /></div>`
-                : `<div class="ph-av">${esc(initial.toUpperCase())}</div>`;
+            const av = _avatarHtml({
+                name: first.name, avatarUrl: first.avatarUrl
+            });
             const label = h.kind === 'group'
                 ? (first.name || 'Grupo') + ' +' + (h.members.length - 1)
                 : (first.name || fmtNumber(first.number));
@@ -687,7 +738,6 @@
                             : (h.direction === 'incoming' ? 'dir-in' : 'dir-out');
             const dirIcon = h.direction === 'incoming' ? I.arrowIn : I.arrowOut;
 
-            // DURAÇÃO — se > 0, mostra duração; senão, mostra status textual
             let durTxt, durCls;
             if (h.durationMs > 0) {
                 durTxt = fmtDurShort(h.durationMs);
@@ -831,16 +881,19 @@
         return head + ' <span class="dash">—</span> ' + tail + tailPad;
     }
 
-    // ═══ LIGAR POR NÚMERO ═══
+    // ═══ LIGAR POR NÚMERO — respeita apelido manual + fallback de avatar ═══
     async function _callByNumber(number) {
         const clean = parseNumber(number);
         if (clean.length !== 6) { ctx.toast('Número incompleto', 'err'); return; }
         if (clean === ctx.myNumber) { ctx.toast('Você não pode ligar para si mesmo', 'err'); return; }
         if (isBlocked(clean)) { ctx.toast('Número bloqueado', 'err'); return; }
+
         await _fetchSessions(true);
+
         let username = '';
         const dir = await _getDirectory(clean);
         if (dir && dir.username) username = dir.username;
+
         let live = null;
         if (username) live = _findLiveSession(username);
         if (!live) {
@@ -848,22 +901,65 @@
             const myId = bridge.deviceId || '';
             live = _sessionsCache.find(s => s.id !== myId && s.phoneNumber === clean && (now - (s.lastSeen || 0)) < ONLINE_MS) || null;
         }
+
         if (!live) {
-            if (dir) updateContactMeta(clean, { username: dir.username || '', savedName: dir.displayName || '', savedAvatar: dir.avatarUrl || '' });
-            const name = dir?.displayName || username || fmtNumber(clean);
+            // Atualiza metadados sem sobrescrever apelido manual
+            const stored = _contacts.find(c => c.number === clean);
+            if (dir || stored) {
+                const patch = {};
+                if (dir?.username && (!stored?.username || stored.username !== dir.username)) patch.username = dir.username;
+                if (!stored?.manualName && dir?.displayName && dir.displayName !== stored?.savedName) patch.savedName = dir.displayName;
+                const dirAvatar = dir?.avatarUrl || '';
+                if (dirAvatar && dirAvatar !== stored?.savedAvatar) patch.savedAvatar = dirAvatar;
+                if (Object.keys(patch).length) updateContactMeta(clean, patch);
+            }
+            const name = stored?.manualName
+                ? (stored.savedName || username || fmtNumber(clean))
+                : (dir?.displayName || stored?.savedName || username || fmtNumber(clean));
+            const avatarUrl = dir?.avatarUrl || stored?.savedAvatar || '';
             pushHistory({
                 id: 'h' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5),
                 direction: 'outgoing', kind: '1:1', status: 'missed',
-                members: [{ number: clean, name, avatarUrl: dir?.avatarUrl || '' }],
+                members: [{ number: clean, name, avatarUrl }],
                 at: Date.now(), durationMs: 0
             });
             ctx.calls.busyTone?.('Fora de área', name + ' não está disponível.');
             return;
         }
-        if (hasContact(clean)) updateContactMeta(clean, { username: live.name || username || '', savedName: live.name || '', savedAvatar: live.avatarUrl || '' });
+
+        // ─── RESOLUÇÃO DE NOME E AVATAR (o coração da correção) ───
+        const stored = _contacts.find(c => c.number === clean);
+        const liveAvatar = live.avatarUrl || '';
+        const dirAvatar = dir?.avatarUrl || '';
+        const storedAvatar = stored?.savedAvatar || '';
+
+        // Avatar: live > dir > saved (fallback em cadeia)
+        const finalAvatar = liveAvatar || dirAvatar || storedAvatar;
+
+        // Nome: respeita manualName
+        let finalName;
+        if (stored?.manualName) {
+            finalName = stored.savedName || live.name || dir?.displayName || username || fmtNumber(clean);
+        } else {
+            finalName = live.name || dir?.displayName || stored?.savedName || username || fmtNumber(clean);
+        }
+
+        // Atualiza meta do contato salvo (sem sobrescrever manualName)
+        if (hasContact(clean)) {
+            const patch = {};
+            if (username && (!stored?.username || stored.username !== username)) patch.username = username;
+            if (!stored?.manualName && live.name && live.name !== stored?.savedName) patch.savedName = live.name;
+            const avatarCandidate = liveAvatar || dirAvatar;
+            if (avatarCandidate && avatarCandidate !== stored?.savedAvatar) patch.savedAvatar = avatarCandidate;
+            if (Object.keys(patch).length) updateContactMeta(clean, patch);
+        }
+
         ctx.calls.call?.([{
-            id: live.id, name: live.name || username || fmtNumber(clean),
-            avatarUrl: live.avatarUrl || '', number: clean, lastSeen: live.lastSeen || 0
+            id: live.id,
+            name: finalName,
+            avatarUrl: finalAvatar,
+            number: clean,
+            lastSeen: live.lastSeen || 0
         }]);
     }
 
@@ -898,18 +994,31 @@
         .ph-contact.blocked .ph-name { text-decoration: line-through; color: #a8aec4; }
         .ph-contact.fav { border-color: rgba(251,191,36,.24); }
         .ph-contact.fav:hover { border-color: rgba(251,191,36,.46); }
+
+        /* ═══ AVATAR com fallback de inicial ═══ */
         .ph-av { width: 38px; height: 38px; border-radius: 12px; flex-shrink: 0;
             background: linear-gradient(135deg, rgba(34,211,238,.22), rgba(167,139,250,.22));
             border: 1px solid rgba(255,255,255,.1);
             display: flex; align-items: center; justify-content: center;
             overflow: hidden; position: relative; color: #a8aec4; font-size: 14px; font-weight: 800; }
-        .ph-av img { position: absolute; top: -25%; left: -40%; width: 210%; height: 210%; object-fit: cover; }
+        .ph-av .ph-av-ini {
+            display: inline-flex; align-items: center; justify-content: center;
+            font-size: inherit; font-weight: inherit; color: inherit;
+            width: 100%; height: 100%; text-transform: uppercase; letter-spacing: .02em;
+        }
+        .ph-av img { position: absolute; top: -25%; left: -40%; width: 210%; height: 210%; object-fit: cover; z-index: 2; }
         .ph-av.sm { width: 30px; height: 30px; font-size: 11px; border-radius: 10px; }
+        .ph-av.cc-av {
+            width: 68px; height: 68px; border-radius: 20px; font-size: 24px;
+            box-shadow: 0 10px 26px rgba(0,0,0,.4), inset 0 1px 0 rgba(255,255,255,.1);
+        }
         .ph-av .dot-online { position: absolute; bottom: -1px; right: -1px; width: 10px; height: 10px; border-radius: 50%;
-            background: #34d399; border: 2px solid #1a1830; animation: phPulseDot 2s ease-in-out infinite; }
+            background: #34d399; border: 2px solid #1a1830; animation: phPulseDot 2s ease-in-out infinite; z-index: 3; }
+        .ph-av.cc-av .dot-online { bottom: -2px; right: -2px; width: 14px; height: 14px; border: 3px solid #16132c; }
         .ph-av .fav-badge { position: absolute; top: -4px; left: -4px; width: 14px; height: 14px; border-radius: 50%;
-            background: linear-gradient(135deg, #fbbf24, #f59e0b); border: 1px solid #1a1830;
+            background: linear-gradient(135deg, #fbbf24, #f59e0b); border: 1px solid #1a1830; z-index: 3;
             display: inline-flex; align-items: center; justify-content: center; font-size: 8px; color: #1a1410; }
+
         .ph-info { flex: 1; min-width: 0; }
         .ph-name { font-size: 11.5px; font-weight: 700; color: #e8eaf4; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         .ph-meta { font-size: 9px; color: #a8aec4; margin-top: 2px; font-variant-numeric: tabular-nums;
@@ -926,6 +1035,7 @@
         .ph-meta .dir-out { color: #67e8f9; }
         .ph-meta .dir-miss { color: #fca5b1; }
         .ph-meta .grp { color: #c4b5fd; font-weight: 700; }
+
         .ph-call-btn { flex-shrink: 0; width: 28px; height: 28px; border-radius: 50%;
             border: 1px solid rgba(52,211,153,.4); background: rgba(52,211,153,.14);
             color: #a7f3d0; cursor: pointer; display: flex; align-items: center; justify-content: center;
@@ -946,6 +1056,7 @@
             opacity: 0; transition: opacity .15s, color .15s, background .15s; }
         .ph-contact:hover .ph-rm { opacity: 1; }
         .ph-rm:hover { color: #fca5b1; background: rgba(251,113,133,.14); }
+
         .ph-dial { flex: 1; min-height: 0; display: flex; flex-direction: column; padding: 0 18px 12px; }
         .ph-dial-display { padding: 12px 0 16px; text-align: center; min-height: 62px;
             display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; }
@@ -1034,18 +1145,7 @@
         .cc-close:hover { background: rgba(251,113,133,.16); color: #fca5b1; border-color: rgba(251,113,133,.4); }
 
         .cc-top { display: flex; align-items: center; gap: 14px; margin-bottom: 16px; margin-top: 4px; }
-        .cc-av {
-            width: 68px; height: 68px; border-radius: 20px; flex-shrink: 0;
-            background: linear-gradient(135deg, rgba(34,211,238,.24), rgba(167,139,250,.24));
-            border: 1px solid rgba(255,255,255,.12);
-            display: flex; align-items: center; justify-content: center;
-            overflow: hidden; position: relative;
-            color: #a8aec4; font-size: 24px; font-weight: 800;
-            box-shadow: 0 10px 26px rgba(0,0,0,.4), inset 0 1px 0 rgba(255,255,255,.1);
-        }
-        .cc-av img { position: absolute; top: -25%; left: -40%; width: 210%; height: 210%; object-fit: cover; }
-        .cc-av .dot-online { position: absolute; bottom: -2px; right: -2px; width: 14px; height: 14px; border-radius: 50%;
-            background: #34d399; border: 3px solid #16132c; animation: phPulseDot 2s ease-in-out infinite; }
+        /* .cc-av já definido no bloco .ph-av.cc-av acima */
 
         .cc-nameline { flex: 1; min-width: 0; }
         .cc-name-display {
