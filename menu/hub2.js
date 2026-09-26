@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Sang Hub
 // @namespace    http://tampermonkey.net/
-// @version      1.3.1
+// @version      1.4.1
 // @description  Gerenciador de módulos
 // @author       Sang
 // @match        *://*.habblive.in/bigclient*
@@ -59,6 +59,8 @@
     const _blkExtraKey = 'sanghub_blk_extra';
     const _ovr = 'sanghub_p2';
     const DEVICE_ID_KEY = 'sanghub_device_id';
+    const ADMIN_TOKEN_KEY = 'sanghub_admin_token';
+    const ADMIN_TTL = 30 * 24 * 60 * 60 * 1000;
 
     let _secretOn = true;
     let _blocked = false;
@@ -101,6 +103,18 @@
     }
     function _fullBlk() { return _blk.concat(_getBlkExtra()); }
 
+    // Verifica se o admin panel está liberado nesta sessão (token válido no localStorage).
+    // O painel admin escreve este token ao logar; o hub lê para liberar módulos classe ADMIN.
+    function _adminUnlocked() {
+        try {
+            const raw = localStorage.getItem(ADMIN_TOKEN_KEY);
+            if (!raw) return false;
+            const o = JSON.parse(raw);
+            if (!o || !o.t) return false;
+            return (Date.now() - o.t) < ADMIN_TTL;
+        } catch(e) { return false; }
+    }
+
     async function _gate() {
         try {
             _fp = await _calc();
@@ -120,6 +134,30 @@
     const HLOG  = (...a) => console.log('🔶 [Hub]', ...a);
     const HWARN = (...a) => console.warn('🔶 [Hub]', ...a);
     const HERR  = (...a) => console.error('🔶 [Hub]', ...a);
+
+    // ═══ CONSTANTES ═══
+    const HUB_VERSION = "1.4.1";
+    const HUB_UPDATE_URL = "https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/menu/hub2.js";
+    const MANIFEST_URL = "https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/menu/manifest.json";
+    const UPDATE_INTERVAL_MS = 3 * 60 * 1000;
+    const MANIFEST_CACHE_MS = 2 * 60 * 1000;
+    const FETCH_TIMEOUT_MS = 5000;
+    const FETCH_RETRIES = 2;
+    const SHORTCUT_KEY = 'h';
+    const SHORTCUT_LABEL = 'Alt+Shift+H';
+    const GIF_PLAY_MS = 2000;
+    const PLAYTIME_KEY = 'sanghub_playtime_total_ms';
+    const PLAYTIME_FLUSH_MS = 60 * 1000;
+    const CLOCK_TICK_MS = 1000;
+    const PLAYER_CACHE_KEY = 'sanghub_player_cache';
+    const VOICE_KEY = 'sanghub_voice_enabled';
+    const VOICE_COOLDOWN_MS = 1200;
+    const SFX_MUTED_KEY = 'sanghub_sfx_muted';
+    const SpeechRecognitionAPI = window.SpeechRecognition || window.webkitSpeechRecognition;
+    const RTDB_URL = 'https://sanghub-ecf46-default-rtdb.firebaseio.com';
+    const MIC_ICE = [{ urls: 'stun:stun.l.google.com:19302' }];
+    const MIC_OFFER_TTL_MS = 60000;
+    const MIC_RING_MS = 2500;
 
     // ═══ FIRESTORE ═══
     const FIREBASE_PROJECT_ID = 'sanghub-ecf46';
@@ -164,7 +202,8 @@
         });
         if (!res.ok) throw new Error('auth HTTP ' + res.status);
         const d = await res.json();
-        return { idToken: d.idToken, refreshToken: d.refreshToken, expiresAt: Date.now() + (Number(d.expiresIn) * 1000) - 60000 };
+        const ttl = Number(d.expiresIn) || 3600;
+        return { idToken: d.idToken, refreshToken: d.refreshToken, expiresAt: Date.now() + (ttl * 1000) - 60000 };
     }
     async function _fsRefresh(refreshToken) {
         const res = await fetch(`https://securetoken.googleapis.com/v1/token?key=${FIREBASE_API_KEY}`, {
@@ -174,7 +213,8 @@
         });
         if (!res.ok) throw new Error('refresh HTTP ' + res.status);
         const d = await res.json();
-        return { idToken: d.access_token, refreshToken: d.refresh_token, expiresAt: Date.now() + (Number(d.expires_in) * 1000) - 60000 };
+        const ttl = Number(d.expires_in) || 3600;
+        return { idToken: d.access_token, refreshToken: d.refresh_token, expiresAt: Date.now() + (ttl * 1000) - 60000 };
     }
     async function _fsGetToken() {
         _fsAuth = _fsAuth || _fsLoadAuth();
@@ -216,7 +256,6 @@
             }
             return true;
         } catch(e) {
-            if (/404/.test(String(e.message || ''))) return false;
             return false;
         }
     }
@@ -224,9 +263,6 @@
     let _heartbeatTimer = null;
     const SESSION_HEARTBEAT_FIELDS = ['name', 'mission', 'hubVersion', 'lastSeen', 'ua'];
 
-    // ── Cria/atualiza sessão com TODOS os campos iniciais no mask ──
-    // (sessionStart, blocked, fingerprint precisam estar no mask,
-    //  caso contrário o Firestore os ignora na primeira escrita)
     async function _criarOuAtualizarSessao() {
         if (!fsConfigured() || !_deviceId) return;
         const player = loadPlayerCache() || {};
@@ -269,7 +305,6 @@
         _heartbeatTimer = setInterval(_enviarHeartbeat, HEARTBEAT_MS);
     }
 
-    // ── Reage a mudança do cache do jogador (via /me em outra aba) ──
     function _aplicarCacheJogador() {
         try { _enviarHeartbeat(); } catch(e) {}
         try { window.dispatchEvent(new CustomEvent('sang:player-updated', { detail: loadPlayerCache() })); } catch(e) {}
@@ -286,6 +321,11 @@
             @keyframes _hbFadeIn{from{opacity:0}to{opacity:1}}
             @keyframes _hbPopIn{from{opacity:0;transform:translateY(10px) scale(.97)}to{opacity:1;transform:none}}
             @keyframes _hbSlideIn{from{opacity:0;transform:translateX(20px)}to{opacity:1;transform:none}}
+            @keyframes _hbToastShake{0%,100%{transform:translateX(0)}15%{transform:translateX(-7px)}30%{transform:translateX(6px)}45%{transform:translateX(-5px)}60%{transform:translateX(4px)}75%{transform:translateX(-2px)}90%{transform:translateX(1px)}}
+            @keyframes _hbScreenShake{0%,100%{transform:translate(0,0)}8%{transform:translate(-10px,5px)}16%{transform:translate(9px,-6px)}24%{transform:translate(-8px,7px)}32%{transform:translate(7px,-5px)}40%{transform:translate(-6px,4px)}48%{transform:translate(5px,-3px)}56%{transform:translate(-4px,3px)}64%{transform:translate(3px,-2px)}72%{transform:translate(-2px,2px)}80%{transform:translate(2px,-1px)}90%{transform:translate(-1px,1px)}}
+            @keyframes _hbMicPulse{0%,100%{transform:translate(-50%,-50%) scale(1);box-shadow:0 0 0 0 rgba(34,211,238,.6)}50%{transform:translate(-50%,-50%) scale(1.02);box-shadow:0 0 0 14px rgba(34,211,238,0)}}
+            @keyframes _hubMicShellIn{from{opacity:0;transform:translateX(-50%) translateY(12px) scale(.96)}to{opacity:1;transform:translateX(-50%) translateY(0) scale(1)}}
+            @keyframes _hubMicVibrate{0%{transform:translateX(0)}2%{transform:translateX(-3px)}4%{transform:translateX(3px)}6%{transform:translateX(-3px)}8%{transform:translateX(3px)}10%{transform:translateX(-2px)}12%{transform:translateX(2px)}14%{transform:translateX(-2px)}16%{transform:translateX(2px)}18%{transform:translateX(-1px)}20%{transform:translateX(1px)}22%,100%{transform:translateX(0)}}
         `;
         document.head.appendChild(st);
     }
@@ -299,7 +339,7 @@
         el.setAttribute('data-hub-block', '1');
         el.setAttribute('data-sang-ui', '');
         el.style.cssText = `
-            position: fixed; inset: 0; z-index: 2147483646;
+            position: fixed; inset: -30px; z-index: 2147483646;
             display: flex; align-items: center; justify-content: center;
             background:
                 radial-gradient(circle at 50% 35%, rgba(251,113,133,0.10), transparent 55%),
@@ -307,7 +347,8 @@
                 rgba(0,0,0,0.72);
             backdrop-filter: blur(10px);
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-            animation: _hbFadeIn .3s ease;
+            animation: _hbFadeIn .3s ease, _hbScreenShake .62s cubic-bezier(.36,.07,.19,.97) .05s;
+            will-change: transform;
         `;
         el.innerHTML = `
             <div style="max-width: 380px; padding: 30px 26px; text-align: center;
@@ -341,11 +382,17 @@
         `;
         document.body.appendChild(el);
         _blockOverlayEl = el;
-        el.querySelector('#_hubBlockClose').addEventListener('click', () => {
+        el.querySelector('#_hubBlockClose').addEventListener('click', () => { _removerBloqueioOverlay(); });
+    }
+    function _removerBloqueioOverlay() {
+        if (!_blockOverlayEl) return;
+        const el = _blockOverlayEl;
+        _blockOverlayEl = null;
+        try {
             el.style.transition = 'opacity .2s';
             el.style.opacity = '0';
-            setTimeout(() => { el.remove(); _blockOverlayEl = null; }, 200);
-        });
+            setTimeout(() => el.remove(), 220);
+        } catch(e) { el.remove(); }
     }
 
     function _mostrarBloqueioToast() {
@@ -363,7 +410,7 @@
             border: 1px solid rgba(251,113,133,0.32);
             box-shadow: 0 12px 32px rgba(0,0,0,0.6), 0 0 40px rgba(251,113,133,0.1);
             backdrop-filter: blur(12px);
-            animation: _hbSlideIn .35s cubic-bezier(0.16,1,0.3,1);
+            animation: _hbSlideIn .35s cubic-bezier(0.16,1,0.3,1), _hbToastShake .5s cubic-bezier(.36,.07,.19,.97) .1s;
             max-width: 300px;
         `;
         el.innerHTML = `
@@ -376,12 +423,8 @@
                 </svg>
             </span>
             <div style="min-width: 0;">
-                <div style="font-size: 11.5px; font-weight: 800; color: #fff; letter-spacing: .02em;">
-                    Você está bloqueado
-                </div>
-                <div style="font-size: 9.5px; color: #9ca3af; margin-top: 2px;">
-                    O acesso ao hub foi desativado.
-                </div>
+                <div style="font-size: 11.5px; font-weight: 800; color: #fff; letter-spacing: .02em;">Você está bloqueado</div>
+                <div style="font-size: 9.5px; color: #9ca3af; margin-top: 2px;">O acesso ao hub foi desativado.</div>
             </div>
         `;
         document.body.appendChild(el);
@@ -393,7 +436,48 @@
         }, 8000);
     }
 
-    // ═══ AUTODESTRUIÇÃO ═══
+    function _mostrarDesbloqueioToast() {
+        _ensureBlockStyle();
+        const el = document.createElement('div');
+        el.id = '_hubUnblockToast';
+        el.setAttribute('data-hub-block', '1');
+        el.setAttribute('data-sang-ui', '');
+        el.style.cssText = `
+            position: fixed; top: 20px; right: 20px; z-index: 2147483647;
+            display: flex; align-items: center; gap: 11px;
+            padding: 12px 16px; border-radius: 12px;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background: linear-gradient(175deg, rgba(16,26,22,0.96), rgba(8,14,12,0.98));
+            border: 1px solid rgba(52,211,153,0.36);
+            box-shadow: 0 12px 32px rgba(0,0,0,0.6), 0 0 40px rgba(52,211,153,0.15);
+            backdrop-filter: blur(12px);
+            animation: _hbSlideIn .35s cubic-bezier(0.16,1,0.3,1);
+            max-width: 320px;
+        `;
+        el.innerHTML = `
+            <span style="flex-shrink: 0; width: 30px; height: 30px;
+                display: flex; align-items: center; justify-content: center;
+                border-radius: 9px; background: rgba(52,211,153,0.12);
+                border: 1px solid rgba(52,211,153,0.36);">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#34d399" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+                    <polyline points="9 12 11 14 15 10"/>
+                </svg>
+            </span>
+            <div style="min-width: 0;">
+                <div style="font-size: 11.5px; font-weight: 800; color: #fff; letter-spacing: .02em;">Desbloqueado</div>
+                <div style="font-size: 9.5px; color: #9ca3af; margin-top: 2px;">Recarregando o hub…</div>
+            </div>
+        `;
+        document.body.appendChild(el);
+        setTimeout(() => {
+            el.style.transition = 'opacity .3s, transform .3s';
+            el.style.opacity = '0';
+            el.style.transform = 'translateX(20px)';
+            setTimeout(() => el.remove(), 300);
+        }, 1200);
+    }
+
     function _autodestruir() {
         HLOG('💥 Autodestruindo hub');
         try { window._admin?.kill?.(); } catch(e) {}
@@ -404,7 +488,6 @@
         }
     }
 
-    // ═══ BLOCK WATCHER ═══
     let _blockWatcherId = null;
     function _iniciarBlockWatcher() {
         if (_blockWatcherId) return;
@@ -416,11 +499,15 @@
                 if (antesB !== _blocked) {
                     if (_blocked) {
                         HLOG('🚫 Bloqueio em runtime detectado');
+                        window._hubSFX?.alert?.();
                         _autodestruir();
                         _mostrarBloqueioOverlay();
                     } else {
                         HLOG('✅ Desbloqueado — recarregando');
-                        location.reload();
+                        window._hubSFX?.unblocked?.();
+                        _removerBloqueioOverlay();
+                        _mostrarDesbloqueioToast();
+                        setTimeout(() => { try { location.reload(); } catch(e) {} }, 1050);
                     }
                     return;
                 }
@@ -452,25 +539,6 @@
             else _carregarAdmin().then(() => window._admin?.toggle?.());
         }
     });
-
-    // ═══ CONSTANTES ═══
-    const HUB_VERSION = "1.3.1";
-    const HUB_UPDATE_URL = "https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/menu/hub2.js";
-    const MANIFEST_URL = "https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/menu/manifest.json";
-    const UPDATE_INTERVAL_MS = 3 * 60 * 1000;
-    const MANIFEST_CACHE_MS = 2 * 60 * 1000;
-    const FETCH_TIMEOUT_MS = 5000;
-    const FETCH_RETRIES = 2;
-    const SHORTCUT_KEY = 'h';
-    const SHORTCUT_LABEL = 'Alt+Shift+H';
-    const GIF_PLAY_MS = 2000;
-    const PLAYTIME_KEY = 'sanghub_playtime_total_ms';
-    const PLAYTIME_FLUSH_MS = 60 * 1000;
-    const CLOCK_TICK_MS = 1000;
-    const PLAYER_CACHE_KEY = 'sanghub_player_cache';
-    const VOICE_KEY = 'sanghub_voice_enabled';
-    const VOICE_COOLDOWN_MS = 1200;
-    const SpeechRecognitionAPI = window.SpeechRecognition || window.webkitSpeechRecognition;
 
     const VOICE_OPEN = ['abra', 'abre', 'abrir', 'ativa', 'ativar', 'liga', 'ligar', 'inicia', 'iniciar'];
     const VOICE_CLOSE = ['feche', 'fecha', 'fechar', 'desativa', 'desativar', 'desliga', 'desligar', 'para', 'parar'];
@@ -544,19 +612,21 @@
         };
     })();
 
-    // ═══ SFX — soft tone ═══
-    // Tom filtrado por lowpass, ataque lento (~12ms) para remover o "pipoco"
-    // digital, frequências graves e ganho baixo. Resulta num toque macio,
-    // orgânico, que combina com menu de vidro.
+    // ═══ SFX ═══
     (function setupSfx() {
         if (window._hubSFX) return;
         let actx = null;
+        let muted = false;
+        let _dragCount = 0;
+        try { muted = localStorage.getItem(SFX_MUTED_KEY) === '1'; } catch(e) {}
+
         function ctx() {
             if (actx) return actx;
             try { actx = new (window.AudioContext || window.webkitAudioContext)(); } catch(e) { actx = null; }
             return actx;
         }
         function tone(freq, dur, type, peak, attack) {
+            if (muted) return;
             const c = ctx();
             if (!c) return;
             if (c.state === 'suspended') c.resume().catch(() => {});
@@ -564,46 +634,333 @@
             const osc = c.createOscillator();
             const lp  = c.createBiquadFilter();
             const gain = c.createGain();
-
             osc.type = type || 'sine';
             osc.frequency.setValueAtTime(freq, now);
-
             lp.type = 'lowpass';
             lp.frequency.setValueAtTime(Math.min(freq * 2.6, 3200), now);
             lp.Q.setValueAtTime(0.6, now);
-
             const a = attack != null ? attack : 0.012;
             gain.gain.setValueAtTime(0, now);
             gain.gain.linearRampToValueAtTime(peak || 0.03, now + a);
             gain.gain.exponentialRampToValueAtTime(0.0001, now + dur);
-
             osc.connect(lp).connect(gain).connect(c.destination);
             osc.start(now);
             osc.stop(now + dur + 0.03);
         }
+        function sweep(f1, f2, dur, peak) {
+            if (muted) return;
+            const c = ctx();
+            if (!c) return;
+            if (c.state === 'suspended') c.resume().catch(() => {});
+            const now = c.currentTime;
+            const osc = c.createOscillator();
+            const lp = c.createBiquadFilter();
+            const gain = c.createGain();
+            osc.type = 'sine';
+            osc.frequency.setValueAtTime(f1, now);
+            osc.frequency.exponentialRampToValueAtTime(f2, now + dur);
+            lp.type = 'lowpass';
+            lp.frequency.setValueAtTime(f2 > f1 ? 2200 : 1600, now);
+            lp.Q.setValueAtTime(0.5, now);
+            const attack = f2 > f1 ? 0.10 : 0.03;
+            gain.gain.setValueAtTime(0, now);
+            gain.gain.linearRampToValueAtTime(peak || 0.011, now + attack);
+            gain.gain.exponentialRampToValueAtTime(0.0001, now + dur + 0.06);
+            osc.connect(lp).connect(gain).connect(c.destination);
+            osc.start(now);
+            osc.stop(now + dur + 0.10);
+        }
+
         let lastHover = 0;
         window._hubSFX = {
             warm() { ctx(); },
-            // tick grave, curto e abafado — como tecla de piano coberta
+            isMuted() { return muted; },
+            setMuted(v) { muted = !!v; try { localStorage.setItem(SFX_MUTED_KEY, muted ? '1' : '0'); } catch(e) {} return muted; },
+            toggleMute() { return window._hubSFX.setMuted(!muted); },
+            beginDrag() { _dragCount++; },
+            endDrag() { _dragCount = Math.max(0, _dragCount - 1); },
+            isDragging() { return _dragCount > 0; },
             hover() {
+                if (_dragCount > 0) return;
                 const t = performance.now();
-                if (t - lastHover < 45) return;
+                if (t - lastHover < 70) return;
                 lastHover = t;
-                tone(520, 0.075, 'sine', 0.022, 0.014);
+                tone(320, 0.13, 'sine', 0.0055, 0.045);
             },
-            // par C5 → E5 (terça maior), sobe suave, sensação de "ligou"
-            toggleOn() {
-                tone(523.25, 0.09, 'sine', 0.028, 0.012);
-                setTimeout(() => tone(659.25, 0.13, 'sine', 0.024, 0.014), 55);
+            expand() {
+                if (_dragCount > 0) return;
+                sweep(420, 720, 0.30, 0.0075);
+                setTimeout(() => tone(880, 0.18, 'sine', 0.0045, 0.06), 55);
             },
-            // par A4 → E4 (queda de quarta), tom macio, sensação de "desligou"
-            toggleOff() {
-                tone(440, 0.10, 'sine', 0.028, 0.012);
-                setTimeout(() => tone(329.63, 0.14, 'sine', 0.022, 0.016), 60);
+            toggleOn() { tone(392, 0.14, 'sine', 0.0085, 0.05); setTimeout(() => tone(523.25, 0.16, 'sine', 0.0065, 0.055), 60); },
+            toggleOff() { tone(349.23, 0.15, 'sine', 0.0085, 0.05); setTimeout(() => tone(261.63, 0.20, 'sine', 0.006, 0.06), 65); },
+            success() {
+                tone(659.25, 0.09, 'sine', 0.020, 0.014);
+                setTimeout(() => tone(783.99, 0.10, 'sine', 0.017, 0.014), 70);
+                setTimeout(() => tone(987.77, 0.16, 'sine', 0.014, 0.016), 140);
+            },
+            error() { tone(330, 0.11, 'sine', 0.020, 0.014); setTimeout(() => tone(262, 0.18, 'sine', 0.017, 0.018), 80); },
+            alert() {
+                tone(240, 0.16, 'sine', 0.055, 0.006);
+                setTimeout(() => tone(190, 0.20, 'sine', 0.050, 0.008), 80);
+                setTimeout(() => tone(145, 0.34, 'sine', 0.042, 0.012), 175);
+            },
+            unblocked() {
+                tone(523.25, 0.10, 'sine', 0.028, 0.010);
+                setTimeout(() => tone(659.25, 0.11, 'sine', 0.026, 0.012), 70);
+                setTimeout(() => tone(880.00, 0.18, 'sine', 0.022, 0.014), 150);
+            },
+            whoosh(direction) {
+                if (direction === 'open') sweep(240, 1320, 0.38, 0.009);
+                else sweep(1320, 240, 0.26, 0.013);
+            },
+            pickup() { tone(760, 0.05, 'sine', 0.014, 0.010); },
+            drop()   { tone(200, 0.16, 'sine', 0.015, 0.026); },
+            // toque de chamada — duplo burst com par harmônico (A4 + E5), ciclo de 2.5s
+            ring() {
+                if (muted) return;
+                const burst = (delay) => setTimeout(() => {
+                    tone(440,    0.42, 'sine', 0.032, 0.028);
+                    tone(659.25, 0.42, 'sine', 0.024, 0.028);
+                }, delay);
+                burst(0);
+                burst(620);
+            },
+            micOn() {
+                tone(523.25, 0.10, 'sine', 0.024, 0.012);
+                setTimeout(() => tone(783.99, 0.14, 'sine', 0.020, 0.014), 70);
+            },
+            micOff() {
+                tone(523.25, 0.11, 'sine', 0.022, 0.012);
+                setTimeout(() => tone(311.13, 0.16, 'sine', 0.018, 0.014), 70);
             }
         };
         document.addEventListener('click', () => { try { ctx()?.resume(); } catch(e) {} }, { once: true, capture: true });
     })();
+
+    // ═══ MIC — recepção (WebRTC + RTDB signaling) ═══
+    let _micReady = null;
+    let _mic = { es: null, pc: null, iceEs: null, audio: null, offer: null, banner: null, ringTimer: null, active: false };
+
+    function _micSignalUrl(path) {
+        return `${RTDB_URL}/signaling/${_deviceId}/${path}.json`;
+    }
+    function _micSupported() {
+        return !!(window.RTCPeerConnection && window.EventSource && fsConfigured() && _deviceId);
+    }
+
+    async function _micStartListener() {
+        if (_mic.es || !_micSupported()) { if (!_micSupported()) _micReady = { ok: false, reason: 'unsupported' }; return; }
+        const es = new EventSource(_micSignalUrl('offer'));
+        _mic.es = es;
+        let seen = false;
+
+        const onValue = (raw) => {
+            seen = true;
+            _micReady = { ok: true };
+            try {
+                const envelope = JSON.parse(raw);
+                const offer = envelope?.data;
+                if (!offer || !offer.type) return;
+                if (offer.type === 'hangup') {
+                    if (_mic.offer && _mic.offer.fromId && offer.fromId === _mic.offer.fromId) {
+                        _micReject();
+                    }
+                    return;
+                }
+                if (offer.type !== 'offer' || !offer.sdp) return;
+                if (offer.ts && Date.now() - offer.ts > MIC_OFFER_TTL_MS) return;
+                _micOnOffer(offer);
+            } catch(_) {}
+        };
+        es.addEventListener('put', (ev) => onValue(ev.data));
+        es.addEventListener('patch', (ev) => onValue(ev.data));
+        es.onerror = () => { if (!seen) _micReady = { ok: false, reason: 'rtdb' }; };
+
+        setTimeout(() => { if (!seen) _micReady = _micReady || { ok: false, reason: 'timeout' }; }, 6000);
+    }
+
+    function _micOnOffer(offer) {
+        if (_mic.active) return;
+        _mic.offer = offer;
+        _micShowBanner(offer);
+        _micStartRing();
+    }
+
+    function _micStartRing() {
+        _micStopRing();
+        window._hubSFX?.ring?.();
+        _mic.ringTimer = setInterval(() => window._hubSFX?.ring?.(), MIC_RING_MS);
+    }
+    function _micStopRing() {
+        if (_mic.ringTimer) { clearInterval(_mic.ringTimer); _mic.ringTimer = null; }
+    }
+
+    async function _micAccept() {
+        const offer = _mic.offer;
+        if (!offer || _mic.active) return;
+        _micStopRing();
+        _micHideBanner();
+        try {
+            const pc = new RTCPeerConnection({ iceServers: MIC_ICE });
+            _mic.pc = pc;
+            _mic.active = true;
+
+            pc.ontrack = (ev) => {
+                try {
+                    const audio = new Audio();
+                    audio.srcObject = ev.streams[0];
+                    audio.autoplay = true;
+                    audio.volume = 1.0;
+                    audio.play().catch(() => {
+                        try { if (typeof toastFn === 'function') toastFn('Clique na página para liberar o áudio', 'warn'); } catch(_) {}
+                    });
+                    _mic.audio = audio;
+                } catch(_) {}
+                window._hubSFX?.micOn?.();
+            };
+            pc.onicecandidate = async (ev) => {
+                if (!ev.candidate) return;
+                try {
+                    await fetch(_micSignalUrl('ice/hub'), {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(ev.candidate.toJSON())
+                    });
+                } catch(_) {}
+            };
+            pc.onconnectionstatechange = () => {
+                const s = pc.connectionState;
+                if (s === 'failed' || s === 'closed' || s === 'disconnected') _micStop();
+            };
+
+            await pc.setRemoteDescription(new RTCSessionDescription(offer));
+            const answer = await pc.createAnswer();
+            await pc.setLocalDescription(answer);
+
+            await fetch(_micSignalUrl('answer'), {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ type: answer.type, sdp: answer.sdp, ts: Date.now() })
+            });
+
+            const iceEs = new EventSource(_micSignalUrl('ice/admin'));
+            _mic.iceEs = iceEs;
+            const onIce = (raw) => {
+                try {
+                    const env = JSON.parse(raw);
+                    const cand = env?.data;
+                    if (cand && cand.candidate && _mic.pc) {
+                        _mic.pc.addIceCandidate(new RTCIceCandidate(cand)).catch(() => {});
+                    }
+                } catch(_) {}
+            };
+            iceEs.addEventListener('put', (ev) => onIce(ev.data));
+            iceEs.addEventListener('patch', (ev) => onIce(ev.data));
+        } catch(e) {
+            HERR('Falha ao atender chamada:', e);
+            _micStop();
+        }
+    }
+
+    function _micReject() {
+        _micStopRing();
+        _micHideBanner();
+        _mic.offer = null;
+        try {
+            fetch(_micSignalUrl('answer'), {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ type: 'reject', ts: Date.now() })
+            }).catch(() => {});
+        } catch(_) {}
+    }
+
+    function _micStop() {
+        _micStopRing();
+        _micHideBanner();
+        if (_mic.pc) { try { _mic.pc.close(); } catch(_) {} _mic.pc = null; }
+        if (_mic.iceEs) { try { _mic.iceEs.close(); } catch(_) {} _mic.iceEs = null; }
+        if (_mic.audio) { try { _mic.audio.pause(); _mic.audio.srcObject = null; } catch(_) {} _mic.audio = null; }
+        if (_mic.active) window._hubSFX?.micOff?.();
+        _mic.active = false;
+        _mic.offer = null;
+    }
+
+    function _micShowBanner(offer) {
+        _micHideBanner();
+        _ensureBlockStyle();
+
+        // Shell: posiciona e faz pop-in (mantendo translateX(-50%) na animação)
+        const shell = document.createElement('div');
+        shell.id = '_hubMicBanner';
+        shell.setAttribute('data-hub', '1');
+        shell.setAttribute('data-sang-ui', '');
+        shell.style.cssText = `
+            position: fixed; left: 50%; bottom: 28px;
+            transform: translateX(-50%);
+            z-index: 2147483647;
+            pointer-events: auto;
+            animation: _hubMicShellIn .35s cubic-bezier(0.16,1,0.3,1);
+            transform-style: flat;
+        `;
+
+        // Inner: card visual + vibração sincronizada com o toque
+        const inner = document.createElement('div');
+        inner.style.cssText = `
+            display: flex; align-items: center; gap: 14px;
+            padding: 14px 18px 14px 14px;
+            border-radius: 16px;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background: linear-gradient(175deg, rgba(16,22,30,0.97), rgba(8,10,16,0.99));
+            border: 1px solid rgba(34,211,238,0.42);
+            box-shadow: 0 22px 60px rgba(0,0,0,0.75), 0 0 60px rgba(34,211,238,0.22);
+            backdrop-filter: blur(14px) saturate(140%);
+            max-width: 420px;
+            animation: _hubMicVibrate ${MIC_RING_MS}ms cubic-bezier(.36,.07,.19,.97) infinite;
+            will-change: transform;
+        `;
+        inner.innerHTML = `
+            <span style="flex-shrink: 0; width: 44px; height: 44px;
+                display: flex; align-items: center; justify-content: center;
+                border-radius: 12px; background: rgba(34,211,238,0.14);
+                border: 1px solid rgba(34,211,238,0.4);
+                animation: _hbMicPulse 1.8s ease-in-out infinite;">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#22d3ee" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
+                    <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+                    <line x1="12" y1="19" x2="12" y2="23"/>
+                    <line x1="8" y1="23" x2="16" y2="23"/>
+                </svg>
+            </span>
+            <div style="flex: 1; min-width: 0;">
+                <div style="font-size: 12.5px; font-weight: 800; color: #fff; letter-spacing: .02em;">
+                    Chamada de voz
+                </div>
+                <div style="font-size: 10px; color: #9ca3af; margin-top: 3px; line-height: 1.4;">
+                    <b style="color: #67e8f9;">${escapeHtml(offer.fromName || 'Administrador')}</b> quer falar com você.
+                </div>
+            </div>
+            <div style="display: flex; gap: 6px; flex-shrink: 0;">
+                <button id="_hubMicReject" style="cursor: pointer; font-family: inherit;
+                    padding: 8px 14px; border-radius: 9px; font-size: 10.5px; font-weight: 700;
+                    background: rgba(251,113,133,0.12); border: 1px solid rgba(251,113,133,0.36);
+                    color: #fca5b1; letter-spacing: .03em; transition: background .15s;">Recusar</button>
+                <button id="_hubMicAccept" style="cursor: pointer; font-family: inherit;
+                    padding: 8px 16px; border-radius: 9px; font-size: 10.5px; font-weight: 800;
+                    background: linear-gradient(120deg, #22d3ee, #a78bfa); border: none;
+                    color: #0b0b10; letter-spacing: .03em; transition: filter .15s;">Atender</button>
+            </div>
+        `;
+        shell.appendChild(inner);
+        document.body.appendChild(shell);
+        _mic.banner = shell;
+        shell.querySelector('#_hubMicAccept').addEventListener('click', () => _micAccept());
+        shell.querySelector('#_hubMicReject').addEventListener('click', () => _micReject());
+    }
+    function _micHideBanner() {
+        if (_mic.banner) { try { _mic.banner.remove(); } catch(_) {} _mic.banner = null; }
+    }
 
     // ═══ MODULE LOADING ═══
     function injectCode(code, id) {
@@ -729,6 +1086,8 @@
         try {
             flushPlaytime();
             if (window._hubUI?.kill) window._hubUI.kill();
+            if (_blockWatcherId) { clearInterval(_blockWatcherId); _blockWatcherId = null; }
+            if (_heartbeatTimer) { clearInterval(_heartbeatTimer); _heartbeatTimer = null; }
             document.querySelectorAll('[data-hub]:not([data-hub-block]), [data-lb]').forEach(el => el.remove());
             const script = document.createElement('script');
             script.textContent = code;
@@ -757,6 +1116,7 @@
             state.lastSyncAt = new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
             manifest.modules.filter(m => {
                 if (state.moduleStates[m.id] === STATUS.LOADED) return false;
+                if (m.admin === true && !_adminUnlocked()) return false;   // classe ADMIN só auto-carrega se liberado
                 if (m.secret === true) return _secretOn;
                 return m.enabled !== false && m.autoload === true;
             }).forEach(mod => activateModule(mod));
@@ -794,6 +1154,12 @@
     }
     async function activateModule(mod) {
         if (state.moduleStates[mod.id] === STATUS.LOADING) return;
+        if (mod.admin === true && !_adminUnlocked()) {
+            window._hubSFX?.error?.();
+            if (toastFn) toastFn('Módulo em fase de Testes', 'error');
+            flashItem(mod.id, 'error');
+            return;
+        }
         state.moduleStates[mod.id] = STATUS.LOADING;
         if (renderListFn) renderListFn();
         try {
@@ -801,12 +1167,14 @@
             state.moduleStates[mod.id] = STATUS.LOADED;
             tentarRegistrarHandlerVoz();
             if (toastFn) toastFn(mod.name + ' carregado', 'ok');
+            window._hubSFX?.success?.();
             if (renderListFn) renderListFn();
             flashItem(mod.id, 'ok');
         } catch(e) {
             HERR('Falha em "' + mod.name + '":', e);
             state.moduleStates[mod.id] = STATUS.ERROR;
             if (toastFn) toastFn('Falha em ' + mod.name, 'error');
+            window._hubSFX?.error?.();
             if (renderListFn) renderListFn();
             flashItem(mod.id, 'error');
         }
@@ -820,6 +1188,12 @@
     }
     function handleModuleClick(mod) {
         if (mod.secret) return;
+        if (mod.admin === true && !_adminUnlocked()) {
+            window._hubSFX?.error?.();
+            if (toastFn) toastFn('Módulo em fase de Testes', 'error');
+            flashItem(mod.id, 'error');
+            return;
+        }
         const status = state.moduleStates[mod.id] || STATUS.UNLOADED;
         if (status === STATUS.LOADING) return;
         if (status === STATUS.LOADED) { deactivateModule(mod); return; }
@@ -832,6 +1206,7 @@
         let best = null, bestScore = 0;
         state.manifest.modules.forEach(mod => {
             if (mod.secret || mod.enabled === false) return;
+            if (mod.admin === true && !_adminUnlocked()) return;    // voz também respeita classe ADMIN
             const aliasWords = (VOICE_ALIASES[mod.id] || []).flatMap(a => normalize(a).split(/\s+/));
             const nameWords = normalize(mod.name).split(/\s+/);
             const candidates = [...new Set([...nameWords, ...aliasWords])].filter(w => w.length > 2);
@@ -926,11 +1301,11 @@
     function buildUI() {
         const UID = '_hub';
         const ac = new AbortController();
+        const reduceMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
         const style = document.createElement('style');
         style.setAttribute('data-hub', '1');
         style.textContent = `
-        @keyframes hubFade{from{opacity:0;transform:translateY(-8px) scale(0.98)}to{opacity:1;transform:none}}
         @keyframes hubItemIn{from{opacity:0;transform:translateX(-6px)}to{opacity:1;transform:none}}
         @keyframes hubPulse{0%,100%{opacity:1}50%{opacity:.35}}
         @keyframes hubSpin{to{transform:rotate(360deg)}}
@@ -945,18 +1320,37 @@
         #${UID}{
             --hub-cyan:#22d3ee; --hub-violet:#a78bfa; --hub-grad:linear-gradient(120deg,var(--hub-cyan),var(--hub-violet));
             --hub-ok:#34d399; --hub-err:#fb7185; --hub-muted:#8b8fa3;
+            --tx:0deg; --ty:0deg; --rz:0deg; --sc:1; --sx:1; --sy:1; --persp:1200px;
             position:fixed;top:20px;left:20px;width:336px;
             font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Inter,sans-serif;font-size:13px;
             color:#f1f2f8;background:linear-gradient(175deg,rgba(20,20,28,0.92),rgba(9,9,14,0.97));backdrop-filter:blur(18px) saturate(140%);
             border:1px solid rgba(255,255,255,0.08);border-radius:20px;
             box-shadow:0 20px 50px rgba(0,0,0,0.55),0 2px 8px rgba(0,0,0,0.4),inset 0 1px 0 rgba(255,255,255,0.06);
-            z-index:2147483647;overflow:hidden;user-select:none;animation:hubFade .3s cubic-bezier(0.16,1,0.3,1);
-            max-height:85vh;display:flex;flex-direction:column}
-        #${UID}.hidden{display:none}
-        #${UID}{transition:width .22s cubic-bezier(0.16,1,0.3,1),max-height .22s cubic-bezier(0.16,1,0.3,1),opacity .18s ease}
-        #${UID}.hub-collapsed{width:250px;max-height:100px;opacity:0}
+            z-index:2147483647;overflow:hidden;user-select:none;
+            max-height:85vh;display:flex;flex-direction:column;
+            isolation:isolate;
+            opacity:1;
+            transform-origin:50% 50%;
+            backface-visibility:hidden;
+            transform:
+                perspective(var(--persp))
+                rotateX(var(--tx))
+                rotateY(var(--ty))
+                rotate(var(--rz))
+                scale(calc(var(--sc) * var(--sx)), calc(var(--sc) * var(--sy)));
+            transition:transform .38s cubic-bezier(.22,1,.36,1),
+                       opacity .32s cubic-bezier(.22,1,.36,1),
+                       visibility 0s}
+        #${UID}.hidden{
+            opacity:0;pointer-events:none;visibility:hidden;
+            --sc:.985;
+            transition:transform .3s cubic-bezier(.22,1,.36,1),
+                       opacity .3s cubic-bezier(.22,1,.36,1),
+                       visibility 0s linear .3s}
+        #${UID}.dragging{
+            transition:opacity .3s cubic-bezier(.22,1,.36,1),visibility 0s}
         #${UID}::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;background:var(--hub-grad);
-            background-size:200% 100%;animation:hubShimmer 4s linear infinite}
+            background-size:200% 100%;animation:hubShimmer 4s linear infinite;z-index:3;pointer-events:none}
         #${UID} .hub-hdr{padding:14px 16px;display:flex;align-items:center;justify-content:space-between;cursor:grab;flex-shrink:0}
         #${UID} .hub-hdr:active{cursor:grabbing}
         #${UID} .hub-brand{display:flex;align-items:center;gap:11px;min-width:0}
@@ -974,17 +1368,23 @@
         #${UID} .hub-actions{display:flex;gap:6px;flex-shrink:0}
         #${UID} .hub-hbtn{width:26px;height:26px;border-radius:8px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);
             color:#c7cad6;display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:12px;
-            transition:all .18s cubic-bezier(0.16,1,0.3,1);flex-shrink:0}
+            transition:color .22s cubic-bezier(.22,1,.36,1),
+                       background .22s cubic-bezier(.22,1,.36,1),
+                       border-color .22s cubic-bezier(.22,1,.36,1),
+                       box-shadow .22s cubic-bezier(.22,1,.36,1),
+                       transform .3s cubic-bezier(.22,1,.36,1);flex-shrink:0}
         #${UID} .hub-hbtn:hover{color:#0b0b10;background:var(--hub-grad);border-color:transparent;box-shadow:0 0 14px rgba(34,211,238,0.35);transform:translateY(-1px)}
         #${UID} .hub-hbtn:focus-visible,#${UID} .hub-item:focus-visible,#${UID} .hub-tab:focus-visible{outline:2px solid var(--hub-cyan);outline-offset:2px}
         #${UID} .hub-hbtn.spin svg{animation:hubSpin .6s linear infinite}
         #${UID} .hub-hbtn.listening{color:#0b0b10;background:var(--hub-grad);border-color:transparent;box-shadow:0 0 10px rgba(34,211,238,.5)}
         #${UID} .hub-hbtn.hearing{animation:hubPulse .35s ease-in-out}
         #${UID} .hub-hbtn.cedido{opacity:.4;pointer-events:none}
+        #${UID} .hub-hbtn.muted{color:#8b8fa3}
+        #${UID} .hub-hbtn.muted svg{opacity:.55}
         #${UID} .hub-tabs{display:flex;gap:4px;padding:0 12px;flex-shrink:0;border-bottom:1px solid rgba(255,255,255,0.06)}
         #${UID} .hub-tab{flex:1;text-align:center;padding:9px 6px 10px;font-size:10.5px;font-weight:800;letter-spacing:.05em;
             text-transform:uppercase;color:var(--hub-muted);background:transparent;border:none;cursor:pointer;position:relative;
-            transition:color .18s ease;font-family:inherit}
+            transition:color .22s cubic-bezier(.22,1,.36,1);font-family:inherit}
         #${UID} .hub-tab:hover{color:#d1d5db}
         #${UID} .hub-tab.active{color:#fff}
         #${UID} .hub-tab.active::after{content:'';position:absolute;left:14px;right:14px;bottom:-1px;height:2px;
@@ -995,30 +1395,44 @@
         #${UID} .hub-empty,#${UID} .hub-error-box{padding:20px;text-align:center;color:var(--hub-muted);font-size:11px}
         #${UID} .hub-error-box{color:#fca5b1}
         #${UID} .hub-retry{display:inline-block;padding:6px 14px;margin-top:10px;border-radius:8px;
-            background:rgba(251,113,133,0.12);border:1px solid rgba(251,113,133,0.35);color:#fca5b1;cursor:pointer;font-size:10px;font-weight:700;transition:all .18s}
+            background:rgba(251,113,133,0.12);border:1px solid rgba(251,113,133,0.35);color:#fca5b1;cursor:pointer;font-size:10px;font-weight:700;
+            transition:all .22s cubic-bezier(.22,1,.36,1)}
         #${UID} .hub-item{display:flex;align-items:center;gap:14px;padding:11px 13px;
             border-radius:13px;background:rgba(255,255,255,0.025);border:1px solid rgba(255,255,255,0.05);cursor:pointer;
-            transition:all .2s cubic-bezier(0.16,1,0.3,1);position:relative;overflow:hidden;
-            animation:hubItemIn .3s cubic-bezier(0.16,1,0.3,1) backwards}
-        #${UID} .hub-item::before{content:'';position:absolute;left:0;top:0;bottom:0;width:3px;background:transparent;transition:background .2s}
+            transition:background .3s cubic-bezier(.22,1,.36,1),
+                       border-color .3s cubic-bezier(.22,1,.36,1),
+                       transform .4s cubic-bezier(.22,1,.36,1),
+                       box-shadow .4s cubic-bezier(.22,1,.36,1);
+            position:relative;overflow:hidden;
+            animation:hubItemIn .3s cubic-bezier(.22,1,.36,1) backwards}
+        #${UID} .hub-item::before{content:'';position:absolute;left:0;top:0;bottom:0;width:3px;background:transparent;transition:background .3s cubic-bezier(.22,1,.36,1)}
         #${UID} .hub-item.state-loaded::before{background:var(--hub-grad)}
         #${UID} .hub-item.state-loading::before{background:var(--hub-cyan);animation:hubPulse 1s infinite}
         #${UID} .hub-item.state-error::before{background:var(--hub-err)}
-        #${UID} .hub-item:hover{background:rgba(255,255,255,0.05);border-color:rgba(167,139,250,0.35);
-            transform:translateY(-2px);box-shadow:0 8px 20px rgba(0,0,0,0.35),0 0 0 1px rgba(34,211,238,0.08)}
-        #${UID} .hub-item:active{transform:translateY(-1px) scale(0.99)}
-        #${UID} .hub-item.hub-flash-ok{animation:hubItemIn .3s cubic-bezier(0.16,1,0.3,1) backwards,hubFlashOk .7s ease-out}
-        #${UID} .hub-item.hub-flash-error{animation:hubItemIn .3s cubic-bezier(0.16,1,0.3,1) backwards,hubFlashErr .7s ease-out}
+        #${UID} .hub-item:hover{background:rgba(255,255,255,0.05);border-color:rgba(167,139,250,0.32);
+            transform:translateY(-1px);box-shadow:0 8px 20px rgba(0,0,0,0.35),0 0 0 1px rgba(34,211,238,0.08)}
+        #${UID} .hub-item:active{transform:translateY(-1px) scale(0.995)}
+        #${UID} .hub-item.hub-flash-ok{animation:hubItemIn .3s cubic-bezier(.22,1,.36,1) backwards,hubFlashOk .7s ease-out}
+        #${UID} .hub-item.hub-flash-error{animation:hubItemIn .3s cubic-bezier(.22,1,.36,1) backwards,hubFlashErr .7s ease-out}
+        #${UID} .hub-item.admin-locked{cursor:not-allowed}
+        #${UID} .hub-item.admin-locked::after{content:'Módulo em fase de Testes';
+            position:absolute;inset:0;z-index:2;pointer-events:none;
+            display:flex;align-items:center;justify-content:center;
+            font-size:9.5px;font-weight:800;letter-spacing:.1em;text-transform:uppercase;
+            color:#fca5b1;
+            background:linear-gradient(175deg,rgba(8,8,12,.72),rgba(8,8,12,.82));
+            backdrop-filter:blur(1.6px);-webkit-backdrop-filter:blur(1.6px);
+            text-shadow:0 0 12px rgba(251,113,133,.5)}
         #${UID} .hub-icon{width:48px;height:48px;min-width:48px;min-height:48px;display:flex;align-items:center;justify-content:center;position:relative}
         #${UID} .hub-icon img,#${UID} .hub-icon svg,#${UID} .hub-icon canvas{width:100%;height:100%;object-fit:contain;display:block;border-radius:10px;
-            filter:drop-shadow(0 3px 7px rgba(0,0,0,0.4));transition:filter .2s ease}
+            filter:drop-shadow(0 3px 7px rgba(0,0,0,0.4));transition:filter .22s cubic-bezier(.22,1,.36,1)}
         #${UID} .hub-icon [hidden]{display:none !important}
         #${UID} .hub-icon::before{content:'';position:absolute;inset:-6px;border-radius:15px;padding:1.5px;
             background:conic-gradient(from var(--hub-angle),var(--hub-cyan),var(--hub-violet),#fff,var(--hub-violet),var(--hub-cyan));
             -webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);
             -webkit-mask-composite:xor;mask-composite:exclude;
-            opacity:0;transition:opacity .25s ease;animation:hubIconRing 2.6s linear infinite;animation-play-state:paused;pointer-events:none}
-        #${UID} .hub-item:hover .hub-icon::before{opacity:1;animation-play-state:running}
+            opacity:0;transition:opacity .4s cubic-bezier(.22,1,.36,1);animation:hubIconRing 4.5s linear infinite;animation-play-state:paused;pointer-events:none}
+        #${UID} .hub-item:hover .hub-icon::before{opacity:.55;animation-play-state:running}
         #${UID} .hub-info{flex:1;min-width:0}
         #${UID} .hub-name{font-weight:700;color:#ffffff;font-size:12.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
         #${UID} .hub-desc{font-size:9.5px;color:var(--hub-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px}
@@ -1036,7 +1450,8 @@
         #${UID} .hub-ftr{padding:10px 16px;background:rgba(0,0,0,0.25);border-top:1px solid rgba(255,255,255,0.05);
             font-size:9.5px;color:var(--hub-muted);display:flex;justify-content:space-between;align-items:center;flex-shrink:0}
         #${UID} .hub-toast{position:absolute;left:14px;right:14px;bottom:40px;padding:9px 14px;border-radius:11px;
-            font-size:10.5px;font-weight:700;text-align:center;opacity:0;transform:translateY(8px);transition:all .22s cubic-bezier(0.16,1,0.3,1);
+            font-size:10.5px;font-weight:700;text-align:center;opacity:0;transform:translateY(8px);
+            transition:opacity .3s cubic-bezier(.22,1,.36,1),transform .3s cubic-bezier(.22,1,.36,1);
             pointer-events:none;z-index:20;border:1px solid;background:rgba(14,14,20,0.96);backdrop-filter:blur(10px);color:#f3f4f6}
         #${UID} .hub-toast.show{opacity:1;transform:translateY(0)}
         #${UID} .hub-toast.ok{border-color:rgba(52,211,153,0.5);color:#a7f3d0}
@@ -1045,33 +1460,51 @@
 
         #${UID}pill{
             --hub-cyan:#22d3ee; --hub-violet:#a78bfa; --hub-grad:linear-gradient(120deg,var(--hub-cyan),var(--hub-violet));
+            --tx:0deg; --ty:0deg; --rz:0deg; --sc:1; --sx:1; --sy:1; --persp:900px;
             position:fixed;top:20px;left:20px;width:250px;
             font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Inter,sans-serif;
-            border-radius:20px;z-index:2147483647;user-select:none;animation:hubFade .25s ease-out;padding:2px;
-            transition:opacity .18s ease .04s, width .38s cubic-bezier(.16,1,.3,1);
-            will-change:transform,opacity,width}
+            border-radius:20px;z-index:2147483647;user-select:none;padding:2px;
+            opacity:1;
+            transform-origin:50% 50%;
+            backface-visibility:hidden;
+            transform:
+                perspective(var(--persp))
+                rotateX(var(--tx))
+                rotateY(var(--ty))
+                rotate(var(--rz))
+                scale(calc(var(--sc) * var(--sx)), calc(var(--sc) * var(--sy)));
+            transition:transform .42s cubic-bezier(.22,1,.36,1),
+                       opacity .32s cubic-bezier(.22,1,.36,1),
+                       visibility 0s}
+        #${UID}pill.hidden{
+            opacity:0;pointer-events:none;visibility:hidden;
+            --sc:.97;
+            transition:transform .3s cubic-bezier(.22,1,.36,1),
+                       opacity .3s cubic-bezier(.22,1,.36,1),
+                       visibility 0s linear .3s}
+        #${UID}pill.dragging{
+            transition:opacity .3s cubic-bezier(.22,1,.36,1),visibility 0s}
+        #${UID}pill:hover:not(.dragging){--sc:1.035}
         #${UID}pill::before{content:'';position:absolute;inset:0;border-radius:20px;padding:2px;
             background:conic-gradient(from var(--hub-angle),var(--hub-cyan),var(--hub-violet),#fff,var(--hub-violet),var(--hub-cyan));
             -webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);
             -webkit-mask-composite:xor;mask-composite:exclude;
             animation:hubPillRing 6s linear infinite;pointer-events:none;
             box-shadow:0 0 14px rgba(34,211,238,0.35),0 0 22px rgba(167,139,250,0.2);
-            transition:box-shadow .4s cubic-bezier(.16,1,.3,1)}
-        #${UID}pill:hover:not(.dragging){width:284px}
+            transition:box-shadow .5s cubic-bezier(.22,1,.36,1)}
         #${UID}pill:hover:not(.dragging)::before{
             box-shadow:0 0 30px rgba(34,211,238,0.85),
                        0 0 60px rgba(167,139,250,0.6),
                        0 0 100px rgba(34,211,238,0.35)}
         #${UID}pill:hover:not(.dragging) #${UID}pillinner{
-            box-shadow:0 24px 60px rgba(0,0,0,0.6),
-                       0 0 36px rgba(34,211,238,0.18)}
+            box-shadow:0 26px 62px rgba(0,0,0,0.62),
+                       0 0 36px rgba(34,211,238,0.20)}
         #${UID}pill.dragging{cursor:grabbing}
-        #${UID}pill.hidden{display:none}
 
         #${UID}pillinner{display:block;border-radius:18px;cursor:grab;color:#f1f2f8;
             background:linear-gradient(175deg,rgba(20,20,28,0.94),rgba(9,9,14,0.98));
             box-shadow:0 20px 50px rgba(0,0,0,0.55);overflow:hidden;
-            transition:box-shadow .4s cubic-bezier(.16,1,.3,1)}
+            transition:box-shadow .5s cubic-bezier(.22,1,.36,1)}
         #${UID}pillinner:active{cursor:grabbing}
         #${UID}pill .hub-p-hdr{padding:11px 13px;display:flex;align-items:center;gap:9px}
         #${UID}pill .hub-p-icon{flex-shrink:0;width:28px;height:28px;border-radius:9px;background:rgba(255,255,255,0.05);
@@ -1104,6 +1537,8 @@
         const REFRESH_SVG = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 12a8 8 0 1 1-2.34-5.66M20 4v5h-5"/></svg>`;
         const UPDATE_SVG = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>`;
         const MIC_SVG = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>`;
+        const VOL_ON_SVG = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg>`;
+        const VOL_OFF_SVG = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/></svg>`;
 
         const tabsHtml = TABS.map(t =>
             `<button class="hub-tab${t.id === state.activeTab ? ' active' : ''}" data-tab="${t.id}" role="button" tabindex="0" aria-pressed="${t.id === state.activeTab}">${escapeHtml(t.label)}</button>`
@@ -1123,7 +1558,8 @@
                     <div class="hub-subtitle"><span class="hub-sync-dot loading" id="${UID}syncdot"></span><span id="${UID}syncsubtitle">iniciando…</span></div>
                 </div>
             </div>
-            <div class="hub-actions">
+            <div class="hub-actions" id="${UID}actions">
+                <div class="hub-hbtn" id="${UID}sfx" title="Som" role="button" tabindex="0">${VOL_ON_SVG}</div>
                 <div class="hub-hbtn" id="${UID}voice" title="Voz" role="button" tabindex="0">${MIC_SVG}</div>
                 <div class="hub-hbtn" id="${UID}update" title="Auto-update" role="button" tabindex="0">${UPDATE_SVG}</div>
                 <div class="hub-hbtn" id="${UID}refresh" title="Recarregar manifesto" role="button" tabindex="0">${REFRESH_SVG}</div>
@@ -1172,21 +1608,36 @@
         </div>`;
         document.body.appendChild(pill);
         uiPill = pill;
-        pill.querySelector('#' + UID + 'pillinner').addEventListener('mouseenter', () => window._hubSFX?.hover?.(), { signal: ac.signal });
+        pill.addEventListener('mouseenter', () => window._hubSFX?.expand?.(), { signal: ac.signal });
 
-        // ── Estado de drag (jelly / spring) ──
+        // ── Drag ──
         let _dragOff = null, _dragTarget = null, _dragCurrent = null, _dragVel = { x: 0, y: 0 }, _dragRaf = null;
         let _pDragOff = null, _pDragTarget = null, _pDragCurrent = null, _pDragVel = { x: 0, y: 0 }, _pDragRaf = null, _pDragMoved = false;
+        let _dragDropPending = false;
+        let _pDragDropPending = false;
+        let _crossfadeTimer = null;
 
+        function _resetTf(el) {
+            el.style.setProperty('--tx', '0deg');
+            el.style.setProperty('--ty', '0deg');
+            el.style.setProperty('--rz', '0deg');
+            el.style.setProperty('--sx', '1');
+            el.style.setProperty('--sy', '1');
+        }
         function _cancelDrags() {
             if (_dragRaf)  { cancelAnimationFrame(_dragRaf);  _dragRaf  = null; }
             if (_pDragRaf) { cancelAnimationFrame(_pDragRaf); _pDragRaf = null; }
+            if (_dragOff) window._hubSFX?.endDrag?.();
+            if (_pDragOff) window._hubSFX?.endDrag?.();
             _dragOff = _dragTarget = _dragCurrent = null;
             _pDragOff = _pDragTarget = _pDragCurrent = null;
             _pDragMoved = false;
-            root.style.transform = '';
-            pill.style.transform = '';
+            _dragDropPending = false;
+            _pDragDropPending = false;
+            root.classList.remove('dragging');
             pill.classList.remove('dragging');
+            _resetTf(root);
+            _resetTf(pill);
         }
 
         function syncPos(from, to) {
@@ -1196,16 +1647,36 @@
         }
         function showPanel() {
             _cancelDrags();
-            syncPos(pill, root);
-            pill.classList.add('hidden');
-            root.classList.remove('hidden');
-            requestAnimationFrame(() => root.classList.remove('hub-collapsed'));
+            if (!pill.classList.contains('hidden')) {
+                syncPos(pill, root);
+                pill.classList.add('hidden');
+                window._hubSFX?.whoosh?.('open');
+                clearTimeout(_crossfadeTimer);
+                _crossfadeTimer = setTimeout(() => {
+                    root.classList.remove('hidden');
+                    root.querySelectorAll('.hub-item').forEach((it, i) => {
+                        it.style.animationDelay = Math.min(i * 28, 200) + 'ms';
+                    });
+                }, 90);
+            } else {
+                syncPos(pill, root);
+                window._hubSFX?.whoosh?.('open');
+                root.classList.remove('hidden');
+            }
         }
         function showPill() {
             _cancelDrags();
-            syncPos(root, pill);
-            root.classList.add('hub-collapsed');
-            setTimeout(() => { root.classList.add('hidden'); pill.classList.remove('hidden'); }, 220);
+            if (!root.classList.contains('hidden')) {
+                syncPos(root, pill);
+                window._hubSFX?.whoosh?.('close');
+                root.classList.add('hidden');
+                clearTimeout(_crossfadeTimer);
+                _crossfadeTimer = setTimeout(() => { pill.classList.remove('hidden'); }, 90);
+            } else {
+                syncPos(root, pill);
+                window._hubSFX?.whoosh?.('close');
+                pill.classList.remove('hidden');
+            }
         }
         function hideAll() { _cancelDrags(); root.classList.add('hidden'); pill.classList.add('hidden'); }
         showPanelFn = showPanel;
@@ -1214,11 +1685,12 @@
         function onKeyActivate(h) {
             return (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); h(); } };
         }
+        function _squashScale(vx, vy, maxAmount) {
+            const speed = Math.hypot(vx, vy);
+            const s = Math.min(speed * 0.006, maxAmount);
+            return { sx: 1 + s, sy: 1 - s };
+        }
 
-        // ── JELLY DRAG: painel ──
-        // O loop amostra continuamente o alvo (cursor) e interpola a posição
-        // com física de mola sub-amortecida. A defasagem vira o "borracha" e
-        // a rotação proporcional à velocidade horizontal dá o molenga.
         function _dragLoop() {
             if (!_dragTarget || !_dragCurrent) { _dragRaf = null; return; }
             const S = 0.16, D = 0.72;
@@ -1228,17 +1700,18 @@
             _dragVel.y = (_dragVel.y + dy * S) * D;
             _dragCurrent.x += _dragVel.x;
             _dragCurrent.y += _dragVel.y;
-
-            const rot = Math.max(-2.5, Math.min(2.5, _dragVel.x * 0.4));
             root.style.left = _dragCurrent.x + 'px';
             root.style.top  = _dragCurrent.y + 'px';
-            root.style.transform = Math.abs(rot) > 0.05 ? 'rotate(' + rot.toFixed(2) + 'deg)' : '';
-
+            const rot = Math.max(-2.5, Math.min(2.5, _dragVel.x * 0.4));
+            const { sx, sy } = _squashScale(_dragVel.x, _dragVel.y, 0.015);
+            root.style.setProperty('--rz', rot.toFixed(2) + 'deg');
+            root.style.setProperty('--sx', sx.toFixed(3));
+            root.style.setProperty('--sy', sy.toFixed(3));
             const dist = Math.hypot(dx, dy) + Math.hypot(_dragVel.x, _dragVel.y);
-            if (_dragOff || dist > 0.4) {
-                _dragRaf = requestAnimationFrame(_dragLoop);
-            } else {
-                root.style.transform = '';
+            if (_dragOff || dist > 0.4) { _dragRaf = requestAnimationFrame(_dragLoop); }
+            else {
+                _resetTf(root);
+                if (_dragDropPending) { _dragDropPending = false; window._hubSFX?.drop?.(); }
                 _dragRaf = null;
             }
         }
@@ -1247,12 +1720,18 @@
         hdr.addEventListener('mousedown', e => {
             if (e.target.closest('.hub-hbtn')) return;
             const r = root.getBoundingClientRect();
+            root.style.setProperty('--tx', '0deg');
+            root.style.setProperty('--ty', '0deg');
             _dragOff = { ox: e.clientX - r.left, oy: e.clientY - r.top };
             _dragTarget  = { x: r.left, y: r.top };
             _dragCurrent = { x: r.left, y: r.top };
             _dragVel = { x: 0, y: 0 };
+            _dragDropPending = true;
             root.style.left = r.left + 'px';
             root.style.top  = r.top  + 'px';
+            root.classList.add('dragging');
+            window._hubSFX?.beginDrag?.();
+            window._hubSFX?.pickup?.();
             if (!_dragRaf) _dragRaf = requestAnimationFrame(_dragLoop);
         }, { signal: ac.signal });
 
@@ -1262,10 +1741,15 @@
             _dragTarget.y = Math.max(0, e.clientY - _dragOff.oy);
         }, { signal: ac.signal });
 
-        document.addEventListener('mouseup', () => { _dragOff = null; }, { signal: ac.signal });
+        document.addEventListener('mouseup', () => {
+            if (_dragOff) {
+                window._hubSFX?.endDrag?.();
+                _resetTf(root);
+                root.classList.remove('dragging');
+            }
+            _dragOff = null;
+        }, { signal: ac.signal });
 
-        // ── JELLY DRAG: pill ──
-        // Amostra mais leve (S=0.22) — pill tem massa menor, reage mais rápido.
         function _pDragLoop() {
             if (!_pDragTarget || !_pDragCurrent) { _pDragRaf = null; return; }
             const S = 0.22, D = 0.70;
@@ -1275,17 +1759,18 @@
             _pDragVel.y = (_pDragVel.y + dy * S) * D;
             _pDragCurrent.x += _pDragVel.x;
             _pDragCurrent.y += _pDragVel.y;
-
-            const rot = Math.max(-4, Math.min(4, _pDragVel.x * 0.7));
             pill.style.left = _pDragCurrent.x + 'px';
             pill.style.top  = _pDragCurrent.y + 'px';
-            pill.style.transform = Math.abs(rot) > 0.05 ? 'rotate(' + rot.toFixed(2) + 'deg)' : '';
-
+            const rot = Math.max(-4, Math.min(4, _pDragVel.x * 0.7));
+            const { sx, sy } = _squashScale(_pDragVel.x, _pDragVel.y, 0.022);
+            pill.style.setProperty('--rz', rot.toFixed(2) + 'deg');
+            pill.style.setProperty('--sx', sx.toFixed(3));
+            pill.style.setProperty('--sy', sy.toFixed(3));
             const dist = Math.hypot(dx, dy) + Math.hypot(_pDragVel.x, _pDragVel.y);
-            if (_pDragOff || dist > 0.4) {
-                _pDragRaf = requestAnimationFrame(_pDragLoop);
-            } else {
-                pill.style.transform = '';
+            if (_pDragOff || dist > 0.4) { _pDragRaf = requestAnimationFrame(_pDragLoop); }
+            else {
+                _resetTf(pill);
+                if (_pDragDropPending) { _pDragDropPending = false; window._hubSFX?.drop?.(); }
                 _pDragRaf = null;
             }
         }
@@ -1293,14 +1778,19 @@
         const pillInner = pill.querySelector('#' + UID + 'pillinner');
         pillInner.addEventListener('mousedown', e => {
             const r = pill.getBoundingClientRect();
+            pill.style.setProperty('--tx', '0deg');
+            pill.style.setProperty('--ty', '0deg');
             _pDragOff = { ox: e.clientX - r.left, oy: e.clientY - r.top, sx: e.clientX, sy: e.clientY };
             _pDragTarget  = { x: r.left, y: r.top };
             _pDragCurrent = { x: r.left, y: r.top };
             _pDragVel = { x: 0, y: 0 };
             _pDragMoved = false;
+            _pDragDropPending = true;
             pill.classList.add('dragging');
             pill.style.left = r.left + 'px';
             pill.style.top  = r.top  + 'px';
+            window._hubSFX?.beginDrag?.();
+            window._hubSFX?.pickup?.();
             if (!_pDragRaf) _pDragRaf = requestAnimationFrame(_pDragLoop);
         }, { signal: ac.signal });
 
@@ -1312,7 +1802,11 @@
         }, { signal: ac.signal });
 
         document.addEventListener('mouseup', () => {
-            if (_pDragOff && !_pDragMoved) showPanel();
+            if (_pDragOff) {
+                if (!_pDragMoved) showPanel();
+                window._hubSFX?.endDrag?.();
+                _resetTf(pill);
+            }
             _pDragOff = null;
             pill.classList.remove('dragging');
         }, { signal: ac.signal });
@@ -1333,6 +1827,20 @@
         const btnRefresh = root.querySelector('#' + UID + 'refresh');
         const btnUpdate = root.querySelector('#' + UID + 'update');
         const btnVoice = root.querySelector('#' + UID + 'voice');
+        const btnSfx = root.querySelector('#' + UID + 'sfx');
+
+        function _updateSfxBtn() {
+            const muted = window._hubSFX?.isMuted?.() || false;
+            btnSfx.classList.toggle('muted', muted);
+            btnSfx.innerHTML = muted ? VOL_OFF_SVG : VOL_ON_SVG;
+            btnSfx.title = muted ? 'Som desligado (clique para ativar)' : 'Som ligado (clique para silenciar)';
+        }
+        btnSfx.addEventListener('click', () => {
+            window._hubSFX?.toggleMute?.();
+            _updateSfxBtn();
+            if (!window._hubSFX?.isMuted?.()) window._hubSFX?.toggleOn?.();
+        }, { signal: ac.signal });
+        _updateSfxBtn();
 
         btnMin.addEventListener('click', showPill, { signal: ac.signal });
         btnCls.addEventListener('click', hideAll, { signal: ac.signal });
@@ -1431,10 +1939,12 @@
             }
             visible.forEach((mod, idx) => {
                 const status = state.moduleStates[mod.id] || STATUS.UNLOADED;
+                const isAdminMod = mod.admin === true;
+                const adminLocked = isAdminMod && !_adminUnlocked();
                 const item = document.createElement('div');
-                item.className = 'hub-item state-' + status;
+                item.className = 'hub-item state-' + status + (adminLocked ? ' admin-locked' : '');
                 item.dataset.modId = mod.id;
-                item.style.animationDelay = Math.min(idx * 35, 250) + 'ms';
+                item.style.animationDelay = Math.min(idx * 32, 220) + 'ms';
                 item.setAttribute('role', 'button');
                 item.setAttribute('tabindex', '0');
                 item.innerHTML = `
@@ -1469,6 +1979,8 @@
         }, { signal: ac.signal });
         window.addEventListener('sang:voz-state', tentarRegistrarHandlerVoz, { signal: ac.signal });
         window.addEventListener('sang:voz-ready', tentarRegistrarHandlerVoz, { signal: ac.signal });
+        // Re-renderiza quando o admin panel loga/desloga nesta mesma aba
+        window.addEventListener('sang:admin-state', () => { if (renderListFn) renderListFn(); }, { signal: ac.signal });
         try { window.dispatchEvent(new CustomEvent('sang:voz-query')); } catch(_) {}
 
         const clockEl = pill.querySelector('#' + UID + 'clock');
@@ -1487,7 +1999,6 @@
         renderListFn();
         renderChromeFn();
 
-        // ── Popular pill com cache do jogador + reagir a atualizações ──
         const nameEl = pill.querySelector('#' + UID + 'playername');
         const missionEl = pill.querySelector('#' + UID + 'playermission');
         const avatarEl = pill.querySelector('#' + UID + 'playeravatar');
@@ -1506,6 +2017,7 @@
 
         function kill() {
             _cancelDrags();
+            clearTimeout(_crossfadeTimer);
             limparHandlerVoz();
             state.killFlag = true;
             voiceActive = false;
@@ -1533,17 +2045,35 @@
             toast: (msg, kind) => { if (toastFn) toastFn(msg, kind); },
             log: HLOG, warn: HWARN, err: HERR,
 
-            // ── Porta para o painel admin puxar info do jogador ──
             player: {
                 get raw()         { return loadPlayerCache(); },
                 get name()        { return (loadPlayerCache() || {}).name || ''; },
                 get mission()     { return (loadPlayerCache() || {}).mission || ''; },
                 get avatarUrl()   { return (loadPlayerCache() || {}).avatarUrl || ''; },
                 get capturedAt()  { return (loadPlayerCache() || {}).capturedAt || 0; },
-                refresh() {
-                    _aplicarCacheJogador();
-                    return loadPlayerCache();
-                }
+                refresh() { _aplicarCacheJogador(); return loadPlayerCache(); }
+            },
+
+            sfx: {
+                muted: () => !!window._hubSFX?.isMuted?.(),
+                setMuted: (v) => window._hubSFX?.setMuted?.(v),
+                play: (name) => { try { window._hubSFX?.[name]?.(); } catch(_) {} }
+            },
+
+            // ── Classe ADMIN: expõe estado do token de admin para outros módulos ──
+            admin: {
+                unlocked: _adminUnlocked,
+                notify() { try { window.dispatchEvent(new CustomEvent('sang:admin-state')); } catch(_) {} }
+            },
+
+            // ── Mic recebido do admin panel via RTDB + WebRTC ──
+            mic: {
+                available: () => !!(_micReady && _micReady.ok),
+                state: () => _mic.active ? 'connected' : (_mic.banner ? 'incoming' : 'idle'),
+                currentCaller: () => _mic.offer?.fromName || null,
+                accept: _micAccept,
+                reject: _micReject,
+                stop: _micStop
             },
 
             gate: {
@@ -1605,6 +2135,10 @@
                 HLOG('📥 Cache do jogador atualizado em outra aba — reenviando heartbeat');
                 _aplicarCacheJogador();
             }
+            // Admin logou/deslogou em outra aba → re-renderiza lista local
+            if (e.key === ADMIN_TOKEN_KEY) {
+                try { if (renderListFn) renderListFn(); } catch(_) {}
+            }
         });
 
         if (_blocked) {
@@ -1616,6 +2150,9 @@
         buildUI();
         await refreshManifest(false);
         setTimeout(_carregarAdmin, 1500);
+
+        // Sobe listener de chamadas do mic (RTDB + WebRTC)
+        setTimeout(() => { _micStartListener().catch(e => HWARN('Mic listener falhou:', e)); }, 2500);
 
         playtime.flushTimer = setInterval(flushPlaytime, PLAYTIME_FLUSH_MS);
         window.addEventListener('beforeunload', flushPlaytime);
