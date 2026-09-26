@@ -257,9 +257,6 @@
             50% { opacity: .8; }
         }
 
-        /* ═══════════════════════════════════════════
-           FRAME — carcaça de metal escuro
-           ═══════════════════════════════════════════ */
         .ph-frame {
             position: fixed; top: 50%; right: 24px;
             margin-top: ${-FRAME_HALF_H}px;
@@ -379,9 +376,6 @@
                 0 0 2px rgba(80,160,220,.3);
         }
 
-        /* ═══════════════════════════════════════════
-           SCREEN — vidro com profundidade
-           ═══════════════════════════════════════════ */
         .ph-screen {
             position: relative; width: 100%; height: 100%;
             border-radius: 36px; overflow: hidden;
@@ -398,6 +392,17 @@
                 inset 0 0 0 1px rgba(0,0,0,.95),
                 inset 0 1px 0 rgba(255,255,255,.05),
                 0 0 0 1px rgba(255,255,255,.03);
+        }
+        /* ═══ WALLPAPER ═══ */
+        .ph-wallpaper {
+            position: absolute; inset: 0; z-index: 0;
+            background-image: var(--phone-wallpaper, none);
+            background-size: cover;
+            background-position: center;
+            background-repeat: no-repeat;
+            border-radius: 36px;
+            pointer-events: none;
+            transition: opacity .25s ease;
         }
         .ph-screen::before {
             content: ''; position: absolute; inset: 0; pointer-events: none; z-index: 1;
@@ -826,6 +831,7 @@
             <div class="ph-side pwr"></div>
             <div class="ph-notch" id="phNotch" title="Clique para ${_minimized ? 'expandir' : 'minimizar'}"></div>
             <div class="ph-screen">
+                <div class="ph-wallpaper" id="phWallpaper"></div>
                 <div class="ph-status">
                     <span class="ph-status-time" id="phTime">--:--</span>
                     <span class="ph-status-icons">
@@ -1137,8 +1143,16 @@
         });
     }
 
+    // Evita duplicar apps que já existem registrados (ex.: 'settings' via config.js)
+    function _builtinFallbacks() {
+        const list = [];
+        if (!ctx.apps.get('calls')) list.push(_builtinCallsDef());
+        if (!ctx.apps.get('settings')) list.push(_builtinSettingsDef());
+        return list;
+    }
+
     function _allAppsForGrid() {
-        const list = [_builtinCallsDef(), _builtinSettingsDef(), ...ctx.apps.all()];
+        const list = [..._builtinFallbacks(), ...ctx.apps.all()];
         let dirty = false;
         for (const a of list) {
             if (!_layout.grid.includes(a.id)) { _layout.grid.push(a.id); dirty = true; }
@@ -1152,7 +1166,7 @@
     }
 
     function _dockApps() {
-        const all = [_builtinCallsDef(), ...ctx.apps.all()];
+        const all = [..._builtinFallbacks(), ...ctx.apps.all()];
         const byId = new Map(all.map(a => [a.id, a]));
         if (!_dockInitialized) {
             _layout.dock = ['calls'];
@@ -1371,6 +1385,9 @@
         if (_activeAppId !== 'calls' && _activeAppId !== 'settings') {
             const app = ctx.apps.get(_activeAppId);
             try { app?.unmount?.(); } catch(_) {}
+        } else if (_activeAppId === 'settings') {
+            const app = ctx.apps.get('settings');
+            try { app?.unmount?.(); } catch(_) {}
         }
         _activeAppId = null;
     }
@@ -1380,6 +1397,7 @@
         _showView('home');
         _renderHome();
     }
+    ctx.goHome = _goHome;
 
     // ═══ CHAMADAS APP ═══
     function _mountCallsApp(view) {
@@ -1447,7 +1465,7 @@
         if (_view === 'app' && _activeAppId === 'calls') _renderChamadasContent();
     };
 
-    // ═══ CONFIGURAÇÕES APP ═══
+    // ═══ CONFIGURAÇÕES APP (fallback builtin) ═══
     let _pinFlow = null;
     let _pinBufFlow = '';
     let _pinFirstFlow = '';
@@ -1800,6 +1818,7 @@
             _loadModule('contacts', base + '/contacts.js'),
             _loadModule('calls',    base + '/calls.js'),
             _loadModule('notes',    base + '/notes.js'),
+            _loadModule('config',   base + '/apps/config.js'),
             _loadModule('sangzap',  base + '/apps/sangzap/shell.js')
         ]);
 
