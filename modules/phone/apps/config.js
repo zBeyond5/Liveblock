@@ -7,18 +7,35 @@
 
     // ═══ CONFIG ═══
     const APP_ID = 'settings';
-    const APP_VERSION = '1.3.0';
+    const APP_VERSION = '1.4.0';
     const LS_KEY = 'sanghub_phone_config';
     const LS_PIN = 'sanghub_phone_pin';
 
-    // Aspect ratio da tela do telefone (screen interna = 260x550)
     const SCREEN_W = 260;
     const SCREEN_H = 550;
-    const TARGET_ASPECT = SCREEN_W / SCREEN_H;   // ≈ 0.4727
-    const OUTPUT_W = 520;                         // 2x da tela, retina
+    const TARGET_ASPECT = SCREEN_W / SCREEN_H;
+    const OUTPUT_W = 520;
     const OUTPUT_H = 1100;
-    const MAX_FILE_BYTES = 20 * 1024 * 1024;      // 20 MB
+    const MAX_FILE_BYTES = 20 * 1024 * 1024;
     const JPEG_QUALITY = 0.88;
+
+    const WALLPAPER_PRESETS = [
+        {
+            id: 'aurora',
+            label: 'Aurora',
+            url: 'https://images.unsplash.com/photo-1534796636912-3b95b3ab5986?w=1040&q=85&fm=jpg&fit=crop'
+        },
+        {
+            id: 'noite',
+            label: 'Noite',
+            url: 'https://images.unsplash.com/photo-1419242902214-272b3f66ee7a?w=1040&q=85&fm=jpg&fit=crop'
+        },
+        {
+            id: 'claro',
+            label: 'Claro',
+            url: 'https://images.unsplash.com/photo-1507525428034-b723cf961d3e?w=1040&q=85&fm=jpg&fit=crop'
+        }
+    ];
 
     const DEFAULT_ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>`;
 
@@ -31,7 +48,8 @@
         sound: true,
         previewOnCall: true,
         iconUrl: '',
-        wallpaperUrl: ''
+        wallpaperUrl: '',
+        presetId: ''
     };
 
     const esc = ctx.esc;
@@ -42,14 +60,8 @@
         catch(_) { return { ...DEFAULTS }; }
     }
     function save(cfg) {
-        try {
-            localStorage.setItem(LS_KEY, JSON.stringify(cfg));
-            return true;
-        } catch(e) {
-            // QuotaExceeded
-            console.warn('[Phone/config] save falhou:', e);
-            return false;
-        }
+        try { localStorage.setItem(LS_KEY, JSON.stringify(cfg)); return true; }
+        catch(e) { console.warn('[Phone/config] save falhou:', e); return false; }
     }
     function getPin() {
         try { return localStorage.getItem(LS_PIN) || ''; } catch(_) { return ''; }
@@ -88,16 +100,13 @@
         const sh = img.naturalHeight || img.height;
         if (!sw || !sh) throw new Error('imagem vazia');
 
-        // Center crop no aspect ratio alvo
         let cropW, cropH, cropX, cropY;
         if (sw / sh > TARGET_ASPECT) {
-            // Fonte mais larga → corta laterais
             cropH = sh;
             cropW = sh * TARGET_ASPECT;
             cropX = (sw - cropW) / 2;
             cropY = 0;
         } else {
-            // Fonte mais alta → corta topo/base
             cropW = sw;
             cropH = sw / TARGET_ASPECT;
             cropX = 0;
@@ -112,7 +121,6 @@
         try { g.imageSmoothingEnabled = true; g.imageSmoothingQuality = 'high'; } catch(_) {}
         g.drawImage(img, cropX, cropY, cropW, cropH, 0, 0, OUTPUT_W, OUTPUT_H);
 
-        // Sempre JPEG: mais compacto, sem alpha canal (papel de parede não precisa)
         const dataUrl = canvas.toDataURL('image/jpeg', JPEG_QUALITY);
         if (!/^data:image\/jpeg/i.test(dataUrl)) throw new Error('export falhou');
         return dataUrl;
@@ -127,9 +135,7 @@
             document.body.appendChild(input);
 
             let resolved = false;
-            const cleanup = () => {
-                try { input.remove(); } catch(_) {}
-            };
+            const cleanup = () => { try { input.remove(); } catch(_) {} };
             const done = (file) => {
                 if (resolved) return;
                 resolved = true;
@@ -141,7 +147,6 @@
                 done(f || null);
             });
             input.addEventListener('cancel', () => done(null));
-            // Fallback pra navegadores sem 'cancel'
             setTimeout(() => { if (!resolved && (!input.files || !input.files.length)) done(null); }, 60000);
 
             input.click();
@@ -158,7 +163,64 @@
         });
     }
 
-    // Aplica wallpaper no boot do app (caso o shell já tenha montado o frame)
+    function loadImageFromUrl(url) {
+        return new Promise((resolve, reject) => {
+            const img = new Image();
+            img.crossOrigin = 'anonymous';
+            img.onload = () => resolve(img);
+            img.onerror = () => reject(new Error('load falhou'));
+            img.src = url;
+        });
+    }
+
+    // Fallback via GM_xmlhttpRequest para hosts sem CORS
+    function fetchImageViaGM(url) {
+        return new Promise((resolve, reject) => {
+            if (typeof GM_xmlhttpRequest !== 'function') {
+                return reject(new Error('GM_xmlhttpRequest indisponível'));
+            }
+            GM_xmlhttpRequest({
+                method: 'GET',
+                url,
+                responseType: 'blob',
+                onload(res) {
+                    if (!res || res.status < 200 || res.status >= 300) {
+                        return reject(new Error('HTTP ' + (res && res.status)));
+                    }
+                    const blob = res.response;
+                    if (!blob) return reject(new Error('blob vazio'));
+                    const objUrl = URL.createObjectURL(blob);
+                    const img = new Image();
+                    img.onload = () => resolve({ img, revoke: () => URL.revokeObjectURL(objUrl) });
+                    img.onerror = () => { URL.revokeObjectURL(objUrl); reject(new Error('decode falhou')); };
+                    img.src = objUrl;
+                },
+                onerror() { reject(new Error('network falhou')); },
+                ontimeout() { reject(new Error('timeout')); },
+                timeout: 20000
+            });
+        });
+    }
+
+    // Download robusto: tenta <img crossOrigin>, cai pro GM se CORS bloquear
+    async function loadPresetImage(url) {
+        try {
+            const img = await loadImageFromUrl(url);
+            // testa se o canvas está "tainted" (CORS sem header correto)
+            try {
+                const c = document.createElement('canvas');
+                c.width = 1; c.height = 1;
+                c.getContext('2d').drawImage(img, 0, 0, 1, 1);
+                c.toDataURL('image/png');
+                return { img, revoke: null };
+            } catch(_) {
+                throw new Error('canvas tainted — cai pro GM');
+            }
+        } catch(_) {
+            return await fetchImageViaGM(url);
+        }
+    }
+
     setTimeout(() => { try { applyWallpaper(load()); } catch(_) {} }, 0);
 
     // ═══ REGISTRO ═══
@@ -171,11 +233,8 @@
         order: 10,
 
         mount(root, ctx) {
-            // Esconde a app-bar do shell (usamos nosso próprio header)
             ctx.screenEl?.classList.add('cfg-hide-bar');
-            // Re-aplica wallpaper (garante sincronia se o shell acabou de montar)
             applyWallpaper(load());
-
             let cfg = load();
             renderApp(root, () => cfg, (next) => { cfg = next; });
         },
@@ -189,7 +248,6 @@
     function goHome() {
         if (typeof ctx.closeApp === 'function') { try { return ctx.closeApp(); } catch(_) {} }
         if (typeof ctx.goHome === 'function') { try { return ctx.goHome(); } catch(_) {} }
-        // Fallback: clica o botão do shell
         try {
             const backBtn = ctx.frameEl?.querySelector('#phViewApp .ph-app-back');
             if (backBtn) return backBtn.click();
@@ -283,6 +341,21 @@
                     </div>
 
                     <div class="cfg-section">
+                        <div class="cfg-section-title">Wallpapers padrão</div>
+                        <div class="cfg-preset-grid" id="cfgPresetGrid">
+                            ${WALLPAPER_PRESETS.map(p => {
+                                const active = cfg.presetId === p.id ? ' active' : '';
+                                return `
+                                    <button class="cfg-preset${active}" data-preset="${p.id}" type="button" title="${esc(p.label)}">
+                                        <span class="cfg-preset-thumb" style="background-image:url('${esc(p.url)}')"></span>
+                                        <span class="cfg-preset-lbl">${esc(p.label)}</span>
+                                    </button>
+                                `;
+                            }).join('')}
+                        </div>
+                    </div>
+
+                    <div class="cfg-section">
                         <div class="cfg-section-title">Papel de parede</div>
                         <div class="cfg-wall-block">
                             <div class="cfg-wall-preview" id="cfgWallPreview">
@@ -361,16 +434,14 @@
             </div>
         `;
 
-        // ═══ Back ═══
         root.querySelector('#cfgBack').addEventListener('click', goHome);
 
-        // ═══ Hero icon live ═══
         function updateHero() {
             const hero = root.querySelector('#cfgHeroIcon');
             if (hero) hero.innerHTML = iconHtmlFor(getCfg());
         }
 
-        // ═══ Icon URL ═══
+        // ═══ Icon ═══
         const iconInput = root.querySelector('#cfgIconUrl');
         let iconDebounce = null;
         iconInput.addEventListener('input', () => {
@@ -398,7 +469,7 @@
             });
         });
 
-        // ═══ Wallpaper ═══
+        // ═══ Wallpaper helpers ═══
         const preview = root.querySelector('#cfgWallPreview');
         function renderPreview() {
             const url = safeUrl(getCfg().wallpaperUrl);
@@ -409,12 +480,49 @@
             const c = getCfg();
             applyWallpaper(c);
             renderPreview();
-            // Sync URL input se estiver visível
             const urlInput = root.querySelector('#cfgWallUrlInput');
             if (urlInput) urlInput.value = /^data:/i.test(c.wallpaperUrl || '') ? '' : (c.wallpaperUrl || '');
         }
+        function syncPresetActive() {
+            const cur = getCfg().presetId || '';
+            root.querySelectorAll('.cfg-preset').forEach(b => {
+                b.classList.toggle('active', b.dataset.preset === cur);
+            });
+        }
 
-        // File picker
+        // ═══ Presets ═══
+        root.querySelectorAll('.cfg-preset').forEach(btn => {
+            btn.addEventListener('click', async () => {
+                const preset = WALLPAPER_PRESETS.find(p => p.id === btn.dataset.preset);
+                if (!preset || btn.disabled) return;
+                btn.disabled = true;
+                btn.classList.add('loading');
+                ctx.toast('Baixando wallpaper…', 'info');
+                let revoke = null;
+                try {
+                    const { img, revoke: r } = await loadPresetImage(preset.url);
+                    revoke = r;
+                    const dataUrl = cropToPhone(img);
+                    const c = getCfg();
+                    c.wallpaperUrl = dataUrl;
+                    c.presetId = preset.id;
+                    setCfg(c);
+                    if (!save(c)) { ctx.toast('Sem espaço no armazenamento', 'err'); return; }
+                    applyAndPreview();
+                    syncPresetActive();
+                    ctx.toast('Wallpaper aplicado', 'ok');
+                } catch(e) {
+                    console.warn('[Phone/config] preset falhou:', e);
+                    ctx.toast('Falha ao baixar wallpaper', 'err');
+                } finally {
+                    if (revoke) try { revoke(); } catch(_) {}
+                    btn.disabled = false;
+                    btn.classList.remove('loading');
+                }
+            });
+        });
+
+        // ═══ File picker ═══
         root.querySelector('#cfgWallPick').addEventListener('click', async () => {
             const btn = root.querySelector('#cfgWallPick');
             if (btn.disabled) return;
@@ -433,20 +541,15 @@
                 ctx.toast('Processando imagem…', 'info');
                 const { img, url } = await loadImageFromFile(file);
                 let dataUrl;
-                try {
-                    dataUrl = cropToPhone(img);
-                } finally {
-                    try { URL.revokeObjectURL(url); } catch(_) {}
-                }
+                try { dataUrl = cropToPhone(img); }
+                finally { try { URL.revokeObjectURL(url); } catch(_) {} }
                 const c = getCfg();
                 c.wallpaperUrl = dataUrl;
+                c.presetId = '';
                 setCfg(c);
-                const ok = save(c);
-                if (!ok) {
-                    ctx.toast('Sem espaço no armazenamento', 'err');
-                    return;
-                }
+                if (!save(c)) { ctx.toast('Sem espaço no armazenamento', 'err'); return; }
                 applyAndPreview();
+                syncPresetActive();
                 ctx.toast('Papel de parede atualizado', 'ok');
             } catch(e) {
                 console.warn('[Phone/config] pick/crop falhou:', e);
@@ -456,7 +559,7 @@
             }
         });
 
-        // URL toggle
+        // ═══ URL toggle ═══
         const urlWrap = root.querySelector('#cfgWallUrlWrap');
         const urlInput = root.querySelector('#cfgWallUrlInput');
         root.querySelector('#cfgWallUrl').addEventListener('click', () => {
@@ -468,16 +571,20 @@
             if (!raw) { ctx.toast('Cole uma URL', 'err'); return; }
             const clean = safeUrl(raw);
             if (!clean) { ctx.toast('URL inválida', 'err'); return; }
-            const c = getCfg(); c.wallpaperUrl = clean; setCfg(c);
+            const c = getCfg();
+            c.wallpaperUrl = clean;
+            c.presetId = '';
+            setCfg(c);
             if (!save(c)) { ctx.toast('Sem espaço no armazenamento', 'err'); return; }
             applyAndPreview();
+            syncPresetActive();
             ctx.toast('Papel de parede atualizado', 'ok');
         });
         urlInput.addEventListener('keydown', (e) => {
             if (e.key === 'Enter') { e.preventDefault(); root.querySelector('#cfgWallUrlApply').click(); }
         });
 
-        // Clear
+        // ═══ Clear ═══
         root.querySelector('#cfgWallClear').addEventListener('click', () => {
             const btn = root.querySelector('#cfgWallClear');
             if (!btn.dataset.confirm) {
@@ -496,8 +603,13 @@
             delete btn.dataset.confirm;
             btn.querySelector('span').textContent = 'Remover';
             btn.classList.remove('armed');
-            const c = getCfg(); c.wallpaperUrl = ''; setCfg(c); save(c);
+            const c = getCfg();
+            c.wallpaperUrl = '';
+            c.presetId = '';
+            setCfg(c);
+            save(c);
             applyAndPreview();
+            syncPresetActive();
             ctx.toast('Papel de parede removido', 'ok');
         });
 
@@ -688,7 +800,6 @@
 
     // ═══ CSS ═══
     ctx.appendStyle(`
-        /* Esconde a app-bar do shell quando o config está aberto */
         .ph-screen.cfg-hide-bar .ph-app-bar { display: none !important; }
 
         /* ═══ APP ROOT ═══ */
@@ -700,7 +811,7 @@
             position: relative;
         }
 
-        /* ═══ HEADER (sticky, seta em cima à esquerda) ═══ */
+        /* ═══ HEADER ═══ */
         .cfg-hdr {
             position: sticky; top: 0; z-index: 12;
             display: flex; align-items: center; gap: 10px;
@@ -798,7 +909,7 @@
             margin-bottom: 2px;
         }
 
-        /* ═══ ACTION ROWS ═══ */
+        /* ═══ ACTIONS ═══ */
         .cfg-action {
             display: flex; align-items: center; justify-content: space-between;
             gap: 10px; padding: 11px 12px;
@@ -850,7 +961,7 @@
         .cfg-mini-btn:hover { background: rgba(34,211,238,.14); color: #67e8f9; border-color: rgba(34,211,238,.4); transform: translateY(-1px); }
         .cfg-mini-btn:active { transform: translateY(0) scale(.96); }
 
-        /* ═══ RADIO GROUP ═══ */
+        /* ═══ RADIO ═══ */
         .cfg-option-row { display: flex; flex-direction: column; gap: 6px; }
         .cfg-option-label {
             font-size: 9.5px; font-weight: 800; letter-spacing: .06em;
@@ -879,10 +990,46 @@
         }
         .cfg-radio:active:not(.active) { transform: scale(.96); }
 
-        /* ═══ WALLPAPER ═══ */
-        .cfg-wall-block {
-            display: flex; gap: 12px; align-items: stretch;
+        /* ═══ PRESETS ═══ */
+        .cfg-preset-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 8px;
         }
+        .cfg-preset {
+            display: flex; flex-direction: column; gap: 5px;
+            padding: 6px; border-radius: 11px;
+            background: rgba(255,255,255,.04);
+            border: 1px solid rgba(255,255,255,.08);
+            cursor: pointer; font-family: inherit;
+            transition: all .18s cubic-bezier(.22,1,.36,1);
+        }
+        .cfg-preset:hover:not(:disabled) {
+            background: rgba(255,255,255,.08);
+            border-color: rgba(34,211,238,.35);
+            transform: translateY(-1px);
+        }
+        .cfg-preset:active:not(:disabled) { transform: translateY(0) scale(.97); }
+        .cfg-preset:disabled { opacity: .5; cursor: wait; }
+        .cfg-preset.active {
+            border-color: rgba(34,211,238,.75);
+            box-shadow: 0 0 0 2px rgba(34,211,238,.28), 0 6px 16px rgba(34,211,238,.2);
+        }
+        .cfg-preset.loading .cfg-preset-thumb { animation: phSpeaking 1.2s ease-in-out infinite; }
+        .cfg-preset-thumb {
+            display: block; width: 100%; aspect-ratio: 260 / 550;
+            border-radius: 8px; background-size: cover; background-position: center;
+            background-color: rgba(0,0,0,.35);
+            border: 1px solid rgba(255,255,255,.06);
+        }
+        .cfg-preset-lbl {
+            font-size: 9px; font-weight: 800; letter-spacing: .06em;
+            text-transform: uppercase; color: #a8aec4; text-align: center;
+        }
+        .cfg-preset.active .cfg-preset-lbl { color: #67e8f9; }
+
+        /* ═══ WALLPAPER ═══ */
+        .cfg-wall-block { display: flex; gap: 12px; align-items: stretch; }
         .cfg-wall-preview {
             width: 70px; height: 148px;
             flex-shrink: 0;
@@ -902,8 +1049,7 @@
         .cfg-wall-preview img {
             position: absolute; inset: 0;
             width: 100%; height: 100%;
-            object-fit: cover;
-            display: block;
+            object-fit: cover; display: block;
         }
         .cfg-wall-empty {
             font-size: 8.5px; color: #5c6280;
@@ -933,9 +1079,7 @@
             min-width: 0; overflow: hidden;
         }
         .cfg-file-btn svg { width: 12px; height: 12px; flex-shrink: 0; }
-        .cfg-file-btn span {
-            overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-        }
+        .cfg-file-btn span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .cfg-file-btn:hover:not(:disabled) {
             background: linear-gradient(135deg, rgba(34,211,238,.32), rgba(167,139,250,.32));
             transform: translateY(-1px);
@@ -964,9 +1108,7 @@
             animation: phSpeaking 1.4s ease-in-out infinite;
         }
 
-        .cfg-url-wrap {
-            display: flex; gap: 6px; align-items: center;
-        }
+        .cfg-url-wrap { display: flex; gap: 6px; align-items: center; }
         .cfg-url-wrap .cfg-input { flex: 1; min-width: 0; }
         .cfg-url-wrap .cfg-mini-btn { align-self: stretch; padding: 0 12px; }
 
@@ -1002,7 +1144,7 @@
             box-shadow: 0 0 8px rgba(52,211,153,.75);
         }
 
-        /* ═══ INFO ROWS ═══ */
+        /* ═══ INFO ═══ */
         .cfg-info-row {
             display: flex; align-items: center; justify-content: space-between; gap: 10px;
             padding: 6px 0; font-size: 11px;
@@ -1096,8 +1238,8 @@
         @keyframes phPinShake { 10%,90%{transform:translateX(-3px)} 20%,80%{transform:translateX(4px)} 30%,50%,70%{transform:translateX(-6px)} 40%,60%{transform:translateX(6px)} }
 
         @media (prefers-reduced-motion: reduce) {
-            .cfg-hdr-title, .cfg-reset-btn.danger, .cfg-file-btn.ghost.danger.armed, .cfg-pin-key.pressed, .cfg-pin-dots.shake { animation: none !important; }
-            .cfg-action, .cfg-mini-btn, .cfg-radio, .cfg-reset-btn, .cfg-hdr-back, .cfg-file-btn { transition-duration: .01ms; }
+            .cfg-hdr-title, .cfg-reset-btn.danger, .cfg-file-btn.ghost.danger.armed, .cfg-pin-key.pressed, .cfg-pin-dots.shake, .cfg-preset.loading .cfg-preset-thumb { animation: none !important; }
+            .cfg-action, .cfg-mini-btn, .cfg-radio, .cfg-reset-btn, .cfg-hdr-back, .cfg-file-btn, .cfg-preset { transition-duration: .01ms; }
         }
     `);
 })();
