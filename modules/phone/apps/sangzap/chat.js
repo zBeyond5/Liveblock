@@ -6,10 +6,6 @@
     if (!ctx || !S) return;
     if (S.chat) return;
 
-    // ═══ FS HELPERS — tradução inline Firestore REST ═══
-    // O hub expõe request() cru e value()/parseDoc() só tratam primitivos.
-    // Aqui registramos em S quatro funções que fazem a tradução completa
-    // (array + objeto aninhado) e centralizam o updateMask. Idempotente.
     (function ensureFsHelpers() {
         if (S.__fsFull) return;
         S.__fsFull = true;
@@ -465,8 +461,9 @@
 
         _threadEl.querySelectorAll('.sz-audio-container[data-msgid]').forEach(el => {
             const msg = _byId.get(el.dataset.msgid);
-            if (msg && S.audio?.renderPlayer) {
-                try { S.audio.renderPlayer(el, msg); } catch(_) {}
+            // audio.js expõe renderInto(bubble, msg) — não renderPlayer.
+            if (msg && S.audio?.renderInto) {
+                try { S.audio.renderInto(el, msg); } catch(_) {}
             }
         });
 
@@ -1060,7 +1057,8 @@
     }
 
     function openContactPicker() {
-        const contacts = ctx.contacts?.contacts || [];
+        // Acessor tolerante do common.js — cobre qualquer nome que contacts.js exponha.
+        const contacts = S?.getContacts?.() || [];
         const body = _root;
         const m = document.createElement('div');
         m.className = 'sz-pick-contact';
@@ -1464,7 +1462,7 @@
         if (_typingTimer) { clearTimeout(_typingTimer); _typingTimer = null; }
         if (_presenceTimer) { clearInterval(_presenceTimer); _presenceTimer = null; }
         try { if (_myNumber) ctx.bridge.rtdb.put(`sangzap/presence/${_myNumber}`, { online: 0, lastSeen: Date.now() }); } catch(_) {}
-        try { S.audio?.stopAll?.(); } catch(_) {}
+        try { S.audio?.stop?.(); } catch(_) {}
         closeMenu();
         _chatId = null;
         _root = null;
