@@ -9,6 +9,7 @@
     if (!bridge.firestore || !bridge.firestore.configured || !bridge.firestore.configured()) { console.warn('[Phone] Firestore off.'); return; }
 
     // ═══ CONFIG ═══
+    const PHONE_VERSION = '15.1';
     const ICE_SERVERS = [
         { urls: 'stun:stun.l.google.com:19302' },
         { urls: 'stun:stun1.l.google.com:19302' }
@@ -132,7 +133,6 @@
         if (m < 60) return m + 'min ' + (s % 60) + 's';
         return Math.floor(m / 60) + 'h ' + (m % 60) + 'min';
     }
-    function shortHash(h, a, b) { a = a || 8; b = b || 4; return !h ? '—' : (h.length <= a + b + 1 ? h : h.slice(0, a) + '…' + h.slice(-b)); }
     function timeAgo(ts) {
         const s = Math.floor((Date.now() - ts) / 1000);
         if (s < 60) return 'agora';
@@ -250,6 +250,15 @@
                 updatedAt: Date.now()
             });
         } catch(_) {}
+    }
+    // Resolve avatar do usuário local: cache → diretório.
+    async function _resolveMyAvatar() {
+        let av = bridge.player?.avatarUrl || '';
+        if (av) return av;
+        if (!_myNumber) await _ensureMyNumber();
+        if (!_myNumber) return '';
+        const dir = await _getDirectory(_myNumber).catch(() => null);
+        return dir?.avatarUrl || '';
     }
 
     // ═══ CONTATOS ═══
@@ -397,8 +406,8 @@
     function tonePickup() { tone(659.25, 0.09, 'sine', 0.03, 0.012); setTimeout(() => tone(987.77, 0.13, 'sine', 0.025, 0.014), 70); }
     function toneNotify() { tone(880, 0.06, 'sine', 0.03, 0.01); setTimeout(() => tone(1174.66, 0.09, 'sine', 0.025, 0.012), 55); }
     function toneJoin() { tone(783.99, 0.07, 'sine', 0.028, 0.01); setTimeout(() => tone(1046.5, 0.09, 'sine', 0.022, 0.012), 60); }
-    function toneTuck() { tone(740, 0.05, 'sine', 0.02, 0.008); }
-    function tonePull() { tone(880, 0.05, 'sine', 0.022, 0.008); setTimeout(() => tone(1174.66, 0.06, 'sine', 0.02, 0.01), 50); }
+    function toneTuck() { tone(587.33, 0.14, 'sine', 0.018, 0.03); setTimeout(() => tone(392, 0.22, 'sine', 0.014, 0.04), 90); }
+    function tonePull() { tone(392, 0.16, 'sine', 0.018, 0.03); setTimeout(() => tone(587.33, 0.22, 'sine', 0.015, 0.04), 95); }
     function toneRecStart() { tone(587.33, 0.06, 'sine', 0.024, 0.008); setTimeout(() => tone(880, 0.06, 'sine', 0.02, 0.01), 55); }
     function toneRecSend() { tone(1046.5, 0.07, 'sine', 0.024, 0.008); setTimeout(() => tone(1318.51, 0.09, 'sine', 0.02, 0.01), 55); }
     function toneRecCancel() { tone(392, 0.08, 'sine', 0.022, 0.01); setTimeout(() => tone(261.63, 0.1, 'sine', 0.018, 0.012), 60); }
@@ -427,7 +436,7 @@
         ['keydown','input','beforeinput','keyup'].forEach(ev => { _root.addEventListener(ev, e => e.stopPropagation()); });
     }
 
-    // ═══ STYLE — revisto com paleta aurora unificada ═══
+    // ═══ STYLE ═══
     function _injectStyle() {
         const st = document.createElement('style');
         st.textContent = `
@@ -454,10 +463,8 @@
             50% { box-shadow: 0 30px 80px rgba(0,0,0,.7), 0 0 0 2px rgba(255,255,255,.04), inset 0 1px 0 rgba(255,255,255,.12), inset 0 -1px 0 rgba(0,0,0,.5), 0 0 0 14px rgba(251,113,133,0); }
         }
         @keyframes phRecWave { 0%,100% { transform: scaleY(.3); } 50% { transform: scaleY(1); } }
-        @keyframes phAuroraLine {
-            0%   { background-position: 0% 50%; }
-            100% { background-position: 200% 50%; }
-        }
+        @keyframes phAuroraLine { 0% { background-position: 0% 50%; } 100% { background-position: 200% 50%; } }
+        @keyframes phWallDriftA { 0%,100% { transform: translate(0, 0) scale(1); } 50% { transform: translate(4%, 5%) scale(1.1); } }
 
         /* ═══ APARELHO ═══ */
         .ph-frame {
@@ -465,13 +472,13 @@
             margin-top: ${-FRAME_HALF_H}px;
             width: 280px; height: 570px;
             transform-origin: 100% 50%;
-            transform: translate(0, 0) rotate(0deg);
-            transition: transform .62s cubic-bezier(.65, 0, .35, 1);
+            transform: translate(0, 0) rotate(0deg) scale(1);
+            transition: transform .9s cubic-bezier(.34, 1.18, .64, 1),
+                        box-shadow .7s ease;
             pointer-events: auto;
             border-radius: 42px;
             padding: 10px;
-            background:
-                linear-gradient(160deg, #1c1f2c 0%, #0e1017 60%, #080a10 100%);
+            background: linear-gradient(160deg, #1e2233 0%, #12162a 55%, #0b0e20 100%);
             box-shadow:
                 0 30px 80px rgba(0,0,0,.7),
                 0 0 0 2px rgba(255,255,255,.04),
@@ -497,12 +504,15 @@
             mask-composite: exclude;
             z-index: 1;
             opacity: .85;
+            transition: opacity .55s ease;
         }
         .ph-frame.min {
-            transform: translate(${MIN_TUCK_X}px, ${MIN_TUCK_Y}px) rotate(-90deg);
+            transform: translate(${MIN_TUCK_X}px, ${MIN_TUCK_Y}px) rotate(-90deg) scale(.94);
             box-shadow: 0 0 22px rgba(0,0,0,.5), 0 0 0 2px rgba(255,255,255,.05), inset 0 1px 0 rgba(255,255,255,.12);
+            transition: transform .8s cubic-bezier(.55, 0, .45, 1),
+                        box-shadow .6s ease;
         }
-        .ph-frame.min::before { opacity: .5; }
+        .ph-frame.min::before { opacity: .45; }
         .ph-frame.ringing:not(.min) { animation: phRingGlow 1.6s ease-in-out infinite; }
         .ph-frame.recording:not(.min) { animation: phRecordPulse 1.4s ease-in-out infinite; }
         .ph-frame.hidden { opacity: 0; pointer-events: none; }
@@ -541,23 +551,34 @@
         .ph-screen {
             position: relative; width: 100%; height: 100%;
             border-radius: 32px; overflow: hidden;
-            background:
-                radial-gradient(circle at 15% 10%, rgba(34,211,238,.08), transparent 40%),
-                radial-gradient(circle at 90% 90%, rgba(167,139,250,.08), transparent 45%),
-                linear-gradient(175deg, #0a0c14 0%, #05060a 100%);
+            background: #0c1024;
             display: flex; flex-direction: column;
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
             color: #e9ecf5;
             box-shadow: inset 0 0 0 1px rgba(255,255,255,.06);
         }
         .ph-screen::before {
-            content: ''; position: absolute; inset: 0; pointer-events: none; z-index: 1;
-            background: linear-gradient(140deg, rgba(255,255,255,.04) 0%, transparent 25%);
+            content: ''; position: absolute; inset: 0; pointer-events: none; z-index: 0;
+            background: linear-gradient(165deg, #1a2240 0%, #16203a 30%, #121a34 55%, #0e1830 80%, #0a1226 100%);
+        }
+        .ph-screen::after {
+            content: ''; position: absolute; inset: 0; pointer-events: none; z-index: 0;
+            background:
+                radial-gradient(circle at 18% 12%, rgba(34,211,238,.22), transparent 42%),
+                radial-gradient(circle at 88% 82%, rgba(167,139,250,.24), transparent 46%),
+                radial-gradient(circle at 62% 40%, rgba(244,114,182,.08), transparent 52%);
+            animation: phWallDriftA 22s ease-in-out infinite;
+            opacity: .9;
+        }
+        .ph-screen > * { position: relative; z-index: 2; }
+        .ph-screen > .ph-wall-shine {
+            position: absolute; inset: 0; pointer-events: none; z-index: 1;
+            background: linear-gradient(140deg, rgba(255,255,255,.06) 0%, transparent 22%);
             border-radius: 32px;
         }
 
         .ph-status { padding: 8px 18px 4px; display: flex; align-items: center; justify-content: space-between;
-            font-size: 10px; color: #b8bdd0; flex-shrink: 0; position: relative; z-index: 2; }
+            font-size: 10px; color: #c8cee0; flex-shrink: 0; position: relative; z-index: 2; }
         .ph-status-time { font-weight: 700; font-variant-numeric: tabular-nums; }
         .ph-status-icons { display: flex; align-items: center; gap: 5px; font-size: 9px; }
         .ph-status-icons .sig { display: inline-flex; gap: 1px; align-items: flex-end; height: 8px; }
@@ -566,6 +587,7 @@
         .ph-status-icons .sig i:nth-child(2){ height: 5px; opacity: .7; }
         .ph-status-icons .sig i:nth-child(3){ height: 7px; }
         .ph-status-icons .sig i:nth-child(4){ height: 9px; }
+        .ph-status-ver { font-size: 8.5px; font-weight: 700; letter-spacing: .04em; color: #8b93a8; }
         .ph-status-icons .dot-notif {
             width: 5px; height: 5px; border-radius: 50%; background: #fb7185;
             box-shadow: 0 0 6px rgba(251,113,133,.8);
@@ -580,31 +602,31 @@
             background: linear-gradient(100deg,#22d3ee 0%,#a78bfa 50%,#22d3ee 100%);
             background-size: 220% auto; -webkit-background-clip: text; background-clip: text; color: transparent;
             animation: phScreenBlink 3.2s ease-in-out infinite; }
-        .ph-hdr-sub { font-size: 8.5px; color: #6b7280; letter-spacing: .06em; text-transform: uppercase; margin-top: 2px; }
+        .ph-hdr-sub { font-size: 8.5px; color: #8b93a8; letter-spacing: .06em; text-transform: uppercase; margin-top: 2px; }
         .ph-hdr-count { font-size: 10px; font-weight: 800; color: #a7f3d0; }
 
         .ph-me { margin: 0 14px 8px; padding: 8px 12px; border-radius: 12px;
-            background: linear-gradient(120deg, rgba(34,211,238,.08), rgba(167,139,250,.08));
-            border: 1px solid rgba(34,211,238,.2);
+            background: linear-gradient(120deg, rgba(34,211,238,.12), rgba(167,139,250,.12));
+            border: 1px solid rgba(34,211,238,.26);
             display: flex; align-items: center; justify-content: space-between;
             cursor: pointer; user-select: none;
             transition: background .2s, border-color .2s, transform .2s;
             position: relative; z-index: 2; }
-        .ph-me:hover { background: linear-gradient(120deg, rgba(34,211,238,.14), rgba(167,139,250,.14)); border-color: rgba(34,211,238,.4); transform: translateY(-1px); }
+        .ph-me:hover { background: linear-gradient(120deg, rgba(34,211,238,.18), rgba(167,139,250,.18)); border-color: rgba(34,211,238,.45); transform: translateY(-1px); }
         .ph-me:active { transform: scale(.98); }
-        .ph-me-label { font-size: 8.5px; color: #7d8194; text-transform: uppercase; letter-spacing: .08em; font-weight: 800; }
+        .ph-me-label { font-size: 8.5px; color: #8890a4; text-transform: uppercase; letter-spacing: .08em; font-weight: 800; }
         .ph-me-number { font-size: 16px; font-weight: 800; letter-spacing: .06em; font-variant-numeric: tabular-nums;
             background: linear-gradient(100deg,#22d3ee 0%,#a78bfa 50%,#22d3ee 100%);
             background-size: 220% auto; -webkit-background-clip: text; background-clip: text; color: transparent;
             animation: phScreenBlink 4s ease-in-out infinite; }
-        .ph-me-number.loading { color: #4b5060; background: none; animation: none; font-weight: 600; letter-spacing: .12em; }
+        .ph-me-number.loading { color: #5c6478; background: none; animation: none; font-weight: 600; letter-spacing: .12em; }
         .ph-me-copy { font-size: 8px; font-weight: 800; color: #67e8f9; letter-spacing: .08em;
-            padding: 2px 6px; border-radius: 5px; background: rgba(34,211,238,.1); border: 1px solid rgba(34,211,238,.25); }
+            padding: 2px 6px; border-radius: 5px; background: rgba(34,211,238,.14); border: 1px solid rgba(34,211,238,.3); }
 
         .ph-tabs { display: flex; gap: 2px; padding: 0 14px 8px; flex-shrink: 0; position: relative; z-index: 2; }
         .ph-tab { flex: 1; padding: 7px 0; font-size: 9px; font-weight: 800;
             text-transform: uppercase; letter-spacing: .06em;
-            color: #6b7280; background: transparent; border: none; cursor: pointer;
+            color: #7b8296; background: transparent; border: none; cursor: pointer;
             border-bottom: 2px solid transparent; font-family: inherit;
             transition: color .2s, border-color .2s; }
         .ph-tab:hover { color: #d1d5db; }
@@ -618,26 +640,26 @@
 
         .ph-search {
             margin: 0 12px 6px; padding: 6px 10px 6px 26px;
-            background: rgba(255,255,255,.04);
-            border: 1px solid rgba(255,255,255,.08);
+            background: rgba(255,255,255,.06);
+            border: 1px solid rgba(255,255,255,.1);
             border-radius: 8px; color: #f1f2f8; font-size: 10.5px; font-family: inherit;
             outline: none;
             background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 24 24' fill='none' stroke='%236b7280' stroke-width='2.6' stroke-linecap='round'><circle cx='11' cy='11' r='7'/><line x1='21' y1='21' x2='16.5' y2='16.5'/></svg>");
             background-repeat: no-repeat; background-position: 9px center;
             transition: border-color .2s, background-color .2s;
         }
-        .ph-search:focus { border-color: rgba(34,211,238,.5); background-color: rgba(255,255,255,.06); }
+        .ph-search:focus { border-color: rgba(34,211,238,.5); background-color: rgba(255,255,255,.08); }
 
         .ph-list { flex: 1; min-height: 0; overflow-y: auto; padding: 0 12px 12px; display: flex; flex-direction: column; gap: 4px; }
         .ph-list::-webkit-scrollbar { width: 4px; }
-        .ph-list::-webkit-scrollbar-thumb { background: rgba(255,255,255,.12); border-radius: 2px; }
-        .ph-empty { padding: 30px 20px; text-align: center; font-size: 10.5px; color: #6b7280; line-height: 1.6; }
+        .ph-list::-webkit-scrollbar-thumb { background: rgba(255,255,255,.16); border-radius: 2px; }
+        .ph-empty { padding: 30px 20px; text-align: center; font-size: 10.5px; color: #8890a4; line-height: 1.6; }
         .ph-empty strong { color: #a7f3d0; font-weight: 800; }
-        .ph-empty .hint { font-size: 9.5px; color: #4b5060; margin-top: 8px; }
+        .ph-empty .hint { font-size: 9.5px; color: #5c6478; margin-top: 8px; }
 
         .ph-section-hdr {
             padding: 8px 4px 4px; font-size: 8.5px; font-weight: 800;
-            letter-spacing: .1em; text-transform: uppercase; color: #8b8fa3;
+            letter-spacing: .1em; text-transform: uppercase; color: #8890a4;
             display: flex; align-items: center; gap: 6px;
         }
         .ph-section-hdr .line { flex: 1; height: 1px; background: linear-gradient(90deg, rgba(139,143,163,.22), transparent); }
@@ -645,36 +667,43 @@
         .ph-section-hdr.blocked { color: #fb7185; }
 
         .ph-contact { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 12px;
-            background: rgba(255,255,255,.03); border: 1px solid rgba(255,255,255,.05);
+            background: rgba(255,255,255,.055); border: 1px solid rgba(255,255,255,.07);
             cursor: pointer; position: relative;
             transition: background .2s cubic-bezier(.22,1,.36,1), border-color .2s cubic-bezier(.22,1,.36,1),
                         transform .25s cubic-bezier(.22,1,.36,1), box-shadow .25s cubic-bezier(.22,1,.36,1); }
-        .ph-contact:hover { background: rgba(255,255,255,.06); border-color: rgba(34,211,238,.32);
-            transform: translateY(-1px); box-shadow: 0 6px 16px rgba(0,0,0,.3), 0 0 0 1px rgba(34,211,238,.06); }
+        .ph-contact:hover { background: rgba(255,255,255,.09); border-color: rgba(34,211,238,.34);
+            transform: translateY(-1px); box-shadow: 0 6px 16px rgba(0,0,0,.3), 0 0 0 1px rgba(34,211,238,.08); }
         .ph-contact:active { transform: translateY(0) scale(.985); }
         .ph-contact.offline { opacity: .55; }
-        .ph-contact.offline:hover { opacity: .75; }
-        .ph-contact.blocked { border-color: rgba(251,113,133,.28); background: rgba(251,113,133,.05); }
+        .ph-contact.offline:hover { opacity: .8; }
+        .ph-contact.blocked { border-color: rgba(251,113,133,.28); background: rgba(251,113,133,.06); }
         .ph-contact.blocked .ph-name { text-decoration: line-through; color: #8b8fa3; }
-        .ph-contact.fav { border-color: rgba(251,191,36,.22); }
-        .ph-contact.fav:hover { border-color: rgba(251,191,36,.42); }
+        .ph-contact.fav { border-color: rgba(251,191,36,.24); }
+        .ph-contact.fav:hover { border-color: rgba(251,191,36,.44); }
 
         .ph-av { width: 38px; height: 38px; border-radius: 12px; flex-shrink: 0;
-            background: linear-gradient(135deg, rgba(34,211,238,.18), rgba(167,139,250,.18));
-            border: 1px solid rgba(255,255,255,.08);
+            background: linear-gradient(135deg, rgba(34,211,238,.22), rgba(167,139,250,.22));
+            border: 1px solid rgba(255,255,255,.1);
             display: flex; align-items: center; justify-content: center;
-            overflow: hidden; position: relative; color: #8b8fa3; font-size: 14px; font-weight: 800; }
-        .ph-av img { position: absolute; top: -25%; left: -40%; width: 210%; height: 210%; object-fit: cover; }
+            overflow: hidden; position: relative; color: #b8c0d4; font-size: 14px; font-weight: 800; }
         .ph-av.sm { width: 30px; height: 30px; font-size: 11px; border-radius: 10px; }
+        .ph-av img,
+        .ph-call-av img {
+            position: absolute;
+            top: 50%; left: 50%;
+            width: 210%; height: 210%;
+            object-fit: cover;
+            transform: translate(-50%, -50%);
+        }
         .ph-av .dot-online { position: absolute; bottom: -1px; right: -1px; width: 10px; height: 10px; border-radius: 50%;
-            background: #34d399; border: 2px solid #0a0c14; animation: phPulseDot 2s ease-in-out infinite; }
+            background: #34d399; border: 2px solid #0c1024; animation: phPulseDot 2s ease-in-out infinite; z-index: 2; }
         .ph-av .fav-badge { position: absolute; top: -4px; left: -4px; width: 14px; height: 14px; border-radius: 50%;
-            background: linear-gradient(135deg, #fbbf24, #f59e0b); border: 1px solid #0a0c14;
-            display: inline-flex; align-items: center; justify-content: center; font-size: 8px; color: #1a1410; }
+            background: linear-gradient(135deg, #fbbf24, #f59e0b); border: 1px solid #0c1024;
+            display: inline-flex; align-items: center; justify-content: center; font-size: 8px; color: #1a1410; z-index: 2; }
 
         .ph-info { flex: 1; min-width: 0; }
-        .ph-name { font-size: 11.5px; font-weight: 700; color: #e5e7eb; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-        .ph-meta { font-size: 9px; color: #8b8fa3; margin-top: 2px; font-variant-numeric: tabular-nums;
+        .ph-name { font-size: 11.5px; font-weight: 700; color: #eaecf3; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .ph-meta { font-size: 9px; color: #8890a4; margin-top: 2px; font-variant-numeric: tabular-nums;
             display: flex; align-items: center; gap: 4px; }
         .ph-meta .num { color: #67e8f9; font-weight: 700; letter-spacing: .03em; }
         .ph-meta .off { color: #6b7280; }
@@ -684,31 +713,19 @@
         .ph-meta .grp { color: #c4b5fd; font-weight: 700; }
 
         .ph-call-btn { flex-shrink: 0; width: 28px; height: 28px; border-radius: 50%;
-            border: 1px solid rgba(52,211,153,.35); background: rgba(52,211,153,.1);
+            border: 1px solid rgba(52,211,153,.4); background: rgba(52,211,153,.14);
             color: #a7f3d0; cursor: pointer; display: flex; align-items: center; justify-content: center;
             transition: all .2s cubic-bezier(.22,1,.36,1); pointer-events: auto; }
-        .ph-call-btn:hover { background: rgba(52,211,153,.2); box-shadow: 0 0 12px rgba(52,211,153,.3); }
+        .ph-call-btn:hover { background: rgba(52,211,153,.24); box-shadow: 0 0 12px rgba(52,211,153,.35); }
         .ph-call-btn:disabled { opacity: .35; cursor: not-allowed; }
         .ph-call-btn svg { width: 12px; height: 12px; }
-
-        .ph-note-btn { flex-shrink: 0; width: 28px; height: 28px; border-radius: 50%;
-            border: 1px solid rgba(167,139,250,.35); background: rgba(167,139,250,.1);
-            color: #c4b5fd; cursor: pointer; display: flex; align-items: center; justify-content: center;
-            transition: all .2s cubic-bezier(.22,1,.36,1); pointer-events: auto; touch-action: none; }
-        .ph-note-btn:hover { background: rgba(167,139,250,.2); box-shadow: 0 0 12px rgba(167,139,250,.3); }
-        .ph-note-btn.recording {
-            background: linear-gradient(135deg, #fb7185, #f472b6);
-            color: #fff; border-color: transparent;
-            animation: phSpeaking 1.4s ease-in-out infinite;
-        }
-        .ph-note-btn svg { width: 12px; height: 12px; }
 
         .ph-rm { flex-shrink: 0; width: 22px; height: 22px; border-radius: 6px; background: transparent;
             border: none; cursor: pointer; color: #6b7280; font-family: inherit; font-size: 12px; line-height: 1;
             display: flex; align-items: center; justify-content: center;
             opacity: 0; transition: opacity .15s, color .15s, background .15s; }
         .ph-contact:hover .ph-rm { opacity: 1; }
-        .ph-rm:hover { color: #fca5b1; background: rgba(251,113,133,.12); }
+        .ph-rm:hover { color: #fca5b1; background: rgba(251,113,133,.14); }
 
         /* Discador */
         .ph-dial { flex: 1; min-height: 0; display: flex; flex-direction: column; padding: 0 18px 12px; }
@@ -718,8 +735,8 @@
             font-variant-numeric: tabular-nums; color: #f1f2f8; transition: color .2s;
             min-height: 34px; display: flex; align-items: center; justify-content: center; }
         .ph-dial-num .dash { color: #22d3ee; margin: 0 2px; }
-        .ph-dial-num.empty { color: #3f4451; }
-        .ph-dial-hint { font-size: 9.5px; color: #6b7280; letter-spacing: .05em; min-height: 12px; }
+        .ph-dial-num.empty { color: #4b5060; }
+        .ph-dial-hint { font-size: 9.5px; color: #8890a4; letter-spacing: .05em; min-height: 12px; }
         .ph-dial-hint.err { color: #fca5b1; }
         .ph-dial-hint.blocked { color: #fb7185; }
         .ph-dial-hint .name { color: #67e8f9; font-weight: 800; }
@@ -727,21 +744,21 @@
         .ph-keypad { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 12px; }
         .ph-key {
             padding: 12px 0 10px; border-radius: 14px;
-            background: linear-gradient(180deg, rgba(255,255,255,.055), rgba(255,255,255,.025));
-            border: 1px solid rgba(255,255,255,.07);
+            background: linear-gradient(180deg, rgba(255,255,255,.08), rgba(255,255,255,.035));
+            border: 1px solid rgba(255,255,255,.09);
             color: #e5e7eb; font-family: inherit;
             font-size: 19px; font-weight: 700;
             display: flex; flex-direction: column; align-items: center; justify-content: center;
             cursor: pointer; user-select: none;
             transition: background .12s, border-color .12s, transform .12s, box-shadow .12s;
             position: relative; line-height: 1;
-            box-shadow: inset 0 1px 0 rgba(255,255,255,.06);
+            box-shadow: inset 0 1px 0 rgba(255,255,255,.08);
         }
-        .ph-key .sub { font-size: 7.5px; color: #6b7280; letter-spacing: .06em; margin-top: 3px; font-weight: 800; text-transform: uppercase; }
-        .ph-key:hover { background: linear-gradient(180deg, rgba(255,255,255,.09), rgba(255,255,255,.04)); border-color: rgba(34,211,238,.3); box-shadow: inset 0 1px 0 rgba(255,255,255,.1), 0 0 0 1px rgba(34,211,238,.05); }
-        .ph-key:active { transform: scale(.94); background: linear-gradient(180deg, rgba(34,211,238,.18), rgba(34,211,238,.06)); }
+        .ph-key .sub { font-size: 7.5px; color: #7b8296; letter-spacing: .06em; margin-top: 3px; font-weight: 800; text-transform: uppercase; }
+        .ph-key:hover { background: linear-gradient(180deg, rgba(255,255,255,.12), rgba(255,255,255,.05)); border-color: rgba(34,211,238,.32); box-shadow: inset 0 1px 0 rgba(255,255,255,.12), 0 0 0 1px rgba(34,211,238,.05); }
+        .ph-key:active { transform: scale(.94); background: linear-gradient(180deg, rgba(34,211,238,.2), rgba(34,211,238,.08)); }
         .ph-key.pressed { animation: phKeyPress .25s cubic-bezier(.22,1,.36,1); }
-        .ph-key.util { color: #8b8fa3; font-size: 15px; }
+        .ph-key.util { color: #8890a4; font-size: 15px; }
         .ph-key.util:hover { color: #67e8f9; }
         .ph-key.util svg { width: 16px; height: 16px; }
 
@@ -754,8 +771,8 @@
         .ph-dial-btn.call { background: linear-gradient(135deg, #34d399, #22d3ee); color: #062420;
             box-shadow: 0 8px 20px rgba(52,211,153,.3), inset 0 1px 0 rgba(255,255,255,.25); }
         .ph-dial-btn.call:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 10px 26px rgba(52,211,153,.4), inset 0 1px 0 rgba(255,255,255,.3); }
-        .ph-dial-btn.save { background: rgba(255,255,255,.05); border: 1px solid rgba(255,255,255,.1); color: #c7cad6; }
-        .ph-dial-btn.save:hover:not(:disabled) { background: rgba(255,255,255,.1); transform: translateY(-1px); }
+        .ph-dial-btn.save { background: rgba(255,255,255,.07); border: 1px solid rgba(255,255,255,.12); color: #c7cad6; }
+        .ph-dial-btn.save:hover:not(:disabled) { background: rgba(255,255,255,.12); transform: translateY(-1px); }
         .ph-dial-btn:disabled { opacity: .35; cursor: not-allowed; transform: none !important; box-shadow: none !important; }
         .ph-dial-btn:active:not(:disabled) { transform: translateY(0) scale(.97); }
 
@@ -763,19 +780,18 @@
         .ph-call { position: absolute; inset: 0;
             display: flex; flex-direction: column; align-items: center; justify-content: space-between;
             padding: 34px 20px 30px;
-            background: linear-gradient(180deg, rgba(10,14,22,0) 0%, rgba(10,14,22,.85) 100%);
+            background: linear-gradient(180deg, rgba(12,16,36,0) 0%, rgba(12,16,36,.65) 55%, rgba(12,16,36,.9) 100%);
             animation: phFadeIn .3s ease; z-index: 5; }
         .ph-call-top { display: flex; flex-direction: column; align-items: center; gap: 12px; width: 100%; }
         .ph-call-av { width: 96px; height: 96px; border-radius: 32px;
-            background: linear-gradient(135deg, rgba(34,211,238,.22), rgba(167,139,250,.22));
-            border: 2px solid rgba(255,255,255,.12);
+            background: linear-gradient(135deg, rgba(34,211,238,.28), rgba(167,139,250,.28));
+            border: 2px solid rgba(255,255,255,.14);
             display: flex; align-items: center; justify-content: center;
-            overflow: hidden; position: relative; color: #8b8fa3; font-size: 34px; font-weight: 800;
-            box-shadow: 0 20px 50px rgba(0,0,0,.55), inset 0 1px 0 rgba(255,255,255,.1); }
-        .ph-call-av img { position: absolute; top: -25%; left: -40%; width: 210%; height: 210%; object-fit: cover; }
-        .ph-call.outgoing .ph-call-av { box-shadow: 0 20px 50px rgba(0,0,0,.55), 0 0 0 6px rgba(34,211,238,.08), inset 0 1px 0 rgba(255,255,255,.1); }
-        .ph-call.incoming .ph-call-av { box-shadow: 0 20px 50px rgba(0,0,0,.55), 0 0 0 6px rgba(52,211,153,.15), inset 0 1px 0 rgba(255,255,255,.1); }
-        .ph-call.active  .ph-call-av { box-shadow: 0 20px 50px rgba(0,0,0,.55), 0 0 0 6px rgba(52,211,153,.25), inset 0 1px 0 rgba(255,255,255,.1); }
+            overflow: hidden; position: relative; color: #b8c0d4; font-size: 34px; font-weight: 800;
+            box-shadow: 0 20px 50px rgba(0,0,0,.55), inset 0 1px 0 rgba(255,255,255,.12); }
+        .ph-call.outgoing .ph-call-av { box-shadow: 0 20px 50px rgba(0,0,0,.55), 0 0 0 6px rgba(34,211,238,.1), inset 0 1px 0 rgba(255,255,255,.12); }
+        .ph-call.incoming .ph-call-av { box-shadow: 0 20px 50px rgba(0,0,0,.55), 0 0 0 6px rgba(52,211,153,.18), inset 0 1px 0 rgba(255,255,255,.12); }
+        .ph-call.active  .ph-call-av { box-shadow: 0 20px 50px rgba(0,0,0,.55), 0 0 0 6px rgba(52,211,153,.28), inset 0 1px 0 rgba(255,255,255,.12); }
 
         .ph-av-stack { display: flex; align-items: center; justify-content: center; position: relative; height: 96px; width: 100%; }
         .ph-av-stack .stacked { position: absolute; animation: phStackIn .3s cubic-bezier(.22,1,.36,1); }
@@ -801,20 +817,20 @@
         .ph-roster .chip {
             display: inline-flex; align-items: center; gap: 5px;
             padding: 3px 8px 3px 4px; border-radius: 12px;
-            background: rgba(255,255,255,.05); border: 1px solid rgba(255,255,255,.08);
+            background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.1);
             font-size: 9px; color: #c7cad6; max-width: 110px;
             transition: box-shadow .25s, border-color .25s, background .25s, transform .25s cubic-bezier(.22,1,.36,1);
         }
         .ph-roster .chip img { width: 18px; height: 18px; border-radius: 50%; object-fit: cover; }
         .ph-roster .chip .ini { width: 18px; height: 18px; border-radius: 50%;
-            background: linear-gradient(135deg, rgba(34,211,238,.3), rgba(167,139,250,.3));
+            background: linear-gradient(135deg, rgba(34,211,238,.32), rgba(167,139,250,.32));
             display: inline-flex; align-items: center; justify-content: center;
             font-size: 9px; font-weight: 800; color: #f1f2f8; flex-shrink: 0; }
         .ph-roster .chip span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-        .ph-roster .chip.host { border-color: rgba(167,139,250,.42); background: rgba(167,139,250,.1); }
+        .ph-roster .chip.host { border-color: rgba(167,139,250,.45); background: rgba(167,139,250,.14); }
         .ph-roster .chip.speaking {
-            border-color: rgba(52,211,153,.65);
-            background: linear-gradient(120deg, rgba(52,211,153,.14), rgba(34,211,238,.14));
+            border-color: rgba(52,211,153,.7);
+            background: linear-gradient(120deg, rgba(52,211,153,.18), rgba(34,211,238,.18));
             animation: phSpeaking 1.4s ease-in-out infinite;
         }
         .ph-roster .chip.muted {
@@ -856,27 +872,27 @@
         .ph-round-btn svg { width: 24px; height: 24px; }
         .ph-round-btn.green { background: linear-gradient(135deg, #34d399, #22d3ee); box-shadow: 0 10px 26px rgba(52,211,153,.4), inset 0 1px 0 rgba(255,255,255,.25); }
         .ph-round-btn.red { background: linear-gradient(135deg, #fb7185, #f472b6); box-shadow: 0 10px 26px rgba(251,113,133,.4), inset 0 1px 0 rgba(255,255,255,.25); }
-        .ph-round-btn.small { width: 46px; height: 46px; background: rgba(255,255,255,.08); border: 1px solid rgba(255,255,255,.12); box-shadow: none; color: #c7cad6; }
-        .ph-round-btn.small:hover { background: rgba(255,255,255,.14); }
-        .ph-round-btn.small.active { background: rgba(251,113,133,.18); color: #fca5b1; border-color: rgba(251,113,133,.4); }
-        .ph-round-btn.small.add { color: #a7f3d0; border-color: rgba(52,211,153,.35); }
-        .ph-round-btn.small.add:hover { background: rgba(52,211,153,.14); color: #fff; }
+        .ph-round-btn.small { width: 46px; height: 46px; background: rgba(255,255,255,.1); border: 1px solid rgba(255,255,255,.14); box-shadow: none; color: #c7cad6; }
+        .ph-round-btn.small:hover { background: rgba(255,255,255,.16); }
+        .ph-round-btn.small.active { background: rgba(251,113,133,.2); color: #fca5b1; border-color: rgba(251,113,133,.42); }
+        .ph-round-btn.small.add { color: #a7f3d0; border-color: rgba(52,211,153,.38); }
+        .ph-round-btn.small.add:hover { background: rgba(52,211,153,.16); color: #fff; }
 
         .ph-round-btn-wrap { display: flex; flex-direction: column; align-items: center; gap: 6px; }
         .ph-round-btn-label { font-size: 8.5px; color: #9ca3af; letter-spacing: .05em; text-transform: uppercase; }
 
         .ph-busy { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
-            gap: 14px; padding: 30px; background: rgba(8,10,14,.92); animation: phFadeIn .25s ease; z-index: 6; }
-        .ph-busy-icon { width: 68px; height: 68px; border-radius: 22px; background: rgba(251,113,133,.12);
-            border: 1px solid rgba(251,113,133,.35);
+            gap: 14px; padding: 30px; background: rgba(12,16,36,.94); animation: phFadeIn .25s ease; z-index: 6; }
+        .ph-busy-icon { width: 68px; height: 68px; border-radius: 22px; background: rgba(251,113,133,.14);
+            border: 1px solid rgba(251,113,133,.38);
             display: flex; align-items: center; justify-content: center; color: #fb7185; }
         .ph-busy-icon svg { width: 30px; height: 30px; }
         .ph-busy-title { font-size: 14px; font-weight: 800; color: #f1f2f8; text-align: center; }
         .ph-busy-sub { font-size: 10.5px; color: #9ca3af; text-align: center; line-height: 1.5; max-width: 200px; }
 
-        .ph-add-overlay { position: absolute; inset: 0; background: rgba(6,8,12,.94); backdrop-filter: blur(8px);
+        .ph-add-overlay { position: absolute; inset: 0; background: rgba(10,14,32,.96); backdrop-filter: blur(8px);
             display: flex; flex-direction: column; z-index: 8; animation: phFadeIn .2s ease; }
-        .ph-add-head { padding: 14px 16px 10px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid rgba(255,255,255,.06); }
+        .ph-add-head { padding: 14px 16px 10px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid rgba(255,255,255,.07); }
         .ph-add-title { font-size: 11px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; color: #67e8f9; }
         .ph-add-close { width: 26px; height: 26px; border-radius: 7px; background: transparent; border: 1px solid rgba(255,255,255,.1);
             color: #8b8fa3; cursor: pointer; font-size: 14px; line-height: 1; font-family: inherit;
@@ -884,12 +900,12 @@
         .ph-add-close:hover { background: rgba(251,113,133,.14); color: #fca5b1; border-color: rgba(251,113,133,.35); }
         .ph-add-body { flex: 1; min-height: 0; overflow-y: auto; padding: 8px 12px 12px; }
         .ph-add-body::-webkit-scrollbar { width: 4px; }
-        .ph-add-body::-webkit-scrollbar-thumb { background: rgba(255,255,255,.12); border-radius: 2px; }
+        .ph-add-body::-webkit-scrollbar-thumb { background: rgba(255,255,255,.16); border-radius: 2px; }
 
         /* Recado overlay */
         .ph-rec-overlay {
             position: absolute; inset: 0;
-            background: radial-gradient(circle at 50% 60%, rgba(251,113,133,.18), rgba(6,8,12,.96) 55%);
+            background: radial-gradient(circle at 50% 60%, rgba(251,113,133,.22), rgba(10,14,32,.96) 55%);
             backdrop-filter: blur(10px);
             display: flex; flex-direction: column; align-items: center; justify-content: center;
             gap: 18px; z-index: 10; animation: phFadeIn .22s ease;
@@ -897,24 +913,23 @@
         }
         .ph-rec-circle {
             width: 120px; height: 120px; border-radius: 50%;
-            background: radial-gradient(circle at 30% 30%, rgba(251,113,133,.35), rgba(244,114,182,.18));
-            border: 2px solid rgba(251,113,133,.55);
+            background: radial-gradient(circle at 30% 30%, rgba(251,113,133,.38), rgba(244,114,182,.2));
+            border: 2px solid rgba(251,113,133,.58);
             display: flex; align-items: center; justify-content: center;
             color: #fff; position: relative;
-            box-shadow: 0 20px 60px rgba(251,113,133,.28), inset 0 1px 0 rgba(255,255,255,.15);
+            box-shadow: 0 20px 60px rgba(251,113,133,.3), inset 0 1px 0 rgba(255,255,255,.15);
         }
         .ph-rec-circle svg { width: 40px; height: 40px; }
         .ph-rec-circle::after {
             content: ''; position: absolute; inset: -8px; border-radius: 50%;
-            border: 2px solid rgba(251,113,133,.28);
+            border: 2px solid rgba(251,113,133,.3);
             animation: phRingGlow 1.6s ease-in-out infinite;
         }
         .ph-rec-waves { display: flex; align-items: center; gap: 4px; height: 34px; }
         .ph-rec-waves span {
             width: 4px; height: 100%;
             background: linear-gradient(180deg, #fb7185, #f472b6);
-            border-radius: 2px;
-            transform-origin: center;
+            border-radius: 2px; transform-origin: center;
             animation: phRecWave 0.9s ease-in-out infinite;
         }
         .ph-rec-waves span:nth-child(1){ animation-delay: 0s;   height: 40%; }
@@ -928,25 +943,26 @@
         .ph-rec-info .hint { font-size: 10px; color: #9ca3af; margin-top: 8px; }
 
         .ph-home { padding: 6px 0 8px; flex-shrink: 0; display: flex; justify-content: center; position: relative; z-index: 2; }
-        .ph-home::before { content: ''; width: 100px; height: 4px; border-radius: 2px; background: rgba(255,255,255,.22); }
+        .ph-home::before { content: ''; width: 100px; height: 4px; border-radius: 2px; background: rgba(255,255,255,.28); }
 
         .ph-toast { position: absolute; top: 74px; left: 50%; transform: translateX(-50%);
             padding: 8px 14px; border-radius: 9px; font-size: 10.5px; font-weight: 700; letter-spacing: .02em;
-            background: linear-gradient(175deg, rgba(14,18,24,.96), rgba(8,10,14,.98));
-            border: 1px solid rgba(34,211,238,.45); color: #cffafe;
-            box-shadow: 0 10px 26px rgba(0,0,0,.55), 0 0 24px rgba(34,211,238,.14);
+            background: linear-gradient(175deg, rgba(20,26,42,.97), rgba(12,16,32,.99));
+            border: 1px solid rgba(34,211,238,.48); color: #cffafe;
+            box-shadow: 0 10px 26px rgba(0,0,0,.55), 0 0 24px rgba(34,211,238,.16);
             backdrop-filter: blur(10px); animation: phToastIn .22s cubic-bezier(.22,1,.36,1);
             transition: opacity .2s, transform .2s; z-index: 20; pointer-events: none;
             max-width: 240px; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-        .ph-toast.ok { color: #a7f3d0; border-color: rgba(52,211,153,.5); }
-        .ph-toast.err { color: #fecdd3; border-color: rgba(251,113,133,.5); }
-        .ph-toast.fav { color: #fde68a; border-color: rgba(251,191,36,.55); }
+        .ph-toast.ok { color: #a7f3d0; border-color: rgba(52,211,153,.55); }
+        .ph-toast.err { color: #fecdd3; border-color: rgba(251,113,133,.55); }
+        .ph-toast.fav { color: #fde68a; border-color: rgba(251,191,36,.58); }
         .ph-toast.out { opacity: 0; transform: translateX(-50%) translateY(-8px); }
 
         @media (prefers-reduced-motion: reduce) {
             .ph-frame, .ph-frame.min { transition-duration: .01ms; }
             .ph-frame.ringing, .ph-frame.recording, .ph-roster .chip.speaking, .ph-note-btn.recording { animation: none !important; }
             .ph-frame.min::after { animation: none !important; }
+            .ph-screen::after { animation: none !important; }
         }
         `;
         _shadow.appendChild(st);
@@ -1094,15 +1110,14 @@
         entry.mixer = null;
     }
 
-    // ═══ VAD (host) ═══
+    // ═══ VAD ═══
     function _startVadFor(devId, stream) {
         const ctx = _ensureMixCtx();
         if (!ctx) return;
         try {
             const src = ctx.createMediaStreamSource(stream);
             const an = ctx.createAnalyser();
-            an.fftSize = 256;
-            an.smoothingTimeConstant = 0.5;
+            an.fftSize = 256; an.smoothingTimeConstant = 0.5;
             src.connect(an);
             const entry = _hostMembers.get(devId);
             if (!entry) return;
@@ -1197,13 +1212,21 @@
         const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
         const entry = {
             pc, remoteStream: null, mixer: null, vad: null,
-            name: target.name || 'Sem nome',
-            avatarUrl: target.avatarUrl || '',
-            number: target.number || '',
-            joinedAt: Date.now(), answered: false, iceSeen: new Set(),
-            disconnectedAt: 0
+            name: target.name || 'Sem nome', avatarUrl: target.avatarUrl || '', number: target.number || '',
+            joinedAt: Date.now(), answered: false, iceSeen: new Set(), disconnectedAt: 0
         };
         _hostMembers.set(devId, entry);
+
+        // Fallback de avatar via diretório
+        if (!entry.avatarUrl && target.number) {
+            _getDirectory(target.number).then(dir => {
+                const cur = _hostMembers.get(devId);
+                if (dir?.avatarUrl && cur) {
+                    cur.avatarUrl = dir.avatarUrl;
+                    _renderCall();
+                }
+            }).catch(() => {});
+        }
 
         const mixCtx = _ensureMixCtx();
         if (mixCtx && _localStream) {
@@ -1212,11 +1235,8 @@
             tmpSrc.connect(tmpDest);
             entry.mixer = { dest: tmpDest, sources: [tmpSrc] };
         }
-        if (entry.mixer) {
-            entry.mixer.dest.stream.getAudioTracks().forEach(t => pc.addTrack(t, entry.mixer.dest.stream));
-        } else if (_localStream) {
-            _localStream.getAudioTracks().forEach(t => pc.addTrack(t, _localStream));
-        }
+        if (entry.mixer) entry.mixer.dest.stream.getAudioTracks().forEach(t => pc.addTrack(t, entry.mixer.dest.stream));
+        else if (_localStream) _localStream.getAudioTracks().forEach(t => pc.addTrack(t, _localStream));
 
         const remote = new MediaStream();
         pc.ontrack = (ev) => {
@@ -1243,19 +1263,11 @@
                 if (!entry.answered) {
                     entry.answered = true;
                     if (_phase === 'outgoing') {
-                        _phase = 'active';
-                        _startedAt = Date.now();
-                        stopRingLoop();
-                        tonePickup();
-                        _renderCall();
-                        _startTimers();
-                    } else {
-                        toneJoin();
-                        _renderCall();
-                    }
+                        _phase = 'active'; _startedAt = Date.now();
+                        stopRingLoop(); tonePickup(); _renderCall(); _startTimers();
+                    } else { toneJoin(); _renderCall(); }
                 }
             } else if (s === 'disconnected') {
-                // Blip de rede: tenta restartIce antes de matar
                 if (!entry.disconnectedAt) {
                     entry.disconnectedAt = Date.now();
                     try { entry.pc.restartIce(); } catch(_) {}
@@ -1276,10 +1288,14 @@
                 const offer = await pc.createOffer({ offerToReceiveAudio: true });
                 await pc.setLocalDescription(offer);
                 await _waitIce(pc, 2200);
+
+                // Avatar confiável: cache local → diretório
+                const myAvatar = await _resolveMyAvatar();
+
                 const payload = {
                     type: 'offer', kind: 'phone', sdp: pc.localDescription.sdp,
                     fromId: bridge.deviceId || '', fromName: bridge.player?.name || 'Usuário',
-                    fromAvatar: bridge.player?.avatarUrl || '', fromNumber: _myNumber || '', ts: Date.now()
+                    fromAvatar: myAvatar, fromNumber: _myNumber || '', ts: Date.now()
                 };
                 if (_hostState.callId) { payload.groupId = _hostState.callId; payload.groupSize = _hostMembers.size; }
                 const ok = await sigPut(devId, 'offer', payload);
@@ -1300,7 +1316,14 @@
             _removeHostMember(devId, true); return;
         }
         if (!entry.answered && doc.answer) {
-            if (doc.answer.type === 'reject') { _toast((entry.name || 'Sessão') + ' recusou', 'err'); _removeHostMember(devId, false); return; }
+            if (doc.answer.type === 'reject') {
+                const reason = doc.answer.reason || 'rejected';
+                const label = reason === 'busy' ? 'Ocupado' : reason === 'timeout' ? 'Sem resposta' : reason === 'blocked' ? 'Bloqueada' : 'Recusada';
+                _toast((entry.name || 'Sessão') + ' ' + label.toLowerCase(), 'err');
+                _removeHostMember(devId, false);
+                if (_hostMembers.size === 0 && _phase !== 'idle') _endCall(false, label);
+                return;
+            }
             if (doc.answer.sdp) {
                 try { await entry.pc.setRemoteDescription(new RTCSessionDescription({ type: 'answer', sdp: doc.answer.sdp })); entry.answered = true; } catch(_) {}
             }
@@ -1379,13 +1402,11 @@
         }
         if (offer.type !== 'offer' || !offer.sdp) return;
         if (offer.fromNumber && isBlocked(offer.fromNumber)) {
-            // Rejeição silenciosa
-            try { sigPut(offer.fromId || 'unknown', 'answer', { type: 'reject', reason: 'blocked', ts: Date.now() }); } catch(_) {}
+            sigPut(bridge.deviceId, 'answer', { type: 'reject', reason: 'blocked', ts: Date.now() }).catch(() => {});
             return;
         }
         if (_phase !== 'idle') {
-            try { sigPut(offer.fromId || 'unknown', 'answer', { type: 'reject', reason: 'busy', ts: Date.now() }); } catch(_) {}
-            if (offer.fromId) bridge.rtdb.put('signaling/' + bridge.deviceId + '/answer', { type: 'reject', reason: 'busy', ts: Date.now() }).catch(() => {});
+            sigPut(bridge.deviceId, 'answer', { type: 'reject', reason: 'busy', ts: Date.now() }).catch(() => {});
             return;
         }
         if (_minimized) _setMinimized(false);
@@ -1394,6 +1415,17 @@
         _incomingOffer = offer;
         _peer = { id: offer.fromId || '', name: offer.fromName || 'Sem nome', avatarUrl: offer.fromAvatar || '', number: offer.fromNumber || '' };
         _isGroupCaller = false;
+
+        // Fallback: puxa avatar do caller via diretório se veio vazio
+        if (!_peer.avatarUrl && offer.fromNumber) {
+            _getDirectory(offer.fromNumber).then(dir => {
+                if (dir?.avatarUrl && _peer && _peer.id === offer.fromId) {
+                    _peer.avatarUrl = dir.avatarUrl;
+                    _renderCall();
+                }
+            }).catch(() => {});
+        }
+
         _phase = 'incoming';
         _renderCall();
         startRingLoop();
@@ -1486,7 +1518,6 @@
             _groupRosterCache.hostName = doc.hostName || _peer?.name || 'Host';
             _groupRosterCache.hostAvatar = doc.hostAvatar || _peer?.avatarUrl || '';
             if (doc.status === 'ended') { _endCall(false, 'Encerrada'); return; }
-            // Atualiza speaking set
             _speakingSet.clear();
             if (doc.speaking) {
                 for (const devId in doc.speaking) {
@@ -1500,7 +1531,10 @@
     function _rejectCall(reason) {
         const offer = _incomingOffer;
         stopRingLoop(); _cancelTimeout();
-        if (offer && offer.fromId) sigPut(offer.fromId, 'answer', { type: 'reject', reason: reason || 'rejected', ts: Date.now() }).catch(() => {});
+        // Escreve no próprio path — é de lá que o caller está lendo
+        if (offer) {
+            sigPut(bridge.deviceId, 'answer', { type: 'reject', reason: reason || 'rejected', ts: Date.now() }).catch(() => {});
+        }
         _cleanupCall();
         _phase = 'idle';
         _incomingOffer = null;
@@ -1597,7 +1631,6 @@
         if (_groupPollTimer) { clearInterval(_groupPollTimer); _groupPollTimer = null; }
         if (_iceRestartTimer) { clearTimeout(_iceRestartTimer); _iceRestartTimer = null; }
         if (_vadRaf) { cancelAnimationFrame(_vadRaf); _vadRaf = null; }
-
         for (const devId of Array.from(_hostMembers.keys())) {
             const entry = _hostMembers.get(devId);
             if (entry.pollTimer) clearInterval(entry.pollTimer);
@@ -1656,11 +1689,13 @@
             <div class="ph-side pwr"></div>
             <div class="ph-notch" id="phNotch" title="Clique para ${_minimized ? 'expandir' : 'minimizar'}"></div>
             <div class="ph-screen">
+                <div class="ph-wall-shine"></div>
                 <div class="ph-status">
                     <span class="ph-status-time" id="phTime">--:--</span>
                     <span class="ph-status-icons">
                         <span class="sig"><i></i><i></i><i></i><i></i></span>
                         <span style="font-size:9px;font-weight:800;letter-spacing:.02em;">LTE</span>
+                        <span class="ph-status-ver">Android ${PHONE_VERSION}</span>
                         <span class="dot-notif" id="phNotifDot"></span>
                     </span>
                 </div>
@@ -1785,7 +1820,6 @@
             return;
         }
 
-        // sort: favs → online → nome
         const sortFn = (a, b) => {
             if (a.fav !== b.fav) return a.fav ? -1 : 1;
             if (a.online !== b.online) return a.online ? -1 : 1;
@@ -1824,18 +1858,13 @@
                 _searchQuery = searchInput.value;
                 _renderContacts();
             });
-            // manter foco no input após re-render
             if (q) { searchInput.focus(); searchInput.setSelectionRange(searchInput.value.length, searchInput.value.length); }
         }
 
         content.querySelectorAll('.ph-contact').forEach(row => {
             const num = row.dataset.num;
             const callBtn = row.querySelector('.ph-call-btn');
-            const noteBtn = row.querySelector('.ph-note-btn');
             const rmBtn = row.querySelector('.ph-rm');
-            const favBtn = row.querySelector('.ph-fav-btn');
-            const blockBtn = row.querySelector('.ph-block-btn');
-
             const trigger = (e) => {
                 if (e) e.stopPropagation();
                 if (isBlocked(num)) { _toast('Contato bloqueado', 'err'); return; }
@@ -1850,23 +1879,6 @@
                 _toast('Contato removido', 'ok');
                 _renderContacts();
             });
-            if (favBtn) favBtn.addEventListener('click', (e) => {
-                e.stopPropagation();
-                const nowFav = toggleFav(num);
-                toneFav();
-                _toast(nowFav ? 'Favoritado' : 'Removido dos favoritos', 'fav');
-                _renderContacts();
-            });
-            if (blockBtn) blockBtn.addEventListener('click', (e) => {
-                e.stopPropagation();
-                const nowBlk = toggleBlock(num);
-                toneBlock();
-                _toast(nowBlk ? 'Número bloqueado' : 'Número liberado', nowBlk ? 'err' : 'ok');
-                _renderContacts();
-            });
-            if (noteBtn) {
-                _wireNoteButton(noteBtn, { number: num, name: row.dataset.name || '' });
-            }
         });
     }
 
@@ -1896,7 +1908,6 @@
         if (!_screenEl) return;
         const content = _screenEl.querySelector('#phContent');
         if (!content) return;
-
         if (!_history.length) {
             content.innerHTML = `<div class="ph-list">
                 <div class="ph-empty">
@@ -1939,7 +1950,6 @@
                 ${callBtn}
             </div>`;
         }).join('');
-
         content.innerHTML = `<div class="ph-list">${rows}</div>`;
         content.querySelectorAll('.ph-contact').forEach(row => {
             const num = row.dataset.num;
@@ -2081,7 +2091,13 @@
             return;
         }
         if (hasContact(clean)) updateContactMeta(clean, { username: live.name || username || '', savedName: live.name || '', savedAvatar: live.avatarUrl || '' });
-        _call([{ id: live.id, name: live.name || username || fmtNumber(clean), avatarUrl: live.avatarUrl || '', number: clean, lastSeen: live.lastSeen || 0 }]);
+        _call([{
+            id: live.id,
+            name: live.name || username || fmtNumber(clean),
+            avatarUrl: live.avatarUrl || dir?.avatarUrl || '',
+            number: clean,
+            lastSeen: live.lastSeen || 0
+        }]);
     }
 
     // ═══ CHAMADA — UI ═══
@@ -2280,29 +2296,6 @@
     }
 
     // ═══ VOICE NOTE — gravação ═══
-    function _wireNoteButton(btn, target) {
-        btn.addEventListener('pointerdown', (e) => {
-            e.stopPropagation();
-            e.preventDefault();
-            if (_rec) return;
-            _startNote(target, btn);
-            try { btn.setPointerCapture(e.pointerId); } catch(_) {}
-        });
-        btn.addEventListener('pointerup', (e) => {
-            e.stopPropagation();
-            if (!_rec || _recTarget?.number !== target.number) return;
-            const r = btn.getBoundingClientRect();
-            const inside = e.clientX >= r.left - 8 && e.clientX <= r.right + 8 && e.clientY >= r.top - 8 && e.clientY <= r.bottom + 8;
-            if (inside) _sendNote();
-            else _cancelNote();
-        });
-        btn.addEventListener('pointercancel', (e) => {
-            e.stopPropagation();
-            if (_rec && _recTarget?.number === target.number) _cancelNote();
-        });
-        btn.addEventListener('contextmenu', (e) => e.preventDefault());
-    }
-
     async function _startNote(target, btn) {
         try { _ensureStream().catch(() => {}); } catch(_) {}
         let stream;
@@ -2468,7 +2461,7 @@
         stopRingLoop();
         _cleanupCall();
         _cancelTimeout();
-        if (_cancelNote) { try { _cancelNote(); } catch(_) {} }
+        try { _cancelNote(); } catch(_) {}
         if (_busyDismissTimer) clearTimeout(_busyDismissTimer);
         if (_notesPollTimer) { clearInterval(_notesPollTimer); _notesPollTimer = null; }
         try { if (_host) _host.remove(); } catch(e) {}
@@ -2482,6 +2475,6 @@
 
     _fetchSessions(true).catch(() => {});
     window[UID] = { toggle, kill };
-    
+
     try { toggle(); } catch(e) { console.warn('[Phone] auto-open falhou:', e); }
 })();
