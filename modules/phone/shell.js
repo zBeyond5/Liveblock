@@ -10,7 +10,7 @@
 
     // ═══ CONFIG ═══
     const ANDROID_VERSION = '14';
-    const PHONE_VERSION = '1.3.1';
+    const PHONE_VERSION = '1.3.2';
     const MIN_TUCK_X = 260;
     const MIN_TUCK_Y = -140;
     const FRAME_HALF_H = 285;
@@ -19,6 +19,7 @@
     const LS_LAYOUT = 'sanghub_phone_layout';
     const MODULES_BASE = 'https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/modules/phone';
     const MAX_DOCK_APPS = 4;
+    const DEFAULT_APP_BG = 'linear-gradient(180deg, #16181c 0%, #0d0f12 100%)';
 
     // ═══ CTX ═══
     const ctx = window._phoneCtx = window._phoneCtx || {};
@@ -234,13 +235,10 @@
         :host, * { box-sizing: border-box; }
 
         @keyframes phFadeIn { from { opacity: 0; } to { opacity: 1; } }
-        @keyframes phFadeOut { to { opacity: 0; } }
-        @keyframes phDots { 0%,20%{opacity:.3} 50%{opacity:1} 80%,100%{opacity:.3} }
         @keyframes phScreenBlink { 0%,100%{opacity:.6} 50%{opacity:1} }
         @keyframes phPulseDot { 0%,100%{box-shadow:0 0 0 0 rgba(52,211,153,.55)} 50%{box-shadow:0 0 0 6px rgba(52,211,153,0)} }
         @keyframes phKeyPress { 0%{transform:scale(1)} 40%{transform:scale(.9)} 100%{transform:scale(1)} }
         @keyframes phToastIn { from{opacity:0;transform:translateY(-8px) scale(.94)} to{opacity:1;transform:none} }
-        @keyframes phStackIn { from{opacity:0;transform:scale(.85)} to{opacity:1;transform:none} }
         @keyframes phRingGlow {
             0%, 100% { box-shadow: 0 30px 80px rgba(0,0,0,.75), 0 0 0 1px rgba(255,255,255,.03), inset 0 1px 0 rgba(255,255,255,.06), inset 0 -1px 0 rgba(0,0,0,.7), 0 0 0 0 rgba(52,211,153,.5); }
             50% { box-shadow: 0 30px 80px rgba(0,0,0,.75), 0 0 0 1px rgba(255,255,255,.03), inset 0 1px 0 rgba(255,255,255,.06), inset 0 -1px 0 rgba(0,0,0,.7), 0 0 0 12px rgba(52,211,153,0); }
@@ -252,10 +250,7 @@
         @keyframes phPinShake { 10%,90%{transform:translateX(-3px)} 20%,80%{transform:translateX(4px)} 30%,50%,70%{transform:translateX(-6px)} 40%,60%{transform:translateX(6px)} }
         @keyframes phSwipeHint { 0%,100%{transform:translateY(0);opacity:.55} 50%{transform:translateY(-6px);opacity:.9} }
         @keyframes phStageFadeIn { from { opacity: 0; transform: scale(.985); } to { opacity: 1; transform: none; } }
-        @keyframes phScreenGlow {
-            0%,100% { opacity: .5; }
-            50% { opacity: .8; }
-        }
+        @keyframes phSpeaking { 0%,100%{opacity:1} 50%{opacity:.55} }
 
         .ph-frame {
             position: fixed; top: 50%; right: 24px;
@@ -393,6 +388,7 @@
                 inset 0 1px 0 rgba(255,255,255,.05),
                 0 0 0 1px rgba(255,255,255,.03);
         }
+
         /* ═══ WALLPAPER ═══ */
         .ph-wallpaper {
             position: absolute; inset: 0; z-index: 0;
@@ -456,6 +452,14 @@
             display: none; flex-direction: column; min-height: 0;
         }
         .ph-view.active { display: flex; animation: phStageFadeIn .32s cubic-bezier(.22,1,.36,1); }
+
+        /* Views de app têm fundo próprio — wallpaper não vaza */
+        .ph-view-app {
+            background: var(--app-bg, ${DEFAULT_APP_BG});
+        }
+        .ph-view-call {
+            background: linear-gradient(175deg, #12241d 0%, #08140f 100%);
+        }
 
         .ph-lock {
             flex: 1; min-height: 0;
@@ -680,9 +684,7 @@
         .ph-dock .ph-home-app-icon svg { width: 20px; height: 20px; }
         .ph-dock .ph-home-app-name { display: none; }
 
-        .ph-app { flex: 1; min-height: 0; display: flex; flex-direction: column; }
-
-        /* ═══ APP BAR (verde sólido — não vaza wallpaper) ═══ */
+        /* ═══ APP BAR ═══ */
         .ph-app-bar {
             display: flex; align-items: center; gap: 8px;
             padding: 9px 12px; margin: 0 12px 8px;
@@ -709,7 +711,7 @@
         .ph-app-back:hover { color: #a7f3d0; background: rgba(52,211,153,.2); }
         .ph-app-back svg { width: 14px; height: 14px; }
 
-        /* ═══ TABS (verde sólido — não vaza wallpaper) ═══ */
+        /* ═══ TABS ═══ */
         .ph-tabs {
             display: flex; gap: 2px;
             padding: 6px 10px 0;
@@ -795,8 +797,6 @@
             transition: background .15s, color .15s, border-color .15s;
         }
         .ph-pin-modal-cancel:hover { background: rgba(255,255,255,.06); color: #e9ecf5; }
-
-        .ph-call-view { background: linear-gradient(175deg, #12241d 0%, #08140f 100%); }
 
         .ph-home-bar {
             padding: 6px 0 8px; flex-shrink: 0; display: flex; justify-content: center;
@@ -1163,6 +1163,7 @@
         });
     }
 
+    // Evita duplicar apps que já existem registrados (ex.: 'settings' via config.js)
     function _builtinFallbacks() {
         const list = [];
         if (!ctx.apps.get('calls')) list.push(_builtinCallsDef());
@@ -1334,6 +1335,7 @@
             icon: ctx.I.phone,
             accent: '#062420',
             bg: 'linear-gradient(135deg, #34d399, #22d3ee)',
+            appBg: 'linear-gradient(180deg, #143a2c 0%, #0a1a14 100%)',
             builtin: 'calls',
             dock: true,
             order: 0
@@ -1344,8 +1346,9 @@
             id: 'settings',
             name: 'Ajustes',
             icon: ctx.I.gear,
-            accent: '#a78bfa',
-            bg: 'linear-gradient(135deg, #a78bfa, #7c3aed)',
+            accent: '#94a3b8',
+            bg: 'linear-gradient(135deg, #94a3b8, #64748b)',
+            appBg: 'linear-gradient(180deg, #1a1a20 0%, #0e0e12 100%)',
             builtin: 'settings',
             order: 10
         };
@@ -1366,6 +1369,9 @@
         if (!view) return;
         view.innerHTML = '';
 
+        // Fundo próprio do app — wallpaper não vaza dentro
+        view.style.setProperty('--app-bg', app.appBg || DEFAULT_APP_BG);
+
         const bar = el('div', { class: 'ph-app-bar' });
         bar.innerHTML = `<button class="ph-app-back" title="Voltar">${ctx.I.back}</button><span>${esc(app.name || id)}</span>`;
         bar.querySelector('.ph-app-back').addEventListener('click', _goHome);
@@ -1377,6 +1383,7 @@
     }
     ctx.openApp = _openApp;
 
+    // Porta pública: navega direto para uma tab do app Chamadas
     ctx.goToTab = (tabId) => {
         if (!_frameEl) return false;
         if (!['contatos','discar','recentes','recados'].includes(tabId)) return false;
@@ -1401,13 +1408,8 @@
 
     function _unmountActiveApp() {
         if (!_activeAppId) return;
-        if (_activeAppId !== 'calls' && _activeAppId !== 'settings') {
-            const app = ctx.apps.get(_activeAppId);
-            try { app?.unmount?.(); } catch(_) {}
-        } else if (_activeAppId === 'settings') {
-            const app = ctx.apps.get('settings');
-            try { app?.unmount?.(); } catch(_) {}
-        }
+        const app = ctx.apps.get(_activeAppId);
+        try { app?.unmount?.(); } catch(_) {}
         _activeAppId = null;
     }
 
@@ -1480,6 +1482,7 @@
         }
     }
 
+    // Chamado por contacts.js (compat)
     ctx.renderTab = () => {
         if (_view === 'app' && _activeAppId === 'calls') _renderChamadasContent();
     };
@@ -1679,8 +1682,9 @@
     }
 
     // ═══ GENERIC APP ═══
+    // Não anexa _contentEl aqui — o app monta em um container próprio que ocupa
+    // toda a área disponível. _contentEl é exclusivo do app Chamadas.
     function _mountGenericApp(view, app) {
-        view.appendChild(_contentEl);
         const root = document.createElement('div');
         root.style.cssText = 'flex:1;min-height:0;overflow:auto;display:flex;flex-direction:column;';
         view.appendChild(root);
@@ -1841,10 +1845,16 @@
             _loadModule('sangzap',  base + '/apps/sangzap/shell.js')
         ]);
 
+        // Apps opcionais — descomente conforme forem adicionados:
+        // await Promise.all([
+        //   _loadModule('iptv', base + '/apps/iptv.js')
+        // ]);
+
         ctx.apps.onChange(() => {
             if (_view === 'home') _renderHome();
         });
 
+        // Badge do tab de recados
         try {
             ctx.notes?.onUnreadChange?.(_refreshRecadosBadge);
             _refreshRecadosBadge();
