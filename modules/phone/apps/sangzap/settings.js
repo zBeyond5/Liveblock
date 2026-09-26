@@ -6,6 +6,107 @@
     if (!ctx || !S) return;
     if (S.settings) return;
 
+    // ═══ FS HELPERS — tradução inline Firestore REST ═══
+    // Idempotente. Instala uma única vez.
+    (function ensureFsHelpers() {
+        if (S.__fsFull) return;
+        S.__fsFull = true;
+
+        function toFs(v) {
+            if (v === null || v === undefined) return { nullValue: null };
+            if (typeof v === 'string')  return { stringValue: v };
+            if (typeof v === 'boolean') return { booleanValue: v };
+            if (typeof v === 'number')  return Number.isInteger(v)
+                ? { integerValue: String(v) }
+                : { doubleValue: v };
+            if (Array.isArray(v)) return { arrayValue: { values: v.map(toFs) } };
+            if (typeof v === 'object') {
+                const fields = {};
+                for (const k in v) fields[k] = toFs(v[k]);
+                return { mapValue: { fields } };
+            }
+            return { nullValue: null };
+        }
+
+        function fromFs(v) {
+            if (!v || typeof v !== 'object') return null;
+            if ('nullValue' in v)      return null;
+            if ('stringValue' in v)    return v.stringValue;
+            if ('booleanValue' in v)   return v.booleanValue;
+            if ('integerValue' in v)   return parseInt(v.integerValue, 10);
+            if ('doubleValue' in v)    return v.doubleValue;
+            if ('timestampValue' in v) return v.timestampValue;
+            if ('arrayValue' in v)     return (v.arrayValue?.values || []).map(fromFs);
+            if ('mapValue' in v) {
+                const out = {};
+                const f = v.mapValue?.fields || {};
+                for (const k in f) out[k] = fromFs(f[k]);
+                return out;
+            }
+            return null;
+        }
+
+        try {
+            ctx.bridge.firestore.value = toFs;
+            ctx.bridge.firestore.parseDoc = function(doc) {
+                const out = {};
+                const fields = doc?.fields || {};
+                for (const k in fields) out[k] = fromFs(fields[k]);
+                return out;
+            };
+        } catch(_) {}
+
+        S.fsWrite = async function(path, payload, extraQuery) {
+            const fields = {};
+            for (const k in payload) fields[k] = toFs(payload[k]);
+            const mask = Object.keys(fields).map(k => 'updateMask.fieldPaths=' + k).join('&');
+            const q = extraQuery ? (extraQuery + '&' + mask) : mask;
+            return ctx.bridge.firestore.request('PATCH', path, { fields }, q);
+        };
+
+        S.fsCreate = async function(collectionPath, payload, docId) {
+            const fields = {};
+            for (const k in payload) fields[k] = toFs(payload[k]);
+            const url = docId
+                ? `${collectionPath}?documentId=${encodeURIComponent(docId)}`
+                : collectionPath;
+            return ctx.bridge.firestore.request('POST', url, { fields });
+        };
+
+        S.fsGet = async function(path) {
+            const raw = await ctx.bridge.firestore.request('GET', path);
+            if (!raw) return null;
+            if (Array.isArray(raw.documents)) {
+                return raw.documents.map(d => ({
+                    id: d.name.split('/').pop(),
+                    ...ctx.bridge.firestore.parseDoc(d)
+                }));
+            }
+            if (raw.fields) {
+                return {
+                    id: (raw.name || '').split('/').pop(),
+                    ...ctx.bridge.firestore.parseDoc(raw)
+                };
+            }
+            return null;
+        };
+
+        S.fsQuery = async function(structuredQuery) {
+            const res = await ctx.bridge.firestore.request('POST', ':runQuery', { structuredQuery });
+            return (Array.isArray(res) ? res : []).map(r => {
+                if (!r || !r.document) return null;
+                return {
+                    id: (r.document.name || '').split('/').pop(),
+                    ...ctx.bridge.firestore.parseDoc(r.document)
+                };
+            }).filter(Boolean);
+        };
+
+        S.fsDel = async function(path) {
+            return ctx.bridge.firestore.request('DELETE', path);
+        };
+    })();
+
     const ST = {};
     const AV_SIZE = 256;
     const JPEG_Q = 0.85;
@@ -25,8 +126,7 @@
     // ═══ CRUD ═══
     ST.get = async function(number) {
         try {
-            const doc = await ctx.bridge.firestore.parseDoc('sangzap_profiles', number);
-            const base = doc || {};
+            const base = await S.fsGet('/sangzap_profiles/' + number) || {};
             return {
                 displayName: base.displayName || '',
                 bio: base.bio || '',
@@ -51,12 +151,10 @@
 
     ST.save = async function(number, patch) {
         const doc = { ...patch, updatedAt: Date.now() };
-        await ctx.bridge.firestore.request('PATCH', `/sangzap_profiles/${number}`, doc);
+        await S.fsWrite('/sangzap_profiles/' + number, doc);
         if (patch.avatar !== undefined) {
             try {
-                await ctx.bridge.firestore.request('PATCH', `/phone_numbers/${number}`, {
-                    avatarUrl: patch.avatar || ''
-                });
+                await S.fsWrite('/phone_numbers/' + number, { avatarUrl: patch.avatar || '' });
             } catch(_) {}
         }
         return doc;
@@ -190,27 +288,22 @@
     // ═══ CHAT LIST (for wallpapers) ═══
     async function fetchChats(number) {
         try {
-            const res = await ctx.bridge.firestore.request('POST', '/sangzap_chats:runQuery', {
-                structuredQuery: {
-                    from: [{ collectionId: 'sangzap_chats' }],
-                    where: {
-                        fieldFilter: {
-                            field: { fieldPath: 'members' },
-                            op: 'ARRAY_CONTAINS',
-                            value: { stringValue: String(number) }
-                        }
+            const chats = await S.fsQuery({
+                from: [{ collectionId: 'sangzap_chats' }],
+                where: {
+                    fieldFilter: {
+                        field: { fieldPath: 'members' },
+                        op: 'ARRAY_CONTAINS',
+                        value: { stringValue: String(number) }
                     }
                 }
             });
-            const arr = Array.isArray(res) ? res : (res ? [res] : []);
-            return arr.map(r => {
-                const d = r.document || r;
-                const id = (d.name || '').split('/').pop();
-                const f = d.fields || {};
-                const s = (k) => f[k]?.stringValue;
-                const members = (f.members?.arrayValue?.values || []).map(v => v.stringValue);
-                return { id, name: s('name') || '', kind: s('kind') || '1:1', members };
-            }).filter(c => c.id);
+            return (chats || []).map(c => ({
+                id: c.id,
+                name: c.name || '',
+                kind: c.kind || '1:1',
+                members: c.members || []
+            })).filter(c => c.id);
         } catch(e) {
             console.warn('[Sangzap/settings] fetchChats:', e);
             return [];
@@ -406,7 +499,6 @@
             let pendingPrivacy = { ...prof.privacy };
             let pendingNotif = { ...prof.notif };
 
-            // Perfil
             body.querySelector('#szProfPick').addEventListener('click', async () => {
                 const dataUrl = await ST.pickAndCropSquare();
                 if (!dataUrl) return;
@@ -426,7 +518,6 @@
                 });
             });
 
-            // Privacidade por campo
             body.querySelectorAll('.sz-radio-group[data-priv]').forEach(group => {
                 const key = group.dataset.priv;
                 group.querySelectorAll('.sz-radio').forEach(btn => {
@@ -437,7 +528,6 @@
                 });
             });
 
-            // Notificações
             body.querySelectorAll('input[data-notif]').forEach(inp => {
                 inp.addEventListener('change', () => {
                     pendingNotif[inp.dataset.notif] = !!inp.checked;
