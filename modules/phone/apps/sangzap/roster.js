@@ -116,7 +116,7 @@
     })();
 
     // ═══ CONFIG ═══
-    const POLL_MS = 4000;            // ciclo principal
+    const POLL_MS = 8000;            // ciclo principal
     const TYPING_POLL_MS = 5000;     // ciclo de typing
     const PROFILE_TTL = 60_000;      // cache de perfil — 1 min
     const PRESENCE_TTL = 12_000;     // cache de presença — 12s
