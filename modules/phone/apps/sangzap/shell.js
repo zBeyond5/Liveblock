@@ -8,7 +8,7 @@
     if (ctx.apps?.get?.('sangzap')) return;
 
     const APP_ID = 'sangzap';
-    const APP_VERSION = '0.4.0';
+    const APP_VERSION = '0.5.0';
     const DEFAULT_MODULE_BASE = 'https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/modules/phone';
     const DEFAULT_APP_BG = '#0e1621';
 
@@ -40,6 +40,8 @@
     let S = null;
     let _moduleLoaded = false;
     let _loadPromise = null;
+    let _loadFailed = false;
+    let _moduleDiagnostic = null;
     let _unreadTotal = 0;
     let _historyBound = false;
     let _histPushed = false;
@@ -64,28 +66,69 @@
         return new Promise((resolve) => {
             const s = document.createElement('script');
             let settled = false;
-            const t = setTimeout(() => { if (!settled) { settled = true; console.warn('[Sangzap] timeout', src); resolve(false); } }, timeoutMs);
+            const t = setTimeout(() => {
+                if (settled) return;
+                settled = true;
+                console.warn('[Sangzap] timeout', src);
+                resolve(false);
+            }, timeoutMs);
             const done = (ok) => {
                 if (settled) return;
-                settled = true; clearTimeout(t);
+                settled = true;
+                clearTimeout(t);
                 if (!ok) console.warn('[Sangzap] falha ao carregar', src);
                 resolve(ok);
             };
-            s.src = src; s.async = true;
+            s.src = src;
+            s.async = false;    // preserva ordem de execução
             s.onload = () => done(true);
             s.onerror = () => done(false);
             document.head.appendChild(s);
         });
     }
+
     function loadModules() {
         if (_loadPromise) return _loadPromise;
         _loadPromise = (async () => {
             if (_moduleLoaded) return;
-            const files = ['common.js', 'roster.js', 'chat.js', 'audio.js', 'groups.js', 'settings.js', 'stories.js'];
-            await Promise.allSettled(files.map(f => loadScript(`${BASE}/${f}?v=${APP_VERSION}`)));
+
+            // ═══ 1) common.js PRIMEIRO — os demais leem window._sangzapCtx ═══
+            const commonUrl = `${BASE}/common.js?v=${APP_VERSION}`;
+            const commonOk = await loadScript(commonUrl);
+            const results = [{ file: 'common.js', url: commonUrl, ok: commonOk }];
             bindS();
-            if (!S) console.error('[Sangzap] common.js não publicou _sangzapCtx. Base:', BASE);
-            else console.log('[Sangzap] módulos prontos de', BASE);
+
+            if (!commonOk || !S) {
+                console.error('[Sangzap] FALHA CRÍTICA em common.js. ok:', commonOk, '| S:', S, '| Base:', BASE);
+                _loadFailed = true;
+                _moduleDiagnostic = { base: BASE, results, missing: ['common'] };
+                return;
+            }
+
+            // ═══ 2) demais módulos em paralelo — S já existe ═══
+            const rest = ['roster.js', 'chat.js', 'audio.js', 'groups.js', 'settings.js', 'stories.js'];
+            const restResults = await Promise.all(rest.map(async (f) => {
+                const url = `${BASE}/${f}?v=${APP_VERSION}`;
+                const ok = await loadScript(url);
+                return { file: f, url, ok };
+            }));
+            results.push(...restResults);
+
+            // ═══ 3) verifica o que ficou registrado ═══
+            const missing = [];
+            if (!S.roster)   missing.push('roster');
+            if (!S.chat)     missing.push('chat');
+            if (!S.audio)    missing.push('audio');
+            if (!S.groups)   missing.push('groups');
+            if (!S.settings) missing.push('settings');
+            if (!S.stories)  missing.push('stories');
+
+            _moduleDiagnostic = { base: BASE, results, missing };
+            _loadFailed = missing.length >= 5;
+
+            if (missing.length) console.warn('[Sangzap] módulos faltando:', missing.join(', '));
+            else console.log('[Sangzap] todos os módulos prontos de', BASE);
+
             _moduleLoaded = true;
         })();
         return _loadPromise;
@@ -107,8 +150,15 @@
     function bindConnection() {
         if (_connBound) return;
         _connBound = true;
-        window.addEventListener('online', () => { _state.online = true; updateConnBar(); try { S?.chat?.drainQueue?.(); } catch(_) {} });
-        window.addEventListener('offline', () => { _state.online = false; updateConnBar(); });
+        window.addEventListener('online', () => {
+            _state.online = true;
+            updateConnBar();
+            try { S?.chat?.drainQueue?.(); } catch(_) {}
+        });
+        window.addEventListener('offline', () => {
+            _state.online = false;
+            updateConnBar();
+        });
         updateConnBar();
     }
     function updateConnBar() {
@@ -229,6 +279,12 @@
         const body = root.querySelector('#szBody');
         if (!body) return;
 
+        // Painel de diagnóstico — só quando módulos críticos falharam
+        if (_loadFailed && !inChat && _state.activeTab === 'chats') {
+            renderDiagnostic(body);
+            return;
+        }
+
         try {
             if (inChat) renderChat(body);
             else if (_state.activeTab === 'chats') renderRoster(body);
@@ -244,6 +300,43 @@
             console.error('[Sangzap] erro de render:', e);
             renderStub(body, 'Erro', 'Falha ao montar esta tela.');
         }
+    }
+
+    function renderDiagnostic(body) {
+        const d = _moduleDiagnostic || { base: BASE, results: [], missing: ['?'] };
+        const rows = d.results.map(r => `
+            <div class="sz-diag-row ${r.ok ? 'ok' : 'fail'}">
+                <span class="sz-diag-ico">${r.ok ? '✓' : '✗'}</span>
+                <span class="sz-diag-file">${esc(r.file)}</span>
+                <span class="sz-diag-status">${r.ok ? 'ok' : '404/timeout'}</span>
+            </div>
+        `).join('');
+        const missingTxt = (d.missing || []).join(', ') || '—';
+        body.innerHTML = `
+            <div class="sz-diag">
+                <div class="sz-diag-icon">⚠</div>
+                <div class="sz-diag-title">Módulos não carregaram</div>
+                <div class="sz-diag-sub">Base consultada:</div>
+                <code class="sz-diag-base">${esc(d.base)}</code>
+                <div class="sz-diag-list">${rows || '<div class="sz-diag-row">sem dados</div>'}</div>
+                <div class="sz-diag-hint">
+                    Ausentes: <b>${esc(missingTxt)}</b><br>
+                    Abra o console (F12) → aba Network → filtre por <b>sangzap</b> e veja o status HTTP.
+                    Se algum arquivo retorna 404, o path no repo está diferente.
+                </div>
+                <button class="sz-btn sz-btn-primary" id="szDiagRetry" type="button">Tentar de novo</button>
+            </div>
+        `;
+        body.querySelector('#szDiagRetry')?.addEventListener('click', () => {
+            _loadPromise = null;
+            _moduleLoaded = false;
+            _loadFailed = false;
+            _moduleDiagnostic = null;
+            document.querySelectorAll('script[src*="/apps/sangzap/"]').forEach(s => {
+                try { s.remove(); } catch(_) {}
+            });
+            render();
+        });
     }
 
     function renderStub(body, title, sub) {
@@ -310,7 +403,9 @@
                 chip: _state.rosterChip === 'archived' ? 'all' : _state.rosterChip,
                 includeArchived: _state.rosterChip === 'archived'
             };
-            const sections = S?.roster?.sections ? S.roster.sections(opts) : [{ id: 'main', title: '', items: [] }];
+            const sections = S?.roster?.sections
+                ? S.roster.sections(opts)
+                : [{ id: 'main', title: '', items: [] }];
             _state.rosterSections = sections;
             paint(sections);
         }
@@ -340,7 +435,6 @@
                     const mute = c.muted ? `<span class="sz-mute" title="Silenciado">🔇</span>` : '';
 
                     let previewHtml = '';
-                    let timeTxt = '';
                     if (S?.roster?.previewParts) {
                         const parts = S.roster.previewParts(c);
                         if (parts.kind === 'typing') {
@@ -352,7 +446,7 @@
                     } else {
                         previewHtml = `<span class="sz-item-preview">${esc(c.lastMessage || (isGroup ? '' : c.recado || 'Toque para conversar'))}</span>`;
                     }
-                    timeTxt = c.lastMessageAt
+                    const timeTxt = c.lastMessageAt
                         ? fmtRelative(c.lastMessageAt)
                         : (online ? 'online' : (c.lastSeen ? timeAgo(c.lastSeen) : ''));
 
@@ -387,14 +481,19 @@
                     if (lpFired) { lpFired = false; return; }
                     openChat(entry.chatId, entry);
                 });
-                btn.addEventListener('contextmenu', (ev) => { ev.preventDefault(); openContextMenu(entry); });
+                btn.addEventListener('contextmenu', (ev) => {
+                    ev.preventDefault();
+                    openContextMenu(entry);
+                });
                 btn.addEventListener('pointerdown', (ev) => {
                     if (ev.pointerType === 'mouse' && ev.button !== 0) return;
                     lpFired = false;
                     lpTimer = setTimeout(() => { lpFired = true; openContextMenu(entry); }, 550);
                 });
                 ['pointerup', 'pointerleave', 'pointercancel'].forEach(evt =>
-                    btn.addEventListener(evt, () => { if (lpTimer) { clearTimeout(lpTimer); lpTimer = null; } })
+                    btn.addEventListener(evt, () => {
+                        if (lpTimer) { clearTimeout(lpTimer); lpTimer = null; }
+                    })
                 );
             });
         }
@@ -405,7 +504,7 @@
                 updateCounts(counts);
                 repaint();
             });
-            setTimeout(() => updateCounts(S.roster.counts?.()), 50);
+            setTimeout(() => updateCounts(S.roster.counts?.()), 60);
         }
     }
 
@@ -468,7 +567,10 @@
         body.appendChild(modal);
 
         modal.querySelector('#szPickCancel')?.addEventListener('click', () => modal.remove());
-        modal.querySelector('#szNewGroupBtn')?.addEventListener('click', () => { modal.remove(); openGroupPicker(); });
+        modal.querySelector('#szNewGroupBtn')?.addEventListener('click', () => {
+            modal.remove();
+            openGroupPicker();
+        });
         modal.querySelectorAll('.sz-pick').forEach(btn => {
             btn.addEventListener('click', async () => {
                 const num = btn.dataset.num;
@@ -477,9 +579,12 @@
                 modal.remove();
                 try {
                     await ctx.bridge?.firestore?.request?.('PATCH', `/sangzap_chats/${chatId}`, {
-                        kind: '1:1', members: [_state.myNumber, num].sort(),
-                        createdAt: Date.now(), updatedAt: Date.now(),
-                        lastMessage: '', lastMessageAt: 0
+                        kind: '1:1',
+                        members: [_state.myNumber, num].sort(),
+                        createdAt: Date.now(),
+                        updatedAt: Date.now(),
+                        lastMessage: '',
+                        lastMessageAt: 0
                     });
                 } catch(_) {}
                 openChat(chatId, { chatId, kind: '1:1', number: num, title: shortNum(num) });
@@ -566,12 +671,11 @@
         const meta = _state.chatMeta || {};
         const isGroup = meta.kind === 'group';
 
-        // container vazio — chat.js v2 monta tudo aqui
+        // host vazio — chat.js v2 monta tudo dentro
         const host = document.createElement('div');
         host.className = 'sz-chat-host';
         body.appendChild(host);
 
-        // meta completo que o chat v2 espera
         const chatMeta = {
             chatId: _state.activeChatId,
             kind: meta.kind || '1:1',
@@ -582,7 +686,6 @@
             nameFor: nameForNumber,
             onForward: (msg) => {
                 ctx.toast?.('Encaminhar: escolha o destino', 'info');
-                // shell do sangzap pode evoluir pra abrir picker de contato
             },
             onForwardMany: (list) => {
                 ctx.toast?.(`${list.length} mensagens prontas`, 'info');
@@ -596,14 +699,17 @@
 
         if (S?.chat?.open) {
             try { S.chat.open(_state.activeChatId, _state.myNumber, chatMeta, host); }
-            catch(e) { console.warn('[Sangzap] chat.open:', e); renderStub(body, 'Erro', 'Chat indisponível.'); return; }
+            catch(e) {
+                console.warn('[Sangzap] chat.open:', e);
+                renderStub(body, 'Erro', 'Chat indisponível.');
+                return;
+            }
         } else {
             renderStub(body, 'Chat indisponível', 'Recarregue o telefone.');
             return;
         }
 
-        // integra o mic via áudio v2
-        setTimeout(bindMicGesture, 30);
+        setTimeout(bindMicGesture, 40);
     }
 
     // ═══ NAME RESOLVER ═══
@@ -612,48 +718,47 @@
         if (!num) return '';
         if (num === _state.myNumber) return _state.myName || 'Você';
         if (_nameCache.has(num)) return _nameCache.get(num);
-        // do roster cache (contatos + perfis)
         try {
             const entry = S?.roster?.getEntry?.(chatIdFor(_state.myNumber, num)) ||
                           S?.roster?.all?.()?.find(x => x.number === num);
             if (entry?.title) { _nameCache.set(num, entry.title); return entry.title; }
         } catch(_) {}
-        // do ctx.contacts
         const contacts = ctx.contacts?.contacts || [];
         const c = contacts.find(x => (x.number || x.num) === num);
         if (c?.name) { _nameCache.set(num, c.name); return c.name; }
         return shortNum(num);
     }
 
-    // ═══ MIC GESTURE (integração audio v2) ═══
+    // ═══ MIC GESTURE (integra audio v2) ═══
     function bindMicGesture() {
-        const mic = _state.root?.querySelector('.sz-chat-host .sz-mic-btn') ||
-                    _state.root?.querySelector('.sz-chat-host [data-act="mic"]');
-        // se o chat v2 não expõe um mic, adiciona um overlay no input bar
+        const host = _state.root?.querySelector('.sz-chat-host');
+        if (!host) return;
+
+        // usa mic existente se o chat tiver, senão injeta
+        let mic = host.querySelector('[data-act="mic"], .sz-mic-btn');
         if (!mic) {
-            const bar = _state.root?.querySelector('.sz-chat-host .sz-input-bar');
+            const bar = host.querySelector('.sz-input-bar');
             if (!bar) return;
-            const btn = document.createElement('button');
-            btn.className = 'sz-mic-btn';
-            btn.type = 'button';
-            btn.setAttribute('aria-label', 'Gravar áudio');
-            btn.innerHTML = '🎤';
-            bar.insertBefore(btn, bar.querySelector('.sz-send-btn') || null);
-            attachMicGesture(btn);
+            mic = document.createElement('button');
+            mic.className = 'sz-mic-btn';
+            mic.type = 'button';
+            mic.setAttribute('aria-label', 'Gravar áudio');
+            mic.innerHTML = '🎤';
+            bar.insertBefore(mic, bar.querySelector('.sz-send-btn') || null);
+        }
+
+        if (!S?.audio?.startGesture) {
+            mic.addEventListener('click', () => ctx.toast?.('Áudio indisponível', 'err'));
             return;
         }
-        attachMicGesture(mic);
-    }
 
-    function attachMicGesture(btn) {
-        if (!S?.audio?.startGesture) return;
         const rec = S.audio.startGesture({
-            trigger: btn,
+            trigger: mic,
             onState: (state, m) => {
-                btn.classList.toggle('rec', state === 'rec');
-                btn.classList.toggle('cancel', state === 'cancel');
-                btn.classList.toggle('locked', state === 'locked' || state === 'paused');
-                btn.classList.toggle('paused', state === 'paused');
+                mic.classList.toggle('rec', state === 'rec');
+                mic.classList.toggle('cancel', state === 'cancel');
+                mic.classList.toggle('locked', state === 'locked' || state === 'paused');
+                mic.classList.toggle('paused', state === 'paused');
             },
             onDone: (payload) => {
                 try { S.chat?.sendAudio?.(payload); } catch(_) {}
@@ -663,7 +768,7 @@
             onLevel: () => {}
         });
         if (rec && typeof rec.destroy === 'function') {
-            _micCleanup = () => rec.destroy();
+            _micCleanup = () => { try { rec.destroy(); } catch(_) {} };
         } else {
             _micCleanup = () => {};
         }
@@ -768,7 +873,6 @@
             historyPush();
             render();
 
-            // pending deep-link
             if (_state.pendingOpen) {
                 const p = _state.pendingOpen;
                 _state.pendingOpen = null;
@@ -787,7 +891,11 @@
             try { S?.stories?.stop?.(); } catch(_) {}
             try { S?.audio?.cancel?.(); } catch(_) {}
             try { S?.audio?.clearCache?.(); } catch(_) {}
-            try { _state.root?.querySelectorAll('audio,video').forEach(el => { try { el.pause(); } catch(_) {} }); } catch(_) {}
+            try {
+                _state.root?.querySelectorAll('audio,video').forEach(el => {
+                    try { el.pause(); } catch(_) {}
+                });
+            } catch(_) {}
             _state.root = null;
             _state.chatMeta = null;
             _state.activeChatId = null;
@@ -928,6 +1036,50 @@
         .sz-stub-title { font-size: 15px; font-weight: 800; color: #e9ecf5; }
         .sz-stub-sub { font-size: 11px; color: #6b7280; line-height: 1.5; max-width: 240px; }
 
+        /* Diagnóstico */
+        .sz-diag {
+            padding: 24px 16px;
+            display: flex; flex-direction: column; gap: 10px;
+            overflow-y: auto; flex: 1;
+            font-size: 12px;
+        }
+        .sz-diag-icon { font-size: 42px; text-align: center; opacity: .5; }
+        .sz-diag-title { font-size: 15px; font-weight: 800; color: #e9ecf5; text-align: center; }
+        .sz-diag-sub { font-size: 11px; color: #8a90a8; text-align: center; }
+        .sz-diag-base {
+            display: block; padding: 8px 10px;
+            background: rgba(0,0,0,.35);
+            border: 1px solid rgba(255,255,255,.08);
+            border-radius: 8px;
+            font-family: ui-monospace, Menlo, monospace;
+            font-size: 10px; color: #67e8f9;
+            word-break: break-all;
+        }
+        .sz-diag-list {
+            display: flex; flex-direction: column; gap: 4px;
+            padding: 8px; border-radius: 10px;
+            background: rgba(0,0,0,.22);
+            border: 1px solid rgba(255,255,255,.06);
+        }
+        .sz-diag-row {
+            display: flex; align-items: center; gap: 8px;
+            padding: 5px 8px; border-radius: 6px;
+            font-family: ui-monospace, Menlo, monospace;
+            font-size: 10.5px;
+        }
+        .sz-diag-row.ok { color: #86efac; }
+        .sz-diag-row.fail { color: #fca5b1; background: rgba(229,72,77,.08); }
+        .sz-diag-ico { width: 12px; text-align: center; font-weight: 800; }
+        .sz-diag-file { flex: 1; }
+        .sz-diag-status { font-size: 9.5px; opacity: .8; }
+        .sz-diag-hint {
+            font-size: 10px; color: #8a90a8; line-height: 1.6;
+            padding: 8px 10px; border-radius: 8px;
+            background: rgba(37,211,102,.05);
+            border: 1px solid rgba(37,211,102,.15);
+        }
+        .sz-diag-hint b { color: #86efac; }
+
         /* Roster */
         .sz-roster { display: flex; flex-direction: column; flex: 1; min-height: 0; }
         .sz-roster-head { display: flex; align-items: center; gap: 8px; padding: 10px 12px 8px; flex-shrink: 0; }
@@ -953,7 +1105,6 @@
         .sz-new-btn:hover { transform: scale(1.06); box-shadow: 0 6px 16px rgba(37,211,102,.5); }
         .sz-new-btn:active { transform: scale(.94); }
 
-        /* Chips */
         .sz-chips {
             display: flex; gap: 6px; padding: 0 12px 8px; flex-shrink: 0;
             overflow-x: auto; scrollbar-width: none;
@@ -1056,9 +1207,7 @@
             min-width: 150px;
             animation: szFadeIn .16s ease;
         }
-        .sz-ctx-menu.sz-ctx-center {
-            top: 50%; left: 50%; transform: translate(-50%, -50%);
-        }
+        .sz-ctx-menu.sz-ctx-center { top: 50%; left: 50%; transform: translate(-50%, -50%); }
         .sz-ctx-item {
             display: block; width: 100%;
             padding: 10px 12px;
@@ -1215,9 +1364,7 @@
             border: 1px solid rgba(255,255,255,.06);
         }
 
-        .sz-reactions {
-            display: flex; gap: 3px; margin-top: 4px; flex-wrap: wrap;
-        }
+        .sz-reactions { display: flex; gap: 3px; margin-top: 4px; flex-wrap: wrap; }
         .sz-reactions .sz-react {
             flex: none;
             padding: 2px 7px; border-radius: 12px;
@@ -1227,10 +1374,7 @@
             display: flex; align-items: center; gap: 3px;
             transition: background .14s, transform .14s;
         }
-        .sz-reactions .sz-react.mine {
-            background: rgba(37,211,102,.2);
-            border-color: rgba(37,211,102,.5);
-        }
+        .sz-reactions .sz-react.mine { background: rgba(37,211,102,.2); border-color: rgba(37,211,102,.5); }
         .sz-reactions .sz-react:hover { transform: scale(1.05); }
         .sz-react-n { font-size: 9px; color: #e9ecf5; font-weight: 700; }
 
@@ -1520,14 +1664,11 @@
             display: flex; flex-direction: column;
             animation: szFadeIn .2s ease;
         }
-        .sz-media-preview-top {
-            padding: 10px 12px; display: flex; justify-content: flex-end;
-        }
+        .sz-media-preview-top { padding: 10px 12px; display: flex; justify-content: flex-end; }
         .sz-media-close {
             width: 34px; height: 34px; border-radius: 50%;
             background: rgba(255,255,255,.1); border: none; color: #fff;
-            font-size: 16px; cursor: pointer;
-            font-family: inherit;
+            font-size: 16px; cursor: pointer; font-family: inherit;
         }
         .sz-media-preview-body {
             flex: 1; min-height: 0;
@@ -1544,10 +1685,7 @@
             display: flex; flex-direction: column; align-items: center; gap: 10px;
         }
         .sz-doc-big div { font-size: 14px; font-weight: 700; }
-        .sz-media-preview-bottom {
-            display: flex; gap: 8px; padding: 12px;
-            background: rgba(0,0,0,.5);
-        }
+        .sz-media-preview-bottom { display: flex; gap: 8px; padding: 12px; background: rgba(0,0,0,.5); }
         .sz-media-caption {
             flex: 1;
             padding: 10px 14px; border-radius: 20px;
