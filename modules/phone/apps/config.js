@@ -6,12 +6,25 @@
     if (ctx.apps.get('settings')) return;
 
     // ═══ CONFIG ═══
-    const APP_ID = 'settings';       // mesmo id do built-in — sobrescreve
-    const APP_VERSION = '1.2.0';
+    const APP_ID = 'settings';
+    const APP_VERSION = '1.3.0';
     const LS_KEY = 'sanghub_phone_config';
     const LS_PIN = 'sanghub_phone_pin';
 
+    // Aspect ratio da tela do telefone (screen interna = 260x550)
+    const SCREEN_W = 260;
+    const SCREEN_H = 550;
+    const TARGET_ASPECT = SCREEN_W / SCREEN_H;   // ≈ 0.4727
+    const OUTPUT_W = 520;                         // 2x da tela, retina
+    const OUTPUT_H = 1100;
+    const MAX_FILE_BYTES = 20 * 1024 * 1024;      // 20 MB
+    const JPEG_QUALITY = 0.88;
+
     const DEFAULT_ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>`;
+
+    const UPLOAD_ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>`;
+    const TRASH_ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>`;
+    const LINK_ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>`;
 
     const DEFAULTS = {
         theme: 'aurora',
@@ -29,7 +42,14 @@
         catch(_) { return { ...DEFAULTS }; }
     }
     function save(cfg) {
-        try { localStorage.setItem(LS_KEY, JSON.stringify(cfg)); } catch(_) {}
+        try {
+            localStorage.setItem(LS_KEY, JSON.stringify(cfg));
+            return true;
+        } catch(e) {
+            // QuotaExceeded
+            console.warn('[Phone/config] save falhou:', e);
+            return false;
+        }
     }
     function getPin() {
         try { return localStorage.getItem(LS_PIN) || ''; } catch(_) { return ''; }
@@ -46,7 +66,7 @@
         if (!url) return '';
         const s = String(url).trim();
         if (/^https?:\/\//i.test(s)) return s.replace(/['"()\\\s]/g, '');
-        if (/^data:image\//i.test(s)) return s.replace(/['"()\\\s]/g, '');
+        if (/^data:image\//i.test(s)) return s;
         return '';
     }
     function iconHtmlFor(cfg) {
@@ -58,11 +78,87 @@
         const el = ctx.root?.querySelector('#phWallpaper');
         if (!el) return;
         const url = safeUrl(cfg.wallpaperUrl);
-        if (url) el.style.setProperty('--phone-wallpaper', `url('${url}')`);
+        if (url) el.style.setProperty('--phone-wallpaper', `url("${url}")`);
         else el.style.removeProperty('--phone-wallpaper');
     }
 
-    // Aplica wallpaper salvo assim que o shell monta o frame
+    // ═══ IMAGE PIPELINE ═══
+    function cropToPhone(img) {
+        const sw = img.naturalWidth || img.width;
+        const sh = img.naturalHeight || img.height;
+        if (!sw || !sh) throw new Error('imagem vazia');
+
+        // Center crop no aspect ratio alvo
+        let cropW, cropH, cropX, cropY;
+        if (sw / sh > TARGET_ASPECT) {
+            // Fonte mais larga → corta laterais
+            cropH = sh;
+            cropW = sh * TARGET_ASPECT;
+            cropX = (sw - cropW) / 2;
+            cropY = 0;
+        } else {
+            // Fonte mais alta → corta topo/base
+            cropW = sw;
+            cropH = sw / TARGET_ASPECT;
+            cropX = 0;
+            cropY = (sh - cropH) / 2;
+        }
+
+        const canvas = document.createElement('canvas');
+        canvas.width = OUTPUT_W;
+        canvas.height = OUTPUT_H;
+        const g = canvas.getContext('2d');
+        if (!g) throw new Error('canvas 2d indisponível');
+        try { g.imageSmoothingEnabled = true; g.imageSmoothingQuality = 'high'; } catch(_) {}
+        g.drawImage(img, cropX, cropY, cropW, cropH, 0, 0, OUTPUT_W, OUTPUT_H);
+
+        // Sempre JPEG: mais compacto, sem alpha canal (papel de parede não precisa)
+        const dataUrl = canvas.toDataURL('image/jpeg', JPEG_QUALITY);
+        if (!/^data:image\/jpeg/i.test(dataUrl)) throw new Error('export falhou');
+        return dataUrl;
+    }
+
+    function pickFile() {
+        return new Promise((resolve) => {
+            const input = document.createElement('input');
+            input.type = 'file';
+            input.accept = 'image/png,image/jpeg,image/webp,image/gif,image/bmp,image/*';
+            input.style.cssText = 'position:fixed;top:-100px;left:-100px;width:0;height:0;opacity:0;pointer-events:none;';
+            document.body.appendChild(input);
+
+            let resolved = false;
+            const cleanup = () => {
+                try { input.remove(); } catch(_) {}
+            };
+            const done = (file) => {
+                if (resolved) return;
+                resolved = true;
+                cleanup();
+                resolve(file || null);
+            };
+            input.addEventListener('change', () => {
+                const f = input.files && input.files[0];
+                done(f || null);
+            });
+            input.addEventListener('cancel', () => done(null));
+            // Fallback pra navegadores sem 'cancel'
+            setTimeout(() => { if (!resolved && (!input.files || !input.files.length)) done(null); }, 60000);
+
+            input.click();
+        });
+    }
+
+    function loadImageFromFile(file) {
+        return new Promise((resolve, reject) => {
+            const url = URL.createObjectURL(file);
+            const img = new Image();
+            img.onload = () => { resolve({ img, url }); };
+            img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('load falhou')); };
+            img.src = url;
+        });
+    }
+
+    // Aplica wallpaper no boot do app (caso o shell já tenha montado o frame)
     setTimeout(() => { try { applyWallpaper(load()); } catch(_) {} }, 0);
 
     // ═══ REGISTRO ═══
@@ -75,12 +171,30 @@
         order: 10,
 
         mount(root, ctx) {
+            // Esconde a app-bar do shell (usamos nosso próprio header)
+            ctx.screenEl?.classList.add('cfg-hide-bar');
+            // Re-aplica wallpaper (garante sincronia se o shell acabou de montar)
+            applyWallpaper(load());
+
             let cfg = load();
             renderApp(root, () => cfg, (next) => { cfg = next; });
         },
 
-        unmount() {}
+        unmount() {
+            ctx.screenEl?.classList.remove('cfg-hide-bar');
+        }
     });
+
+    // ═══ NAV ═══
+    function goHome() {
+        if (typeof ctx.closeApp === 'function') { try { return ctx.closeApp(); } catch(_) {} }
+        if (typeof ctx.goHome === 'function') { try { return ctx.goHome(); } catch(_) {} }
+        // Fallback: clica o botão do shell
+        try {
+            const backBtn = ctx.frameEl?.querySelector('#phViewApp .ph-app-back');
+            if (backBtn) return backBtn.click();
+        } catch(_) {}
+    }
 
     // ═══ RENDER ═══
     function renderApp(root, getCfg, setCfg) {
@@ -91,6 +205,14 @@
 
         root.innerHTML = `
             <div class="cfg-app">
+                <header class="cfg-hdr">
+                    <button class="cfg-hdr-back" id="cfgBack" title="Voltar ao início" aria-label="Voltar ao início">
+                        ${ctx.I.back}
+                    </button>
+                    <div class="cfg-hdr-title">AJUSTES</div>
+                    <div class="cfg-hdr-ver">v${APP_VERSION}</div>
+                </header>
+
                 <div class="cfg-app-body">
                     <div class="cfg-hero">
                         <div class="cfg-hero-icon" id="cfgHeroIcon">${initialIcon}</div>
@@ -158,18 +280,38 @@
                                 <button class="cfg-radio${cfg.theme === 'claro' ? ' active' : ''}" data-value="claro">Claro</button>
                             </div>
                         </div>
-                        <div class="cfg-field">
-                            <label class="cfg-field-label" for="cfgWallpaper">Papel de parede</label>
-                            <div class="cfg-wallpaper-row">
-                                <div class="cfg-wallpaper-preview" id="cfgWallpaperPreview" style="${initialWallpaper ? `background-image:url('${esc(initialWallpaper)}')` : ''}">
-                                    ${initialWallpaper ? '' : `<span class="cfg-wallpaper-empty">vazio</span>`}
-                                </div>
-                                <input class="cfg-input" id="cfgWallpaper" type="url"
-                                    placeholder="https://exemplo.com/fundo.jpg"
-                                    value="${esc(cfg.wallpaperUrl || '')}"
-                                    spellcheck="false" autocomplete="off" autocapitalize="off" />
+                    </div>
+
+                    <div class="cfg-section">
+                        <div class="cfg-section-title">Papel de parede</div>
+                        <div class="cfg-wall-block">
+                            <div class="cfg-wall-preview" id="cfgWallPreview">
+                                ${initialWallpaper
+                                    ? `<img src="${esc(initialWallpaper)}" alt="preview" />`
+                                    : `<span class="cfg-wall-empty">Sem papel de parede</span>`}
                             </div>
-                            <div class="cfg-field-hint">Imagem aplicada atrás da interface.</div>
+                            <div class="cfg-wall-meta">
+                                <div class="cfg-wall-meta-title">Proporção ${SCREEN_W}×${SCREEN_H}</div>
+                                <div class="cfg-wall-meta-sub">Imagens são auto-recortadas e otimizadas</div>
+                            </div>
+                        </div>
+                        <div class="cfg-wall-actions">
+                            <button class="cfg-file-btn" id="cfgWallPick" type="button">
+                                ${UPLOAD_ICON}<span>Do computador</span>
+                            </button>
+                            <button class="cfg-file-btn ghost" id="cfgWallUrl" type="button">
+                                ${LINK_ICON}<span>Por URL</span>
+                            </button>
+                            <button class="cfg-file-btn ghost danger" id="cfgWallClear" type="button">
+                                ${TRASH_ICON}<span>Remover</span>
+                            </button>
+                        </div>
+                        <div class="cfg-url-wrap" id="cfgWallUrlWrap" style="display:none;">
+                            <input class="cfg-input" id="cfgWallUrlInput" type="url"
+                                placeholder="https://exemplo.com/fundo.jpg"
+                                value="${esc(/^data:/i.test(cfg.wallpaperUrl || '') ? '' : (cfg.wallpaperUrl || ''))}"
+                                spellcheck="false" autocomplete="off" autocapitalize="off" />
+                            <button class="cfg-mini-btn" id="cfgWallUrlApply" type="button">Aplicar</button>
                         </div>
                     </div>
 
@@ -219,7 +361,10 @@
             </div>
         `;
 
-        // ═══ Hero icon live update ═══
+        // ═══ Back ═══
+        root.querySelector('#cfgBack').addEventListener('click', goHome);
+
+        // ═══ Hero icon live ═══
         function updateHero() {
             const hero = root.querySelector('#cfgHeroIcon');
             if (hero) hero.innerHTML = iconHtmlFor(getCfg());
@@ -254,26 +399,106 @@
         });
 
         // ═══ Wallpaper ═══
-        const wpInput = root.querySelector('#cfgWallpaper');
-        const wpPreview = root.querySelector('#cfgWallpaperPreview');
-        function updateWallpaperPreview() {
+        const preview = root.querySelector('#cfgWallPreview');
+        function renderPreview() {
             const url = safeUrl(getCfg().wallpaperUrl);
-            if (url) {
-                wpPreview.style.backgroundImage = `url('${url.replace(/'/g, "%27")}')`;
-                wpPreview.innerHTML = '';
-            } else {
-                wpPreview.style.backgroundImage = '';
-                wpPreview.innerHTML = `<span class="cfg-wallpaper-empty">vazio</span>`;
-            }
+            if (url) preview.innerHTML = `<img src="${esc(url)}" alt="preview" />`;
+            else preview.innerHTML = `<span class="cfg-wall-empty">Sem papel de parede</span>`;
         }
-        let wpDebounce = null;
-        wpInput.addEventListener('input', () => {
-            clearTimeout(wpDebounce);
-            wpDebounce = setTimeout(() => {
-                const c = getCfg(); c.wallpaperUrl = wpInput.value.trim(); setCfg(c); save(c);
-                applyWallpaper(c);
-                updateWallpaperPreview();
-            }, 350);
+        function applyAndPreview() {
+            const c = getCfg();
+            applyWallpaper(c);
+            renderPreview();
+            // Sync URL input se estiver visível
+            const urlInput = root.querySelector('#cfgWallUrlInput');
+            if (urlInput) urlInput.value = /^data:/i.test(c.wallpaperUrl || '') ? '' : (c.wallpaperUrl || '');
+        }
+
+        // File picker
+        root.querySelector('#cfgWallPick').addEventListener('click', async () => {
+            const btn = root.querySelector('#cfgWallPick');
+            if (btn.disabled) return;
+            btn.disabled = true;
+            try {
+                const file = await pickFile();
+                if (!file) return;
+                if (!/^image\//i.test(file.type) && !/\.(png|jpe?g|webp|gif|bmp)$/i.test(file.name || '')) {
+                    ctx.toast('Arquivo não é uma imagem', 'err');
+                    return;
+                }
+                if (file.size > MAX_FILE_BYTES) {
+                    ctx.toast('Imagem muito grande (máx 20MB)', 'err');
+                    return;
+                }
+                ctx.toast('Processando imagem…', 'info');
+                const { img, url } = await loadImageFromFile(file);
+                let dataUrl;
+                try {
+                    dataUrl = cropToPhone(img);
+                } finally {
+                    try { URL.revokeObjectURL(url); } catch(_) {}
+                }
+                const c = getCfg();
+                c.wallpaperUrl = dataUrl;
+                setCfg(c);
+                const ok = save(c);
+                if (!ok) {
+                    ctx.toast('Sem espaço no armazenamento', 'err');
+                    return;
+                }
+                applyAndPreview();
+                ctx.toast('Papel de parede atualizado', 'ok');
+            } catch(e) {
+                console.warn('[Phone/config] pick/crop falhou:', e);
+                ctx.toast('Falha ao processar imagem', 'err');
+            } finally {
+                btn.disabled = false;
+            }
+        });
+
+        // URL toggle
+        const urlWrap = root.querySelector('#cfgWallUrlWrap');
+        const urlInput = root.querySelector('#cfgWallUrlInput');
+        root.querySelector('#cfgWallUrl').addEventListener('click', () => {
+            urlWrap.style.display = urlWrap.style.display === 'none' ? '' : 'none';
+            if (urlWrap.style.display !== 'none') setTimeout(() => urlInput.focus(), 30);
+        });
+        root.querySelector('#cfgWallUrlApply').addEventListener('click', () => {
+            const raw = urlInput.value.trim();
+            if (!raw) { ctx.toast('Cole uma URL', 'err'); return; }
+            const clean = safeUrl(raw);
+            if (!clean) { ctx.toast('URL inválida', 'err'); return; }
+            const c = getCfg(); c.wallpaperUrl = clean; setCfg(c);
+            if (!save(c)) { ctx.toast('Sem espaço no armazenamento', 'err'); return; }
+            applyAndPreview();
+            ctx.toast('Papel de parede atualizado', 'ok');
+        });
+        urlInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') { e.preventDefault(); root.querySelector('#cfgWallUrlApply').click(); }
+        });
+
+        // Clear
+        root.querySelector('#cfgWallClear').addEventListener('click', () => {
+            const btn = root.querySelector('#cfgWallClear');
+            if (!btn.dataset.confirm) {
+                btn.dataset.confirm = '1';
+                btn.querySelector('span').textContent = 'Confirmar?';
+                btn.classList.add('armed');
+                setTimeout(() => {
+                    if (btn.dataset.confirm) {
+                        delete btn.dataset.confirm;
+                        btn.querySelector('span').textContent = 'Remover';
+                        btn.classList.remove('armed');
+                    }
+                }, 2200);
+                return;
+            }
+            delete btn.dataset.confirm;
+            btn.querySelector('span').textContent = 'Remover';
+            btn.classList.remove('armed');
+            const c = getCfg(); c.wallpaperUrl = ''; setCfg(c); save(c);
+            applyAndPreview();
+            ctx.toast('Papel de parede removido', 'ok');
         });
 
         // ═══ Toggles ═══
@@ -309,7 +534,7 @@
             setCfg(next); save(next);
             applyWallpaper(next);
             try { ctx.apps._notify?.(); } catch(_) {}
-            ctx.tone.fav();
+            try { ctx.tone.fav?.(); } catch(_) {}
             ctx.toast('Configurações restauradas', 'ok');
             root.innerHTML = '';
             renderApp(root, getCfg, setCfg);
@@ -318,7 +543,6 @@
 
     // ═══ PIN FLOW ═══
     function handlePinAction(act, root, getCfg, setCfg) {
-        const hasPin = !!getPin();
         if (act === 'set-pin') {
             openPinModal(root, {
                 title: 'Definir PIN',
@@ -352,15 +576,8 @@
                 }
             });
         } else if (act === 'lock-now') {
-            try { ctx.closeApp?.(); } catch(_) {}
-            // Pede ao shell pra voltar pra lock
-            setTimeout(() => {
-                try { window._phone?._lock?.(); } catch(_) {}
-                // Fallback: dispara um toggle+lock via API pública, se existir
-                try {
-                    if (typeof window._phone?._forceLock === 'function') window._phone._forceLock();
-                } catch(_) {}
-            }, 100);
+            try { if (typeof window._phone?._forceLock === 'function') return window._phone._forceLock(); } catch(_) {}
+            goHome();
         }
     }
 
@@ -408,18 +625,15 @@
         }).join('');
 
         const closeModal = () => modal.remove();
-
         const shake = () => {
             const wrap = modal.querySelector('#cfgPinDots');
             if (wrap) { wrap.classList.remove('shake'); void wrap.offsetWidth; wrap.classList.add('shake'); }
         };
-
         const fail = (msg) => {
             try { ctx.tone.errorPin?.(); } catch(_) {}
             shake();
             if (subEl) subEl.textContent = msg;
-            buf = '';
-            updateDots();
+            buf = ''; updateDots();
             setTimeout(() => { if (subEl) subEl.textContent = opts.sub; }, 900);
         };
 
@@ -442,8 +656,7 @@
             }
             if (mode === 'set-confirm') {
                 if (pin !== firstPin) {
-                    firstPin = '';
-                    mode = 'set-new';
+                    firstPin = ''; mode = 'set-new';
                     return fail('PINs não coincidem');
                 }
                 setPin(pin);
@@ -470,12 +683,14 @@
                 if (buf.length === 4) setTimeout(complete, 60);
             });
         });
-
         modal.querySelector('#cfgPinCancel').addEventListener('click', closeModal);
     }
 
     // ═══ CSS ═══
     ctx.appendStyle(`
+        /* Esconde a app-bar do shell quando o config está aberto */
+        .ph-screen.cfg-hide-bar .ph-app-bar { display: none !important; }
+
         /* ═══ APP ROOT ═══ */
         .cfg-app {
             display: flex; flex-direction: column;
@@ -484,9 +699,56 @@
             color: #e9ecf5;
             position: relative;
         }
+
+        /* ═══ HEADER (sticky, seta em cima à esquerda) ═══ */
+        .cfg-hdr {
+            position: sticky; top: 0; z-index: 12;
+            display: flex; align-items: center; gap: 10px;
+            padding: 10px 14px 10px;
+            background: linear-gradient(180deg, rgba(16,14,34,.97) 0%, rgba(16,14,34,.88) 72%, rgba(16,14,34,0) 100%);
+            backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+            flex-shrink: 0;
+        }
+        .cfg-hdr-back {
+            width: 32px; height: 32px; flex-shrink: 0;
+            border-radius: 10px;
+            background: rgba(255,255,255,.07);
+            border: 1px solid rgba(255,255,255,.13);
+            color: #c7cad6;
+            cursor: pointer; font-family: inherit; padding: 0;
+            display: flex; align-items: center; justify-content: center;
+            transition: all .16s cubic-bezier(.22,1,.36,1);
+        }
+        .cfg-hdr-back svg { width: 14px; height: 14px; }
+        .cfg-hdr-back:hover {
+            background: rgba(34,211,238,.16);
+            color: #67e8f9;
+            border-color: rgba(34,211,238,.45);
+            transform: translateX(-1px);
+        }
+        .cfg-hdr-back:active { transform: translateX(-1px) scale(.94); }
+
+        .cfg-hdr-title {
+            flex: 1; min-width: 0;
+            font-size: 13px; font-weight: 800; letter-spacing: .1em;
+            background: linear-gradient(100deg, #22d3ee 0%, #a78bfa 50%, #22d3ee 100%);
+            background-size: 220% auto;
+            -webkit-background-clip: text; background-clip: text; color: transparent;
+            animation: phScreenBlink 3.2s ease-in-out infinite;
+            text-transform: uppercase;
+        }
+        .cfg-hdr-ver {
+            font-size: 9px; color: #8a90a8; letter-spacing: .06em;
+            padding: 3px 7px; border-radius: 6px;
+            background: rgba(255,255,255,.05);
+            border: 1px solid rgba(255,255,255,.08);
+            font-variant-numeric: tabular-nums;
+            flex-shrink: 0;
+        }
+
         .cfg-app-body {
             flex: 1; min-height: 0; overflow-y: auto;
-            padding: 6px 14px 22px;
+            padding: 4px 14px 22px;
             display: flex; flex-direction: column; gap: 12px;
         }
         .cfg-app-body::-webkit-scrollbar { width: 4px; }
@@ -499,8 +761,7 @@
         /* ═══ HERO ═══ */
         .cfg-hero {
             display: flex; align-items: center; gap: 14px;
-            padding: 14px;
-            border-radius: 16px;
+            padding: 14px; border-radius: 16px;
             background:
                 radial-gradient(circle at 15% 20%, rgba(34,211,238,.14), transparent 55%),
                 radial-gradient(circle at 85% 90%, rgba(167,139,250,.16), transparent 55%),
@@ -618,19 +879,96 @@
         }
         .cfg-radio:active:not(.active) { transform: scale(.96); }
 
-        /* ═══ WALLPAPER ROW ═══ */
-        .cfg-wallpaper-row { display: flex; gap: 9px; align-items: center; }
-        .cfg-wallpaper-preview {
-            width: 42px; height: 42px; flex-shrink: 0;
-            border-radius: 10px;
+        /* ═══ WALLPAPER ═══ */
+        .cfg-wall-block {
+            display: flex; gap: 12px; align-items: stretch;
+        }
+        .cfg-wall-preview {
+            width: 70px; height: 148px;
+            flex-shrink: 0;
+            border-radius: 12px;
             background-color: rgba(255,255,255,.03);
-            background-size: cover; background-position: center;
+            background-image:
+                linear-gradient(45deg, rgba(255,255,255,.03) 25%, transparent 25%),
+                linear-gradient(-45deg, rgba(255,255,255,.03) 25%, transparent 25%),
+                linear-gradient(45deg, transparent 75%, rgba(255,255,255,.03) 75%),
+                linear-gradient(-45deg, transparent 75%, rgba(255,255,255,.03) 75%);
+            background-size: 12px 12px;
+            background-position: 0 0, 0 6px, 6px -6px, -6px 0;
             border: 1px solid rgba(255,255,255,.1);
             display: flex; align-items: center; justify-content: center;
-            overflow: hidden;
+            overflow: hidden; position: relative;
         }
-        .cfg-wallpaper-empty { font-size: 8px; color: #4b5060; letter-spacing: .06em; text-transform: uppercase; font-weight: 700; }
-        .cfg-wallpaper-row .cfg-input { flex: 1; min-width: 0; }
+        .cfg-wall-preview img {
+            position: absolute; inset: 0;
+            width: 100%; height: 100%;
+            object-fit: cover;
+            display: block;
+        }
+        .cfg-wall-empty {
+            font-size: 8.5px; color: #5c6280;
+            letter-spacing: .06em; text-transform: uppercase; font-weight: 700;
+            text-align: center; padding: 0 6px; line-height: 1.4;
+        }
+        .cfg-wall-meta {
+            flex: 1; min-width: 0;
+            display: flex; flex-direction: column; justify-content: center; gap: 4px;
+        }
+        .cfg-wall-meta-title { font-size: 11px; font-weight: 700; color: #e8eaf4; }
+        .cfg-wall-meta-sub { font-size: 9px; color: #6b7280; line-height: 1.4; }
+
+        .cfg-wall-actions {
+            display: grid; grid-template-columns: 1fr 1fr 1fr;
+            gap: 5px;
+        }
+        .cfg-file-btn {
+            display: flex; align-items: center; justify-content: center; gap: 5px;
+            padding: 9px 6px; border-radius: 9px;
+            background: linear-gradient(135deg, rgba(34,211,238,.2), rgba(167,139,250,.2));
+            border: 1px solid rgba(34,211,238,.4);
+            color: #67e8f9;
+            font-family: inherit; font-size: 9.5px; font-weight: 800;
+            letter-spacing: .04em; cursor: pointer; text-align: center;
+            transition: all .16s cubic-bezier(.22,1,.36,1);
+            min-width: 0; overflow: hidden;
+        }
+        .cfg-file-btn svg { width: 12px; height: 12px; flex-shrink: 0; }
+        .cfg-file-btn span {
+            overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        }
+        .cfg-file-btn:hover:not(:disabled) {
+            background: linear-gradient(135deg, rgba(34,211,238,.32), rgba(167,139,250,.32));
+            transform: translateY(-1px);
+            box-shadow: 0 6px 16px rgba(34,211,238,.25);
+        }
+        .cfg-file-btn:active:not(:disabled) { transform: translateY(0) scale(.96); }
+        .cfg-file-btn:disabled { opacity: .45; cursor: not-allowed; }
+        .cfg-file-btn.ghost {
+            background: rgba(255,255,255,.05);
+            border-color: rgba(255,255,255,.12);
+            color: #c7cad6;
+        }
+        .cfg-file-btn.ghost:hover:not(:disabled) {
+            background: rgba(255,255,255,.1);
+            box-shadow: none;
+            color: #fff;
+        }
+        .cfg-file-btn.ghost.danger { color: #fca5b1; }
+        .cfg-file-btn.ghost.danger:hover:not(:disabled) {
+            background: rgba(251,113,133,.16);
+            border-color: rgba(251,113,133,.45);
+        }
+        .cfg-file-btn.ghost.danger.armed {
+            background: rgba(251,113,133,.28);
+            color: #fff;
+            animation: phSpeaking 1.4s ease-in-out infinite;
+        }
+
+        .cfg-url-wrap {
+            display: flex; gap: 6px; align-items: center;
+        }
+        .cfg-url-wrap .cfg-input { flex: 1; min-width: 0; }
+        .cfg-url-wrap .cfg-mini-btn { align-self: stretch; padding: 0 12px; }
 
         /* ═══ TOGGLES ═══ */
         .cfg-toggle-row { display: flex; align-items: center; gap: 12px; padding: 4px 0; }
@@ -758,8 +1096,8 @@
         @keyframes phPinShake { 10%,90%{transform:translateX(-3px)} 20%,80%{transform:translateX(4px)} 30%,50%,70%{transform:translateX(-6px)} 40%,60%{transform:translateX(6px)} }
 
         @media (prefers-reduced-motion: reduce) {
-            .cfg-reset-btn.danger, .cfg-pin-key.pressed, .cfg-pin-dots.shake { animation: none !important; }
-            .cfg-action, .cfg-mini-btn, .cfg-radio, .cfg-reset-btn { transition-duration: .01ms; }
+            .cfg-hdr-title, .cfg-reset-btn.danger, .cfg-file-btn.ghost.danger.armed, .cfg-pin-key.pressed, .cfg-pin-dots.shake { animation: none !important; }
+            .cfg-action, .cfg-mini-btn, .cfg-radio, .cfg-reset-btn, .cfg-hdr-back, .cfg-file-btn { transition-duration: .01ms; }
         }
     `);
 })();
