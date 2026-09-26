@@ -6,6 +6,100 @@
     if (!ctx || !S) return;
     if (S.chat) return;
 
+    // ═══ FS HELPERS — tradução inline Firestore REST ═══
+    // O hub expõe request() cru e value()/parseDoc() só tratam primitivos.
+    // Aqui registramos em S quatro funções que fazem a tradução completa
+    // (array + objeto aninhado) e centralizam o updateMask. Idempotente.
+    (function ensureFsHelpers() {
+        if (S.__fsFull) return;
+        S.__fsFull = true;
+
+        function toFs(v) {
+            if (v === null || v === undefined) return { nullValue: null };
+            if (typeof v === 'string')  return { stringValue: v };
+            if (typeof v === 'boolean') return { booleanValue: v };
+            if (typeof v === 'number')  return Number.isInteger(v)
+                ? { integerValue: String(v) }
+                : { doubleValue: v };
+            if (Array.isArray(v)) return { arrayValue: { values: v.map(toFs) } };
+            if (typeof v === 'object') {
+                const fields = {};
+                for (const k in v) fields[k] = toFs(v[k]);
+                return { mapValue: { fields } };
+            }
+            return { nullValue: null };
+        }
+
+        function fromFs(v) {
+            if (!v || typeof v !== 'object') return null;
+            if ('nullValue' in v)      return null;
+            if ('stringValue' in v)    return v.stringValue;
+            if ('booleanValue' in v)   return v.booleanValue;
+            if ('integerValue' in v)   return parseInt(v.integerValue, 10);
+            if ('doubleValue' in v)    return v.doubleValue;
+            if ('timestampValue' in v) return v.timestampValue;
+            if ('arrayValue' in v)     return (v.arrayValue?.values || []).map(fromFs);
+            if ('mapValue' in v) {
+                const out = {};
+                const f = v.mapValue?.fields || {};
+                for (const k in f) out[k] = fromFs(f[k]);
+                return out;
+            }
+            return null;
+        }
+
+        // Sobe o valor / parseDoc do hub pro nível completo. Não quebra
+        // contacts/calls porque pra primitivos o resultado é idêntico.
+        try {
+            ctx.bridge.firestore.value = toFs;
+            ctx.bridge.firestore.parseDoc = function(doc) {
+                const out = {};
+                const fields = doc?.fields || {};
+                for (const k in fields) out[k] = fromFs(fields[k]);
+                return out;
+            };
+        } catch(_) {}
+
+        S.fsWrite = async function(path, payload, extraQuery) {
+            const fields = {};
+            for (const k in payload) fields[k] = toFs(payload[k]);
+            const mask = Object.keys(fields).map(k => 'updateMask.fieldPaths=' + k).join('&');
+            const q = extraQuery ? (extraQuery + '&' + mask) : mask;
+            return ctx.bridge.firestore.request('PATCH', path, { fields }, q);
+        };
+
+        S.fsCreate = async function(collectionPath, payload, docId) {
+            const fields = {};
+            for (const k in payload) fields[k] = toFs(payload[k]);
+            const url = docId
+                ? `${collectionPath}?documentId=${encodeURIComponent(docId)}`
+                : collectionPath;
+            return ctx.bridge.firestore.request('POST', url, { fields });
+        };
+
+        S.fsGet = async function(path) {
+            const raw = await ctx.bridge.firestore.request('GET', path);
+            if (!raw) return null;
+            if (Array.isArray(raw.documents)) {
+                return raw.documents.map(d => ({
+                    id: d.name.split('/').pop(),
+                    ...ctx.bridge.firestore.parseDoc(d)
+                }));
+            }
+            if (raw.fields) {
+                return {
+                    id: (raw.name || '').split('/').pop(),
+                    ...ctx.bridge.firestore.parseDoc(raw)
+                };
+            }
+            return null;
+        };
+
+        S.fsDel = async function(path) {
+            return ctx.bridge.firestore.request('DELETE', path);
+        };
+    })();
+
     const C = {};
 
     // ═══ CONFIG ═══
@@ -76,12 +170,6 @@
     }
 
     // ═══ HELPERS ═══
-    const _fmtDur = S.fmtDur || function(ms) {
-        const s = Math.max(0, Math.floor((ms || 0) / 1000));
-        return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
-    };
-    const _fmtBytes = (n) => S.fmtBytes ? S.fmtBytes(n) : (n ? n + ' B' : '');
-
     function authorName(m) {
         if (!m) return '';
         if (m.from === _myNumber) return 'Você';
@@ -103,16 +191,14 @@
 
     function escape(s) { return S.escape ? S.escape(s) : String(s ?? ''); }
 
-    // ═══ DATE SEPARATORS ═══
-    function withDateSeparators(msgs) {
-        if (S.withDateSeparators) return S.withDateSeparators(msgs);
-        return msgs;
-    }
-
-    // ═══ RENDER TEXT ═══
     function renderText(raw, opts) {
         if (S.renderText) return S.renderText(raw, opts || { myName: _meta.myName });
         return escape(raw || '');
+    }
+
+    function withDateSeparators(msgs) {
+        if (S.withDateSeparators) return S.withDateSeparators(msgs);
+        return msgs;
     }
 
     // ═══ OFFLINE / CONNECTING ═══
@@ -162,19 +248,13 @@
     }
 
     // ═══ FETCH ═══
-    // O Firestore REST não aceita `where=campo > valor` na URL. Buscamos todas
-    // as mensagens recentes (com `pageSize`) e filtramos/paginamos no cliente.
+    // Firestore REST não aceita `where=campo > valor` em query string.
+    // Buscamos os últimos N documentos com orderBy + pageSize, filtramos no cliente.
     async function fetchRaw() {
-        const path = `/sangzap_chats/${_chatId}/messages`;
-        const qs = `?orderBy=${encodeURIComponent('sentAt desc')}&pageSize=${FETCH_SIZE}`;
+        const path = `/sangzap_chats/${_chatId}/messages?orderBy=${encodeURIComponent('sentAt desc')}&pageSize=${FETCH_SIZE}`;
         try {
-            const docs = await ctx.bridge.firestore.request('GET', path + qs);
-            if (!Array.isArray(docs)) return [];
-            const arr = docs.map(d => {
-                if (!d) return null;
-                if (typeof d.data === 'function') return { id: d.id, ...d.data() };
-                return { id: d.id || '', ...d };
-            }).filter(Boolean);
+            let arr = await S.fsGet(path);
+            if (!Array.isArray(arr)) arr = arr ? [arr] : [];
             arr.sort((a, b) => (a.sentAt || 0) - (b.sentAt || 0));
             return arr;
         } catch(e) {
@@ -233,9 +313,8 @@
     async function postMessage(payload, tmpId) {
         const doc = buildDoc(payload);
         const msgId = S.msgId();
-        await ctx.bridge.firestore.request('POST',
-            `/sangzap_chats/${_chatId}/messages?documentId=${msgId}`, doc);
-        await ctx.bridge.firestore.request('PATCH', `/sangzap_chats/${_chatId}`, {
+        await S.fsCreate(`/sangzap_chats/${_chatId}/messages`, doc, msgId);
+        await S.fsWrite(`/sangzap_chats/${_chatId}`, {
             lastMessage: S.preview ? S.preview(doc) : (doc.body || ''),
             lastMessageAt: doc.sentAt,
             updatedAt: doc.sentAt
@@ -247,7 +326,7 @@
         const last = _messages[_messages.length - 1];
         if (!last) return;
         try {
-            await ctx.bridge.firestore.request('PATCH', `/sangzap_chats/${_chatId}`, {
+            await S.fsWrite(`/sangzap_chats/${_chatId}`, {
                 lastMessage: S.preview ? S.preview(last) : (last.body || ''),
                 lastMessageAt: last.sentAt,
                 updatedAt: Date.now()
@@ -260,34 +339,34 @@
         const toMark = msgs.filter(m => m.from !== _myNumber && !m.deliveredAt && !m.deletedAt);
         if (!toMark.length) return;
         await Promise.all(toMark.map(m =>
-            ctx.bridge.firestore.request('PATCH',
-                `/sangzap_chats/${_chatId}/messages/${m.id}`,
-                { deliveredAt: Date.now() }
-            ).catch(() => {})
+            S.fsWrite(`/sangzap_chats/${_chatId}/messages/${m.id}`, { deliveredAt: Date.now() }).catch(() => {})
         ));
     }
     async function markRead(msgs) {
         const toMark = msgs.filter(m => m.from !== _myNumber && !m.readAt && !m.deletedAt);
         if (!toMark.length) return;
         await Promise.all(toMark.map(m =>
-            ctx.bridge.firestore.request('PATCH',
-                `/sangzap_chats/${_chatId}/messages/${m.id}`,
-                { readAt: Date.now() }
-            ).catch(() => {})
+            S.fsWrite(`/sangzap_chats/${_chatId}/messages/${m.id}`, { readAt: Date.now() }).catch(() => {})
         ));
     }
 
     // ═══ EDIT / DELETE / REACT ═══
     async function editMessage(msgId, newBody) {
-        await ctx.bridge.firestore.request('PATCH',
-            `/sangzap_chats/${_chatId}/messages/${msgId}`,
-            { body: S.sanitize ? S.sanitize(newBody) : newBody, editedAt: Date.now() });
+        await S.fsWrite(`/sangzap_chats/${_chatId}/messages/${msgId}`, {
+            body: S.sanitize ? S.sanitize(newBody) : newBody,
+            editedAt: Date.now()
+        });
         await updateChatPreview();
     }
     async function deleteForEveryone(msgId) {
-        await ctx.bridge.firestore.request('PATCH',
-            `/sangzap_chats/${_chatId}/messages/${msgId}`,
-            { body: '', deletedAt: Date.now(), audio: null, media: null, reactions: null, waveform: null });
+        await S.fsWrite(`/sangzap_chats/${_chatId}/messages/${msgId}`, {
+            body: '',
+            deletedAt: Date.now(),
+            audio: null,
+            media: null,
+            reactions: null,
+            waveform: null
+        });
         await updateChatPreview();
     }
     function deleteForMe(msgId) {
@@ -305,12 +384,11 @@
         m.reactions = reactions;
         renderThread();
         try {
-            await ctx.bridge.firestore.request('PATCH',
-                `/sangzap_chats/${_chatId}/messages/${msgId}`, { reactions });
+            await S.fsWrite(`/sangzap_chats/${_chatId}/messages/${msgId}`, { reactions });
         } catch(e) { console.warn('[Sangzap/chat] react:', e); }
     }
 
-    // ═══ TYPING / PRESENCE ═══
+    // ═══ TYPING / PRESENCE (RTDB — o hub já lida com auth) ═══
     let _typingSent = 0;
     function sendTyping() {
         if (!_chatId) return;
@@ -481,7 +559,7 @@
         }
         if (m.kind === 'doc') {
             const name = m.filename || 'Documento';
-            const size = m.size ? _fmtBytes(m.size) : '';
+            const size = m.size ? S.fmtBytes(m.size) : '';
             return `<button class="sz-doc" data-act="open-doc" data-msgid="${escape(m.id)}" type="button">
                 <span class="sz-doc-ico">📄</span>
                 <span class="sz-doc-info">
