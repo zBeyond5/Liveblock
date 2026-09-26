@@ -32,6 +32,8 @@
     let _dialBuffer = '';
     let _searchQuery = '';
     let _dialLookupSeq = 0;
+    let _cardEl = null;
+    let _cardOpenNumber = null;
 
     // ═══ HELPERS ═══
     const esc = ctx.esc;
@@ -47,11 +49,12 @@
     function parseNumber(s) { return String(s || '').replace(/\D/g, '').slice(0, 6); }
     function randNumber() { return String(Math.floor(100000 + Math.random() * 900000)); }
     function getMyUsername() { return bridge.player?.username || bridge.player?.name || bridge.deviceId || ''; }
+
     function fmtDurShort(ms) {
         const s = Math.floor(ms / 1000);
         if (s < 60) return s + 's';
         const m = Math.floor(s / 60);
-        if (m < 60) return m + 'min ' + (s % 60) + 's';
+        if (m < 60) return m + 'min' + (s % 60 ? ' ' + (s % 60) + 's' : '');
         return Math.floor(m / 60) + 'h ' + (m % 60) + 'min';
     }
     function timeAgo(ts) {
@@ -62,6 +65,14 @@
         if (s < 604800) return Math.floor(s / 86400) + 'd';
         const d = new Date(ts);
         return String(d.getDate()).padStart(2, '0') + '/' + String(d.getMonth() + 1).padStart(2, '0');
+    }
+    function fullTimestamp(ts) {
+        try {
+            const d = new Date(ts);
+            const pad = n => String(n).padStart(2, '0');
+            return pad(d.getDate()) + '/' + pad(d.getMonth() + 1) + '/' + d.getFullYear() + ' às ' +
+                   pad(d.getHours()) + ':' + pad(d.getMinutes());
+        } catch(_) { return ''; }
     }
 
     // ═══ DIRETÓRIO ═══
@@ -189,6 +200,22 @@
         }
         if (changed) saveContacts();
     }
+    function renameContact(number, novoNome) {
+        const c = _contacts.find(x => x.number === number);
+        if (!c) return false;
+        const trimmed = String(novoNome || '').trim();
+        if (!trimmed) return false;
+        c.savedName = trimmed;
+        c.manualName = true;
+        saveContacts();
+        return true;
+    }
+    function clearManualName(number) {
+        const c = _contacts.find(x => x.number === number);
+        if (!c) return;
+        c.manualName = false;
+        saveContacts();
+    }
     function toggleFav(number) {
         const c = _contacts.find(x => x.number === number);
         if (!c) return false;
@@ -211,6 +238,16 @@
     }
     function pushHistory(entry) { _history.unshift(entry); saveHistory(); }
     function removeHistoryAt(id) { _history = _history.filter(h => h.id !== id); saveHistory(); }
+
+    // Retorna a última interação registrada com um número (1:1 only)
+    function _lastCallWith(number) {
+        for (const h of _history) {
+            if (h.kind !== '1:1') continue;
+            const m = h.members[0];
+            if (m && m.number === number) return h;
+        }
+        return null;
+    }
 
     // ═══ BLOQUEIO ═══
     function loadBlocked() {
@@ -247,20 +284,25 @@
             .filter(s => s.id !== myId && (now - (s.lastSeen || 0)) < ONLINE_MS)
             .find(s => s.name === username || s.username === username) || null;
     }
+
+    // Prioridade: manualName (respeita override) > live > savedName > username > número
     function _enrichContact(c) {
         const live = _findLiveSession(c.username);
-        const name = live?.name || c.savedName || c.username || fmtNumber(c.number);
+        let name;
+        if (c.manualName) name = c.savedName || c.username || fmtNumber(c.number);
+        else name = live?.name || c.savedName || c.username || fmtNumber(c.number);
         const avatarUrl = live?.avatarUrl || c.savedAvatar || '';
         if (live) {
             const patch = {};
             if (live.avatarUrl && live.avatarUrl !== c.savedAvatar) patch.savedAvatar = live.avatarUrl;
-            if (live.name && live.name !== c.savedName) patch.savedName = live.name;
+            if (!c.manualName && live.name && live.name !== c.savedName) patch.savedName = live.name;
             if (Object.keys(patch).length) updateContactMeta(c.number, patch);
         }
         return {
             number: c.number, username: c.username, name, avatarUrl,
             online: !!live, sessionId: live?.id || null,
-            fav: !!c.fav, blocked: isBlocked(c.number)
+            fav: !!c.fav, blocked: isBlocked(c.number),
+            manualName: !!c.manualName
         };
     }
 
@@ -331,14 +373,27 @@
             const callBtn = row.querySelector('.ph-call-btn');
             const noteBtn = row.querySelector('.ph-note-btn');
             const rmBtn = row.querySelector('.ph-rm');
-            const trigger = (e) => {
-                if (e) e.stopPropagation();
+
+            // Clique no row → abre o card
+            row.addEventListener('click', (e) => {
+                if (e.target.closest('.ph-call-btn') || e.target.closest('.ph-note-btn') || e.target.closest('.ph-rm')) return;
+                const c = all.find(x => x.number === num);
+                if (c) _openContactCard(c);
+            });
+            // Duplo clique → liga direto
+            row.addEventListener('dblclick', (e) => {
+                e.preventDefault();
                 if (isBlocked(num)) { ctx.toast('Contato bloqueado', 'err'); return; }
                 ctx.tone.dial();
                 _callByNumber(num);
-            };
-            if (callBtn && !callBtn.disabled) callBtn.addEventListener('click', trigger);
-            row.addEventListener('dblclick', (e) => trigger(e));
+            });
+            // Botão ligar rápido
+            if (callBtn && !callBtn.disabled) callBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                if (isBlocked(num)) { ctx.toast('Contato bloqueado', 'err'); return; }
+                ctx.tone.dial();
+                _callByNumber(num);
+            });
             if (rmBtn) rmBtn.addEventListener('click', (e) => {
                 e.stopPropagation();
                 removeContact(num);
@@ -359,7 +414,7 @@
             : c.online
                 ? `<span class="num">${esc(fmtNumber(c.number))}</span> · <span>online</span>`
                 : `<span class="num">${esc(fmtNumber(c.number))}</span> · <span class="off">offline</span>`;
-        return `<div class="ph-contact ${c.blocked ? 'blocked' : (c.online ? '' : 'offline')} ${c.fav ? 'fav' : ''}" data-num="${esc(c.number)}" data-name="${esc(c.name)}">
+        return `<div class="ph-contact ${c.blocked ? 'blocked' : (c.online ? '' : 'offline')} ${c.fav ? 'fav' : ''}" data-num="${esc(c.number)}" data-name="${esc(c.name)}" title="Clique para detalhes · Duplo clique para ligar">
             ${av}
             <div class="ph-info">
                 <div class="ph-name">${esc(c.name)}</div>
@@ -368,6 +423,242 @@
             <button class="ph-rm" data-rm="${esc(c.number)}" title="Remover">✕</button>
             <button class="ph-call-btn" ${c.online && !c.blocked ? '' : 'disabled'} title="${c.blocked ? 'Bloqueado' : c.online ? 'Ligar' : 'Offline'}">${I.phone}</button>
         </div>`;
+    }
+
+    // ═══ CARD DE CONTATO ═══
+    function _closeCard() {
+        if (!_cardEl) return;
+        const el = _cardEl;
+        _cardEl = null;
+        _cardOpenNumber = null;
+        el.classList.add('closing');
+        setTimeout(() => { try { el.remove(); } catch(_) {} }, 240);
+    }
+
+    function _openContactCard(contact) {
+        if (!ctx.screenEl) return;
+        if (_cardEl) _closeCard();
+        _cardOpenNumber = contact.number;
+
+        const c = contact;
+        const initial = (c.name || '?')[0] || '?';
+        const av = c.avatarUrl
+            ? `<div class="cc-av"><img src="${esc(c.avatarUrl)}" alt="" />${c.online && !c.blocked ? '<span class="dot-online"></span>' : ''}</div>`
+            : `<div class="cc-av">${esc(initial.toUpperCase())}${c.online && !c.blocked ? '<span class="dot-online"></span>' : ''}</div>`;
+
+        const last = _lastCallWith(c.number);
+        let lastLine = `<span class="cc-last-empty">Nenhuma conversa ainda</span>`;
+        if (last) {
+            const dirIcon = last.direction === 'incoming' ? I.arrowIn : I.arrowOut;
+            const dirClass = (last.status === 'missed' || last.status === 'rejected') ? 'dir-miss'
+                           : (last.direction === 'incoming' ? 'dir-in' : 'dir-out');
+            const durTxt = last.durationMs > 0 ? fmtDurShort(last.durationMs)
+                          : (last.status === 'missed' ? 'perdida'
+                          : last.status === 'rejected' ? 'recusada' : '—');
+            const when = timeAgo(last.at);
+            lastLine = `<span class="cc-last">
+                <span class="${dirClass}" style="display:inline-flex;align-items:center;width:10px;height:10px;">${dirIcon}</span>
+                <span>${esc(when)}</span>
+                <span class="dot-sep">·</span>
+                <span>${esc(durTxt)}</span>
+            </span>`;
+        }
+
+        const statusTxt = c.blocked ? 'Bloqueado' : (c.online ? 'Online agora' : 'Offline');
+        const statusCls = c.blocked ? 'bad' : (c.online ? 'ok' : 'neutral');
+
+        const card = el('div', { class: 'cc-overlay' });
+        card.innerHTML = `
+            <div class="cc-panel">
+                <button class="cc-close" title="Fechar" aria-label="Fechar">✕</button>
+                <div class="cc-top">
+                    ${av}
+                    <div class="cc-nameline">
+                        <div class="cc-name-display ${c.manualName ? 'manual' : ''}" id="ccNameDisplay" title="${c.manualName ? 'Nome personalizado' : 'Toque para editar'}">
+                            <span>${esc(c.name)}</span>
+                            <span class="cc-name-edit-hint">✎</span>
+                        </div>
+                        <div class="cc-name-edit" hidden>
+                            <input type="text" class="cc-name-input" id="ccNameInput" value="${esc(c.name)}" maxlength="32" spellcheck="false" autocomplete="off" />
+                            <button class="cc-name-save" id="ccNameSave" title="Salvar">✓</button>
+                            <button class="cc-name-cancel" id="ccNameCancel" title="Cancelar">✕</button>
+                        </div>
+                        <div class="cc-number-line">
+                            <span class="cc-number" id="ccNumber">${esc(fmtNumber(c.number))}</span>
+                            <button class="cc-copy" id="ccCopy" title="Copiar número">${I.copy}</button>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="cc-meta-grid">
+                    <div class="cc-meta-row">
+                        <span class="cc-meta-label">Status</span>
+                        <span class="cc-badge ${statusCls}">${esc(statusTxt)}</span>
+                    </div>
+                    ${c.username ? `<div class="cc-meta-row">
+                        <span class="cc-meta-label">Usuário</span>
+                        <span class="cc-meta-val">${esc(c.username)}</span>
+                    </div>` : ''}
+                    <div class="cc-meta-row">
+                        <span class="cc-meta-label">Última chamada</span>
+                        <span class="cc-meta-val">${lastLine}</span>
+                    </div>
+                </div>
+
+                <div class="cc-actions-main">
+                    <button class="cc-btn cc-btn-primary" id="ccCall" ${(!c.online || c.blocked) ? 'disabled' : ''}>
+                        ${I.phone}<span>Ligar</span>
+                    </button>
+                    <button class="cc-btn cc-btn-note" id="ccNote" ${c.blocked ? 'disabled' : ''}>
+                        ${I.mic}<span>Recado</span>
+                    </button>
+                </div>
+
+                <div class="cc-actions-sec">
+                    <button class="cc-icon-btn ${c.fav ? 'active-fav' : ''}" id="ccFav" title="${c.fav ? 'Remover favorito' : 'Favoritar'}">
+                        ${c.fav ? I.star : I.starOutline}
+                        <span>${c.fav ? 'Favoritado' : 'Favoritar'}</span>
+                    </button>
+                    ${c.manualName ? `
+                    <button class="cc-icon-btn" id="ccReset" title="Restaurar nome automático">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px;">
+                            <path d="M3 12a9 9 0 1 0 3-6.7"/><polyline points="3 4 3 9 8 9"/>
+                        </svg>
+                        <span>Restaurar</span>
+                    </button>` : ''}
+                    <button class="cc-icon-btn ${c.blocked ? 'active-block' : ''}" id="ccBlock" title="${c.blocked ? 'Desbloquear' : 'Bloquear'}">
+                        ${I.block}
+                        <span>${c.blocked ? 'Bloqueado' : 'Bloquear'}</span>
+                    </button>
+                    <button class="cc-icon-btn danger" id="ccRemove" title="Remover contato">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px;">
+                            <polyline points="3 6 5 6 21 6"/>
+                            <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+                        </svg>
+                        <span>Remover</span>
+                    </button>
+                </div>
+            </div>
+        `;
+        ctx.screenEl.appendChild(card);
+        _cardEl = card;
+
+        // ─── Eventos ───
+        const closeBtn = card.querySelector('.cc-close');
+        closeBtn.addEventListener('click', _closeCard);
+        card.addEventListener('click', (e) => { if (e.target === card) _closeCard(); });
+
+        // Copiar número
+        const copyBtn = card.querySelector('#ccCopy');
+        copyBtn.addEventListener('click', async () => {
+            try {
+                await navigator.clipboard.writeText(fmtNumber(c.number));
+                copyBtn.classList.add('copied');
+                copyBtn.innerHTML = '✓';
+                ctx.toast('Número copiado', 'ok');
+                setTimeout(() => {
+                    copyBtn.classList.remove('copied');
+                    copyBtn.innerHTML = I.copy;
+                }, 1200);
+            } catch(_) { ctx.toast('Falha ao copiar', 'err'); }
+        });
+
+        // Editar nome
+        const nameDisplay = card.querySelector('#ccNameDisplay');
+        const nameEdit = card.querySelector('.cc-name-edit');
+        const nameInput = card.querySelector('#ccNameInput');
+        const nameSave = card.querySelector('#ccNameSave');
+        const nameCancel = card.querySelector('#ccNameCancel');
+
+        const enterEditMode = () => {
+            nameDisplay.hidden = true;
+            nameEdit.hidden = false;
+            nameInput.value = c.name;
+            setTimeout(() => { nameInput.focus(); nameInput.select(); }, 30);
+        };
+        const exitEditMode = () => {
+            nameEdit.hidden = true;
+            nameDisplay.hidden = false;
+        };
+        const saveEdit = () => {
+            const novo = nameInput.value.trim();
+            if (!novo) { ctx.toast('Nome vazio', 'err'); nameInput.focus(); return; }
+            if (novo === c.name) { exitEditMode(); return; }
+            renameContact(c.number, novo);
+            ctx.tone.fav();
+            ctx.toast('Nome atualizado', 'ok');
+            exitEditMode();
+            // re-renderiza card e lista
+            _closeCard();
+            _renderContacts();
+        };
+        nameDisplay.addEventListener('click', enterEditMode);
+        nameSave.addEventListener('click', saveEdit);
+        nameCancel.addEventListener('click', exitEditMode);
+        nameInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') { e.preventDefault(); saveEdit(); }
+            if (e.key === 'Escape') { e.preventDefault(); exitEditMode(); }
+        });
+
+        // Ligar
+        const callBtn = card.querySelector('#ccCall');
+        if (callBtn && !callBtn.disabled) callBtn.addEventListener('click', () => {
+            _closeCard();
+            ctx.tone.dial();
+            _callByNumber(c.number);
+        });
+
+        // Recado — fecha o card e dispara o fluxo de gravação segurando
+        const noteBtn = card.querySelector('#ccNote');
+        if (noteBtn && !noteBtn.disabled) {
+            // Reaproveita o wire do notes.js: ele usa pointerdown/up no botão.
+            // Aqui fechamos o card antes para liberar o overlay de gravação.
+            noteBtn.addEventListener('pointerdown', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                _closeCard();
+                // Redispatch manual no botão original da lista não é viável;
+                // chamamos os helpers do próprio notes via ctx.
+                if (ctx.notes.startFromCard) ctx.notes.startFromCard({ number: c.number, name: c.name }, noteBtn);
+            });
+        }
+
+        // Favoritar
+        card.querySelector('#ccFav').addEventListener('click', () => {
+            const nowFav = toggleFav(c.number);
+            ctx.tone.fav();
+            ctx.toast(nowFav ? 'Favoritado' : 'Removido dos favoritos', 'fav');
+            _closeCard();
+            _renderContacts();
+        });
+
+        // Restaurar nome automático (só aparece se manualName)
+        const resetBtn = card.querySelector('#ccReset');
+        if (resetBtn) resetBtn.addEventListener('click', () => {
+            clearManualName(c.number);
+            ctx.tone.fav();
+            ctx.toast('Nome restaurado', 'ok');
+            _closeCard();
+            _renderContacts();
+        });
+
+        // Bloquear / desbloquear
+        card.querySelector('#ccBlock').addEventListener('click', () => {
+            const nowBlk = toggleBlock(c.number);
+            ctx.tone.block();
+            ctx.toast(nowBlk ? 'Número bloqueado' : 'Número liberado', nowBlk ? 'err' : 'ok');
+            _closeCard();
+            _renderContacts();
+        });
+
+        // Remover
+        card.querySelector('#ccRemove').addEventListener('click', () => {
+            removeContact(c.number);
+            ctx.tone.block();
+            ctx.toast('Contato removido', 'ok');
+            _closeCard();
+            _renderContacts();
+        });
     }
 
     // ═══ UI — RECENTES ═══
@@ -395,18 +686,33 @@
             const dirClass = (h.status === 'missed' || h.status === 'rejected') ? 'dir-miss'
                             : (h.direction === 'incoming' ? 'dir-in' : 'dir-out');
             const dirIcon = h.direction === 'incoming' ? I.arrowIn : I.arrowOut;
-            const durTxt = h.durationMs > 0 ? fmtDurShort(h.durationMs)
-                          : (h.status === 'missed' ? 'perdida'
-                          : h.status === 'rejected' ? 'recusada' : '—');
+
+            // DURAÇÃO — se > 0, mostra duração; senão, mostra status textual
+            let durTxt, durCls;
+            if (h.durationMs > 0) {
+                durTxt = fmtDurShort(h.durationMs);
+                durCls = 'dur';
+            } else if (h.status === 'missed') {
+                durTxt = 'perdida';
+                durCls = 'miss';
+            } else if (h.status === 'rejected') {
+                durTxt = 'recusada';
+                durCls = 'rej';
+            } else {
+                durTxt = '—';
+                durCls = 'off';
+            }
+
             const metaParts = [
                 `<span class="${dirClass}" style="display:inline-flex;align-items:center;width:10px;height:10px;">${dirIcon}</span>`,
                 h.kind === 'group' ? `<span class="grp">${h.members.length} pessoas</span>` : `<span class="num">${esc(fmtNumber(first.number))}</span>`,
-                `<span>${timeAgo(h.at)}</span>`,
-                `<span>${durTxt}</span>`
+                `<span class="when">${timeAgo(h.at)}</span>`,
+                `<span class="dur ${durCls}">${esc(durTxt)}</span>`
             ];
             const canRecall = h.kind === '1:1' && first.number && first.number.length === 6 && !isBlocked(first.number);
             const callBtn = canRecall ? `<button class="ph-call-btn" data-num="${esc(first.number)}" title="Ligar">${I.phone}</button>` : '';
-            return `<div class="ph-contact" data-history-id="${esc(h.id)}" ${canRecall ? `data-num="${esc(first.number)}"` : ''}>
+            const tooltip = `title="${esc(fullTimestamp(h.at))}${h.durationMs > 0 ? ' · ' + fmtDurShort(h.durationMs) : ''}"`;
+            return `<div class="ph-contact" data-history-id="${esc(h.id)}" ${canRecall ? `data-num="${esc(first.number)}"` : ''} ${tooltip}>
                 ${av}
                 <div class="ph-info">
                     <div class="ph-name">${esc(label)}</div>
@@ -607,9 +913,15 @@
         .ph-info { flex: 1; min-width: 0; }
         .ph-name { font-size: 11.5px; font-weight: 700; color: #e8eaf4; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         .ph-meta { font-size: 9px; color: #a8aec4; margin-top: 2px; font-variant-numeric: tabular-nums;
-            display: flex; align-items: center; gap: 4px; }
+            display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
         .ph-meta .num { color: #67e8f9; font-weight: 700; letter-spacing: .03em; }
         .ph-meta .off { color: #7d8399; }
+        .ph-meta .when { color: #8a90a8; }
+        .ph-meta .dur { font-weight: 700; }
+        .ph-meta .dur.dur { color: #a7f3d0; }
+        .ph-meta .dur.miss { color: #fca5b1; }
+        .ph-meta .dur.rej { color: #fca5b1; font-weight: 600; }
+        .ph-meta .dur.off { color: #6b7280; }
         .ph-meta .dir-in { color: #a7f3d0; }
         .ph-meta .dir-out { color: #67e8f9; }
         .ph-meta .dir-miss { color: #fca5b1; }
@@ -675,6 +987,195 @@
         .ph-dial-btn.save:hover:not(:disabled) { background: rgba(255,255,255,.12); transform: translateY(-1px); }
         .ph-dial-btn:disabled { opacity: .35; cursor: not-allowed; transform: none !important; box-shadow: none !important; }
         .ph-dial-btn:active:not(:disabled) { transform: translateY(0) scale(.97); }
+
+        /* ═══ CARD DE CONTATO ═══ */
+        .cc-overlay {
+            position: absolute; inset: 0;
+            background: rgba(10,8,22,.72);
+            backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+            display: flex; align-items: center; justify-content: center;
+            padding: 20px 14px;
+            z-index: 30;
+            animation: phFadeIn .22s ease;
+        }
+        .cc-overlay.closing { animation: ccOut .22s ease forwards; }
+        @keyframes ccOut { to { opacity: 0; } }
+        @keyframes ccSlideIn {
+            from { opacity: 0; transform: translateY(14px) scale(.96); }
+            to { opacity: 1; transform: none; }
+        }
+        .cc-panel {
+            position: relative;
+            width: 100%; max-width: 300px;
+            max-height: calc(100% - 40px);
+            overflow-y: auto;
+            border-radius: 18px;
+            padding: 18px 16px 16px;
+            background:
+                radial-gradient(circle at 20% 0%, rgba(34,211,238,.14), transparent 55%),
+                radial-gradient(circle at 85% 100%, rgba(167,139,250,.16), transparent 55%),
+                linear-gradient(175deg, #1f1c38 0%, #16132c 60%, #0f0d22 100%);
+            border: 1px solid rgba(255,255,255,.1);
+            box-shadow: 0 24px 60px rgba(0,0,0,.75), 0 0 40px rgba(34,211,238,.06), inset 0 1px 0 rgba(255,255,255,.08);
+            animation: ccSlideIn .32s cubic-bezier(.16,1,.3,1);
+            isolation: isolate;
+        }
+        .cc-panel::-webkit-scrollbar { width: 4px; }
+        .cc-panel::-webkit-scrollbar-thumb { background: rgba(167,139,250,.35); border-radius: 2px; }
+
+        .cc-close {
+            position: absolute; top: 10px; right: 10px;
+            width: 26px; height: 26px; border-radius: 8px;
+            background: transparent; border: 1px solid rgba(255,255,255,.12);
+            color: #a8aec4; cursor: pointer; font-family: inherit; font-size: 13px; line-height: 1;
+            display: flex; align-items: center; justify-content: center;
+            transition: all .15s;
+        }
+        .cc-close:hover { background: rgba(251,113,133,.16); color: #fca5b1; border-color: rgba(251,113,133,.4); }
+
+        .cc-top { display: flex; align-items: center; gap: 14px; margin-bottom: 16px; margin-top: 4px; }
+        .cc-av {
+            width: 68px; height: 68px; border-radius: 20px; flex-shrink: 0;
+            background: linear-gradient(135deg, rgba(34,211,238,.24), rgba(167,139,250,.24));
+            border: 1px solid rgba(255,255,255,.12);
+            display: flex; align-items: center; justify-content: center;
+            overflow: hidden; position: relative;
+            color: #a8aec4; font-size: 24px; font-weight: 800;
+            box-shadow: 0 10px 26px rgba(0,0,0,.4), inset 0 1px 0 rgba(255,255,255,.1);
+        }
+        .cc-av img { position: absolute; top: -25%; left: -40%; width: 210%; height: 210%; object-fit: cover; }
+        .cc-av .dot-online { position: absolute; bottom: -2px; right: -2px; width: 14px; height: 14px; border-radius: 50%;
+            background: #34d399; border: 3px solid #16132c; animation: phPulseDot 2s ease-in-out infinite; }
+
+        .cc-nameline { flex: 1; min-width: 0; }
+        .cc-name-display {
+            font-size: 15px; font-weight: 800; color: #f1f2f8; letter-spacing: .02em;
+            display: flex; align-items: center; gap: 6px;
+            cursor: pointer; padding: 3px 4px; margin: -3px -4px;
+            border-radius: 8px;
+            transition: background .15s, color .15s;
+        }
+        .cc-name-display:hover { background: rgba(34,211,238,.08); color: #fff; }
+        .cc-name-display.manual { color: #a7f3d0; }
+        .cc-name-display .cc-name-edit-hint {
+            font-size: 10px; color: #67e8f9; opacity: 0;
+            transition: opacity .15s;
+        }
+        .cc-name-display:hover .cc-name-edit-hint { opacity: .8; }
+        .cc-name-edit { display: flex; gap: 4px; align-items: center; }
+        .cc-name-input {
+            flex: 1; min-width: 0; padding: 6px 9px; font-size: 13px; font-weight: 700;
+            background: rgba(255,255,255,.07); border: 1px solid rgba(34,211,238,.5);
+            border-radius: 8px; color: #f1f2f8; font-family: inherit; outline: none;
+            box-shadow: 0 0 0 3px rgba(34,211,238,.14);
+        }
+        .cc-name-save, .cc-name-cancel {
+            width: 26px; height: 26px; border-radius: 7px; cursor: pointer;
+            display: flex; align-items: center; justify-content: center; font-family: inherit;
+            font-size: 12px; font-weight: 800; line-height: 1; border: 1px solid transparent;
+        }
+        .cc-name-save { background: linear-gradient(135deg, #34d399, #22d3ee); color: #062420; }
+        .cc-name-save:hover { filter: brightness(1.1); }
+        .cc-name-cancel { background: rgba(255,255,255,.06); color: #c7cad6; border-color: rgba(255,255,255,.12); }
+        .cc-name-cancel:hover { background: rgba(255,255,255,.1); }
+
+        .cc-number-line { display: flex; align-items: center; gap: 6px; margin-top: 5px; }
+        .cc-number { font-size: 11px; color: #67e8f9; font-weight: 700; letter-spacing: .06em; font-variant-numeric: tabular-nums; }
+        .cc-copy {
+            width: 18px; height: 18px; border-radius: 5px;
+            background: transparent; border: none; cursor: pointer; color: #8a90a8; padding: 0;
+            display: flex; align-items: center; justify-content: center;
+            transition: color .15s, background .15s, transform .15s;
+            font-family: inherit;
+        }
+        .cc-copy svg { width: 11px; height: 11px; }
+        .cc-copy:hover { color: #67e8f9; background: rgba(34,211,238,.14); }
+        .cc-copy.copied { color: #a7f3d0; background: rgba(52,211,153,.16); font-size: 11px; font-weight: 800; transform: scale(1.15); }
+
+        .cc-meta-grid {
+            display: flex; flex-direction: column; gap: 1px;
+            background: rgba(255,255,255,.03);
+            border: 1px solid rgba(255,255,255,.06);
+            border-radius: 12px;
+            overflow: hidden;
+            margin-bottom: 12px;
+        }
+        .cc-meta-row {
+            display: flex; align-items: center; justify-content: space-between; gap: 10px;
+            padding: 9px 12px;
+            border-bottom: 1px solid rgba(255,255,255,.04);
+            font-size: 10.5px;
+        }
+        .cc-meta-row:last-child { border-bottom: none; }
+        .cc-meta-label { color: #8a90a8; text-transform: uppercase; letter-spacing: .06em; font-weight: 800; font-size: 8.5px; }
+        .cc-meta-val { color: #e8eaf4; font-weight: 600; display: flex; align-items: center; gap: 5px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+        .cc-badge {
+            display: inline-flex; align-items: center; gap: 4px;
+            padding: 3px 9px; border-radius: 14px;
+            font-size: 9px; font-weight: 800; letter-spacing: .04em; text-transform: uppercase;
+        }
+        .cc-badge::before { content: ''; width: 5px; height: 5px; border-radius: 50%; }
+        .cc-badge.ok { background: rgba(52,211,153,.14); color: #a7f3d0; border: 1px solid rgba(52,211,153,.34); }
+        .cc-badge.ok::before { background: #34d399; box-shadow: 0 0 6px rgba(52,211,153,.75); }
+        .cc-badge.bad { background: rgba(251,113,133,.14); color: #fca5b1; border: 1px solid rgba(251,113,133,.34); }
+        .cc-badge.bad::before { background: #fb7185; }
+        .cc-badge.neutral { background: rgba(255,255,255,.06); color: #c7cad6; border: 1px solid rgba(255,255,255,.1); }
+        .cc-badge.neutral::before { background: #5b5f70; }
+
+        .cc-last { display: inline-flex; align-items: center; gap: 4px; font-variant-numeric: tabular-nums; }
+        .cc-last .dir-in { color: #a7f3d0; }
+        .cc-last .dir-out { color: #67e8f9; }
+        .cc-last .dir-miss { color: #fca5b1; }
+        .cc-last .dot-sep { color: #5b5f70; }
+        .cc-last-empty { color: #5c6280; font-style: italic; font-weight: 500; }
+
+        .cc-actions-main { display: flex; gap: 8px; margin-bottom: 10px; }
+        .cc-btn {
+            flex: 1; padding: 11px 12px; border-radius: 11px; border: none; cursor: pointer;
+            font-family: inherit; font-size: 11px; font-weight: 800; letter-spacing: .04em;
+            display: flex; align-items: center; justify-content: center; gap: 6px;
+            transition: all .16s cubic-bezier(.22,1,.36,1);
+        }
+        .cc-btn svg { width: 14px; height: 14px; }
+        .cc-btn-primary {
+            background: linear-gradient(135deg, #34d399, #22d3ee);
+            color: #062420;
+            box-shadow: 0 8px 20px rgba(52,211,153,.3), inset 0 1px 0 rgba(255,255,255,.25);
+        }
+        .cc-btn-primary:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 10px 26px rgba(52,211,153,.4), inset 0 1px 0 rgba(255,255,255,.3); }
+        .cc-btn-note {
+            background: linear-gradient(135deg, rgba(167,139,250,.22), rgba(244,114,182,.22));
+            color: #e9d5ff;
+            border: 1px solid rgba(167,139,250,.4);
+        }
+        .cc-btn-note:hover:not(:disabled) { background: linear-gradient(135deg, rgba(167,139,250,.32), rgba(244,114,182,.32)); transform: translateY(-1px); }
+        .cc-btn:disabled { opacity: .35; cursor: not-allowed; transform: none !important; box-shadow: none !important; }
+        .cc-btn:active:not(:disabled) { transform: translateY(0) scale(.97); }
+
+        .cc-actions-sec {
+            display: grid; grid-template-columns: 1fr 1fr; gap: 6px;
+        }
+        .cc-icon-btn {
+            display: flex; align-items: center; justify-content: center; gap: 5px;
+            padding: 9px 8px; border-radius: 10px;
+            background: rgba(255,255,255,.05);
+            border: 1px solid rgba(255,255,255,.1);
+            color: #c7cad6; cursor: pointer; font-family: inherit;
+            font-size: 9.5px; font-weight: 700; letter-spacing: .03em;
+            transition: all .16s cubic-bezier(.22,1,.36,1);
+        }
+        .cc-icon-btn svg { width: 12px; height: 12px; flex-shrink: 0; }
+        .cc-icon-btn:hover { background: rgba(255,255,255,.1); color: #fff; transform: translateY(-1px); }
+        .cc-icon-btn:active { transform: translateY(0) scale(.96); }
+        .cc-icon-btn.active-fav { background: linear-gradient(135deg, rgba(251,191,36,.18), rgba(245,158,11,.18)); color: #fde68a; border-color: rgba(251,191,36,.4); }
+        .cc-icon-btn.active-block { background: rgba(251,113,133,.14); color: #fca5b1; border-color: rgba(251,113,133,.36); }
+        .cc-icon-btn.danger:hover { background: rgba(251,113,133,.14); color: #fca5b1; border-color: rgba(251,113,133,.36); }
+
+        @media (prefers-reduced-motion: reduce) {
+            .cc-panel { animation: none !important; }
+            .cc-overlay, .cc-overlay.closing { animation: none !important; }
+        }
     `);
 
     // ═══ INIT ═══
@@ -697,8 +1198,15 @@
         hasContact,
         addContactByNumber,
         removeContact,
+        updateContactMeta,
+        renameContact,
+        clearManualName,
+        toggleFav,
+        toggleBlock,
         fmtNumber,
         parseNumber,
+        openContactCard: _openContactCard,
+        closeContactCard: _closeCard,
         get contacts() { return _contacts; },
         get history() { return _history; },
         get blocked() { return _blocked; },
