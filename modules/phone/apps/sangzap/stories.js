@@ -6,6 +6,107 @@
     if (!ctx || !S) return;
     if (S.stories) return;
 
+    // ═══ FS HELPERS — tradução inline Firestore REST ═══
+    // Idempotente. Instala uma única vez.
+    (function ensureFsHelpers() {
+        if (S.__fsFull) return;
+        S.__fsFull = true;
+
+        function toFs(v) {
+            if (v === null || v === undefined) return { nullValue: null };
+            if (typeof v === 'string')  return { stringValue: v };
+            if (typeof v === 'boolean') return { booleanValue: v };
+            if (typeof v === 'number')  return Number.isInteger(v)
+                ? { integerValue: String(v) }
+                : { doubleValue: v };
+            if (Array.isArray(v)) return { arrayValue: { values: v.map(toFs) } };
+            if (typeof v === 'object') {
+                const fields = {};
+                for (const k in v) fields[k] = toFs(v[k]);
+                return { mapValue: { fields } };
+            }
+            return { nullValue: null };
+        }
+
+        function fromFs(v) {
+            if (!v || typeof v !== 'object') return null;
+            if ('nullValue' in v)      return null;
+            if ('stringValue' in v)    return v.stringValue;
+            if ('booleanValue' in v)   return v.booleanValue;
+            if ('integerValue' in v)   return parseInt(v.integerValue, 10);
+            if ('doubleValue' in v)    return v.doubleValue;
+            if ('timestampValue' in v) return v.timestampValue;
+            if ('arrayValue' in v)     return (v.arrayValue?.values || []).map(fromFs);
+            if ('mapValue' in v) {
+                const out = {};
+                const f = v.mapValue?.fields || {};
+                for (const k in f) out[k] = fromFs(f[k]);
+                return out;
+            }
+            return null;
+        }
+
+        try {
+            ctx.bridge.firestore.value = toFs;
+            ctx.bridge.firestore.parseDoc = function(doc) {
+                const out = {};
+                const fields = doc?.fields || {};
+                for (const k in fields) out[k] = fromFs(fields[k]);
+                return out;
+            };
+        } catch(_) {}
+
+        S.fsWrite = async function(path, payload, extraQuery) {
+            const fields = {};
+            for (const k in payload) fields[k] = toFs(payload[k]);
+            const mask = Object.keys(fields).map(k => 'updateMask.fieldPaths=' + k).join('&');
+            const q = extraQuery ? (extraQuery + '&' + mask) : mask;
+            return ctx.bridge.firestore.request('PATCH', path, { fields }, q);
+        };
+
+        S.fsCreate = async function(collectionPath, payload, docId) {
+            const fields = {};
+            for (const k in payload) fields[k] = toFs(payload[k]);
+            const url = docId
+                ? `${collectionPath}?documentId=${encodeURIComponent(docId)}`
+                : collectionPath;
+            return ctx.bridge.firestore.request('POST', url, { fields });
+        };
+
+        S.fsGet = async function(path) {
+            const raw = await ctx.bridge.firestore.request('GET', path);
+            if (!raw) return null;
+            if (Array.isArray(raw.documents)) {
+                return raw.documents.map(d => ({
+                    id: d.name.split('/').pop(),
+                    ...ctx.bridge.firestore.parseDoc(d)
+                }));
+            }
+            if (raw.fields) {
+                return {
+                    id: (raw.name || '').split('/').pop(),
+                    ...ctx.bridge.firestore.parseDoc(raw)
+                };
+            }
+            return null;
+        };
+
+        S.fsQuery = async function(structuredQuery) {
+            const res = await ctx.bridge.firestore.request('POST', ':runQuery', { structuredQuery });
+            return (Array.isArray(res) ? res : []).map(r => {
+                if (!r || !r.document) return null;
+                return {
+                    id: (r.document.name || '').split('/').pop(),
+                    ...ctx.bridge.firestore.parseDoc(r.document)
+                };
+            }).filter(Boolean);
+        };
+
+        S.fsDel = async function(path) {
+            return ctx.bridge.firestore.request('DELETE', path);
+        };
+    })();
+
     const SG = {};
     const TTL = 24 * 60 * 60 * 1000;
     const POLL_MS = 6000;
@@ -23,6 +124,7 @@
     let _profileCache = new Map();
     let _openOverlay = null;
     let _overlayRaf = null;
+    let _viewerCleanup = null;
 
     // ═══ PROFILE CACHE ═══
     async function getProfile(num) {
@@ -30,7 +132,7 @@
         const c = _profileCache.get(num);
         if (c && Date.now() - c.ts < PROFILE_TTL) return c.data;
         try {
-            const p = await ctx.bridge.firestore.parseDoc('sangzap_profiles', num) || {};
+            const p = await S.fsGet('/sangzap_profiles/' + num) || {};
             _profileCache.set(num, { data: p, ts: Date.now() });
             return p;
         } catch(_) {
@@ -41,10 +143,11 @@
     // ═══ FETCH ═══
     async function fetchFeed() {
         try {
-            const docs = await ctx.bridge.firestore.request('GET',
-                `/sangzap_stories?orderBy=${encodeURIComponent('createdAt desc')}&pageSize=80`);
+            const docs = await S.fsGet(
+                `/sangzap_stories?orderBy=${encodeURIComponent('createdAt desc')}&pageSize=80`
+            );
             const now = Date.now();
-            return docs.map(d => ({ id: d.id, ...d.data() })).filter(s => s && s.expiresAt > now);
+            return (docs || []).filter(s => s && s.expiresAt > now);
         } catch(_) { return []; }
     }
 
@@ -63,7 +166,6 @@
             const latest = list[list.length - 1];
             groups.push({ author, profile, stories: list, allSeen, latest });
         }
-        // ordena: minhas primeiro, depois não vistas, depois vistas, por latest
         groups.sort((a, b) => {
             const mineA = a.author === _myNumber;
             const mineB = b.author === _myNumber;
@@ -110,34 +212,34 @@
             viewers: [],
             reactions: {}
         };
-        await ctx.bridge.firestore.request('POST', `/sangzap_stories?documentId=${id}`, doc);
+        await S.fsCreate('/sangzap_stories', doc, id);
         return { id, ...doc };
     };
 
     SG.delete = async function(storyId) {
         try {
-            await ctx.bridge.firestore.request('DELETE', `/sangzap_stories/${storyId}`);
+            await S.fsDel('/sangzap_stories/' + storyId);
             return true;
         } catch(e) { console.warn('[Sangzap/stories] delete:', e); return false; }
     };
 
     SG.markViewed = async function(storyId) {
         try {
-            const doc = await ctx.bridge.firestore.parseDoc('sangzap_stories', storyId);
+            const doc = await S.fsGet('/sangzap_stories/' + storyId);
             const viewers = new Set(doc?.viewers || []);
             if (viewers.has(_myNumber)) return;
             viewers.add(_myNumber);
-            await ctx.bridge.firestore.request('PATCH', `/sangzap_stories/${storyId}`, { viewers: [...viewers] });
+            await S.fsWrite('/sangzap_stories/' + storyId, { viewers: [...viewers] });
         } catch(_) {}
     };
 
     SG.react = async function(storyId, emoji) {
         try {
-            const doc = await ctx.bridge.firestore.parseDoc('sangzap_stories', storyId);
+            const doc = await S.fsGet('/sangzap_stories/' + storyId);
             const reactions = { ...(doc?.reactions || {}) };
             if (reactions[_myNumber] === emoji) delete reactions[_myNumber];
             else reactions[_myNumber] = emoji;
-            await ctx.bridge.firestore.request('PATCH', `/sangzap_stories/${storyId}`, { reactions });
+            await S.fsWrite('/sangzap_stories/' + storyId, { reactions });
         } catch(_) {}
     };
 
@@ -146,7 +248,7 @@
         try {
             const chatId = S.chatIdFor(_myNumber, story.author);
             const now = Date.now();
-            await ctx.bridge.firestore.request('PATCH', `/sangzap_chats/${chatId}`, {
+            await S.fsWrite('/sangzap_chats/' + chatId, {
                 kind: '1:1',
                 members: [_myNumber, story.author].sort(),
                 createdAt: now,
@@ -154,15 +256,14 @@
                 lastMessage: '',
                 lastMessageAt: 0
             }).catch(() => {});
-            await ctx.bridge.firestore.request('POST',
-                `/sangzap_chats/${chatId}/messages?documentId=${S.msgId()}`, {
-                    from: _myNumber,
-                    kind: 'story-reply',
-                    body: text,
-                    storyId: story.id,
-                    sentAt: now
-                });
-            await ctx.bridge.firestore.request('PATCH', `/sangzap_chats/${chatId}`, {
+            await S.fsCreate('/sangzap_chats/' + chatId + '/messages', {
+                from: _myNumber,
+                kind: 'story-reply',
+                body: text,
+                storyId: story.id,
+                sentAt: now
+            }, S.msgId());
+            await S.fsWrite('/sangzap_chats/' + chatId, {
                 lastMessage: '💬 Respondeu ao story',
                 lastMessageAt: now,
                 updatedAt: now
@@ -280,7 +381,6 @@
             stopProgress();
             if (sIdx > 0) { sIdx--; render(); return; }
             if (gIdx > 0) { gIdx--; const g = currentGroup(); sIdx = g ? g.stories.length - 1 : 0; render(); return; }
-            // primeira story do primeiro grupo: reinicia
             sIdx = 0;
             render();
         }
@@ -290,7 +390,7 @@
             stopProgress();
             try { overlay.remove(); } catch(_) {}
             if (_openOverlay === overlay) _openOverlay = null;
-            // re-sincroniza feed com viewers atualizados
+            if (_viewerCleanup === close) _viewerCleanup = null;
             tick();
         }
 
@@ -408,13 +508,9 @@
                 </div>
             `;
 
-            // view mark
             markViewed(story);
-
-            // start progress
             startProgress();
 
-            // bind
             overlay.querySelectorAll('[data-act]').forEach(el => {
                 const act = el.dataset.act;
                 if (act === 'close') el.addEventListener('click', close);
@@ -456,11 +552,9 @@
                 });
             });
 
-            // tap on media also advances
             const body_el = overlay.querySelector('.sz-viewer-body');
             body_el?.addEventListener('click', () => { next(); });
 
-            // swipe detection
             let sx = 0, sy = 0, swiping = false, moved = false;
             overlay.addEventListener('pointerdown', e => {
                 if (e.target.closest('input, button')) return;
@@ -473,7 +567,6 @@
                 const dy = e.clientY - sy;
                 if (Math.abs(dx) > 8 || Math.abs(dy) > 8) moved = true;
                 if (dy > 60 && Math.abs(dy) > Math.abs(dx)) {
-                    // arrastando pra baixo — fecha
                     overlay.style.transform = `translateY(${Math.min(dy, 200)}px)`;
                     overlay.style.opacity = String(Math.max(0.3, 1 - dy / 300));
                 }
@@ -498,7 +591,6 @@
                 resumeProgress();
             });
 
-            // hold-to-pause: segurar sobre o conteúdo pausa
             overlay.addEventListener('mousedown', e => {
                 if (e.target.closest('input, button')) return;
                 pauseProgress();
@@ -517,8 +609,6 @@
         }
 
         render();
-
-        // cleanup handle
         _viewerCleanup = close;
     }
 
