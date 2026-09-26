@@ -8,7 +8,7 @@
 
     const SG = {};
     const TTL = 24 * 60 * 60 * 1000;
-    const POLL_MS = 5000;
+    const POLL_MS = 6000;
     const REACTIONS = ['❤️', '😂', '😮', '😢', '👏'];
 
     let _myNumber = null;
@@ -21,8 +21,7 @@
         try {
             const docs = await ctx.bridge.firestore.request('GET',
                 `/sangzap_stories?orderBy=${encodeURIComponent('createdAt desc')}&pageSize=40`);
-            return docs.map(d => ({ id: d.id, ...d.data() }))
-                        .filter(s => s && s.expiresAt > Date.now());
+            return docs.map(d => ({ id: d.id, ...d.data() })).filter(s => s && s.expiresAt > Date.now());
         } catch(_) { return []; }
     }
 
@@ -48,8 +47,7 @@
             const viewers = new Set(doc?.viewers || []);
             if (viewers.has(_myNumber)) return;
             viewers.add(_myNumber);
-            await ctx.bridge.firestore.request('PATCH',
-                `/sangzap_stories/${storyId}`, { viewers: [...viewers] });
+            await ctx.bridge.firestore.request('PATCH', `/sangzap_stories/${storyId}`, { viewers: [...viewers] });
         } catch(_) {}
     };
 
@@ -58,8 +56,7 @@
             const doc = await ctx.bridge.firestore.parseDoc('sangzap_stories', storyId);
             const reactions = { ...(doc?.reactions || {}) };
             reactions[_myNumber] = emoji;
-            await ctx.bridge.firestore.request('PATCH',
-                `/sangzap_stories/${storyId}`, { reactions });
+            await ctx.bridge.firestore.request('PATCH', `/sangzap_stories/${storyId}`, { reactions });
         } catch(_) {}
     };
 
@@ -132,6 +129,7 @@
                         ${reactSummary}
                         <footer class="sz-story-actions">
                             ${REACTIONS.map(e => `<button class="sz-react" data-emoji="${e}">${e}</button>`).join('')}
+                            <button class="sz-react sz-react-reply" data-reply="1" title="Responder">↩</button>
                         </footer>
                     </article>
                 `;
@@ -146,6 +144,14 @@
                 el.querySelectorAll('.sz-react').forEach(btn => {
                     btn.addEventListener('click', (ev) => {
                         ev.stopPropagation();
+                        if (btn.dataset.reply) {
+                            const story = _cache.find(x => x.id === id);
+                            if (!story) return;
+                            const text = prompt('Responder ao story:');
+                            if (!text) return;
+                            replyToStory(story, text.trim());
+                            return;
+                        }
                         SG.react(id, btn.dataset.emoji);
                         ctx.toast?.(`Reagiu ${btn.dataset.emoji}`, 'ok');
                     });
@@ -154,11 +160,37 @@
         }
 
         SG.start(myNumber, paint);
-
-        body.querySelector('#szStoryNew').addEventListener('click', () => openComposer(body));
+        body.querySelector('#szStoryNew').addEventListener('click', () => openComposer(body, myNumber));
     };
 
-    function openComposer(body) {
+    async function replyToStory(story, text) {
+        try {
+            const chatId = S.chatIdFor(_myNumber, story.author);
+            const now = Date.now();
+            await ctx.bridge.firestore.request('PATCH', `/sangzap_chats/${chatId}`, {
+                kind: '1:1',
+                members: [_myNumber, story.author].sort(),
+                createdAt: now,
+                updatedAt: now,
+                lastMessage: '',
+                lastMessageAt: 0
+            }).catch(() => {});
+            await ctx.bridge.firestore.request('POST',
+                `/sangzap_chats/${chatId}/messages?documentId=${S.msgId()}`,
+                { from: _myNumber, kind: 'story-reply', body: text, storyId: story.id, sentAt: now });
+            await ctx.bridge.firestore.request('PATCH', `/sangzap_chats/${chatId}`, {
+                lastMessage: '💬 Respondeu ao story',
+                lastMessageAt: now,
+                updatedAt: now
+            });
+            ctx.toast?.('Resposta enviada', 'ok');
+        } catch(e) {
+            console.warn('[Sangzap/stories] reply:', e);
+            ctx.toast?.('Falha ao responder', 'err');
+        }
+    }
+
+    function openComposer(body, myNumber) {
         const modal = document.createElement('div');
         modal.className = 'sz-modal';
         modal.innerHTML = `
@@ -180,7 +212,7 @@
 
         let media = '';
         modal.querySelector('#szStoryPick').addEventListener('click', async () => {
-            const dataUrl = await S.profile?.pickAndCrop?.();
+            const dataUrl = await S.settings?.pickAndCropSquare?.();
             if (!dataUrl) return;
             media = dataUrl;
             modal.querySelector('#szStoryImgPreview').innerHTML = `<img src="${S.escape(dataUrl)}" alt="" />`;
@@ -201,7 +233,7 @@
         });
     }
 
-    // ═══ POLL ═══
+    // ═══ LIFECYCLE ═══
     SG.start = function(myNumber, onUpdate) {
         _myNumber = myNumber;
         _onUpdate = onUpdate;
@@ -209,9 +241,7 @@
         tick();
         _timer = setInterval(tick, POLL_MS);
     };
-    SG.stop = function() {
-        if (_timer) { clearInterval(_timer); _timer = null; }
-    };
+    SG.stop = function() { if (_timer) { clearInterval(_timer); _timer = null; } };
     SG.get = () => _cache;
 
     S.stories = SG;
