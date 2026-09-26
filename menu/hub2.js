@@ -167,7 +167,7 @@
     const FS_BASE = `https://firestore.googleapis.com/v1/projects/${FIREBASE_PROJECT_ID}/databases/(default)/documents`;
     const FS_AUTH_KEY = 'sanghub_fs_auth';
     const HEARTBEAT_MS = 2 * 60 * 1000;
-    const BLOCK_POLL_MS = 10 * 1000;
+    const BLOCK_POLL_MS = 60 * 1000;
 
     function fsConfigured() {
         return FIREBASE_PROJECT_ID !== 'SEU_PROJECT_ID' && FIREBASE_API_KEY !== 'SUA_WEB_API_KEY';
