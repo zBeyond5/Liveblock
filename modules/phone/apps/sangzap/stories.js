@@ -7,10 +7,13 @@
     if (S.stories) return;
 
     // ═══ FS HELPERS — tradução inline Firestore REST ═══
-    // Idempotente. Instala uma única vez.
+    // Guard em S.fsQuery (única deste arquivo), não em S.__fsFull.
+    // Motivo: chat.js também instala helpers e usa __fsFull; se ele rodar
+    // primeiro, __fsFull=true e stories bailaria sem instalar fsQuery.
+    // Depois de instalar, marcamos __fsFull=true para que chat.js (se ainda
+    // não rodou) saiba que já há helpers prontos.
     (function ensureFsHelpers() {
-        if (S.__fsFull) return;
-        S.__fsFull = true;
+        if (S.fsQuery) return;
 
         function toFs(v) {
             if (v === null || v === undefined) return { nullValue: null };
@@ -91,8 +94,10 @@
             return null;
         };
 
+        // Path com barra inicial: sem ela, FS_BASE + ':runQuery' geraria
+        // '.../documents:runQuery' (inválido). Correto: '.../documents/:runQuery'.
         S.fsQuery = async function(structuredQuery) {
-            const res = await ctx.bridge.firestore.request('POST', ':runQuery', { structuredQuery });
+            const res = await ctx.bridge.firestore.request('POST', '/:runQuery', { structuredQuery });
             return (Array.isArray(res) ? res : []).map(r => {
                 if (!r || !r.document) return null;
                 return {
@@ -105,13 +110,17 @@
         S.fsDel = async function(path) {
             return ctx.bridge.firestore.request('DELETE', path);
         };
+
+        // Marca como instalado para compat com chat.js, que usa esse flag.
+        S.__fsFull = true;
     })();
 
     const SG = {};
     const TTL = 24 * 60 * 60 * 1000;
-    const POLL_MS = 6000;
+    const POLL_MS = 15000;         // era 6000 — reduz consumo em Firestore
     const PROFILE_TTL = 60_000;
     const VIEWER_DURATION = 5000;
+    const PREVIEW_MAX_H = 200;     // px — altura máx do preview no composer
 
     const REACTIONS = ['❤️', '😂', '😮', '😢', '👏', '🔥'];
 
@@ -298,7 +307,7 @@
             const mine = groups.find(g => g.author === _myNumber);
             const others = groups.filter(g => g.author !== _myNumber);
             const parts = [];
-            if (mine) parts.push(renderRing(mine, 'sz-ring-mine'));
+            if (mine) parts.push(renderRing(mine));
             for (const g of others) parts.push(renderRing(g));
             list.innerHTML = parts.join('');
 
@@ -314,7 +323,7 @@
         SG.start(myNumber, paint);
     };
 
-    function renderRing(g, extraClass) {
+    function renderRing(g) {
         const name = g.profile?.displayName || S.shortNum(g.author);
         const avatar = g.profile?.avatar
             ? `<img src="${S.escape(g.profile.avatar)}" alt="" />`
@@ -322,7 +331,6 @@
         const mine = g.author === _myNumber;
         const cls = [
             'sz-ring',
-            extraClass || '',
             mine ? 'mine' : '',
             g.allSeen && !mine ? 'seen' : 'unseen'
         ].filter(Boolean).join(' ');
@@ -532,14 +540,18 @@
                 replyInput.addEventListener('blur', resumeProgress);
             }
 
+            // Reação: decide o estado local ANTES do await, para que cliques
+            // rápidos em reações diferentes leiam o mesmo estado de partida
+            // e não produzam PATCHes inconsistentes.
             overlay.querySelectorAll('.sz-viewer-react').forEach(btn => {
                 btn.addEventListener('click', async ev => {
                     ev.stopPropagation();
                     const emoji = btn.dataset.emoji;
+                    const wasMine = story.reactions?.[_myNumber] === emoji;
+                    story.reactions = story.reactions || {};
+                    if (wasMine) delete story.reactions[_myNumber];
+                    else story.reactions[_myNumber] = emoji;
                     await SG.react(story.id, emoji);
-                    const isMine = story.reactions?.[_myNumber] === emoji;
-                    if (isMine) delete story.reactions[_myNumber];
-                    else { story.reactions = story.reactions || {}; story.reactions[_myNumber] = emoji; }
                     render();
                 });
             });
@@ -664,10 +676,13 @@
     function openComposer(body, myNumber) {
         const modal = document.createElement('div');
         modal.className = 'sz-modal';
+        // .sz-modal-body vira scrollável só neste modal, com min-height:0 para
+        // que o flex-pai (.sz-modal-card) respeite o max-height:85%.
+        // Assim, uma foto grande não empurra legenda/botões para fora da tela.
         modal.innerHTML = `
             <div class="sz-modal-card">
                 <div class="sz-modal-title">Novo story</div>
-                <div class="sz-modal-body">
+                <div class="sz-modal-body" style="flex:1 1 auto;min-height:0;overflow-y:auto;">
                     <button class="sz-btn" id="szStoryPick" type="button">Escolher foto</button>
                     <div class="sz-story-img-preview" id="szStoryImgPreview"></div>
                     <textarea class="sz-input sz-textarea" id="szStoryCaption"
@@ -682,19 +697,29 @@
         body.appendChild(modal);
 
         let media = '';
+        const imgPreview = modal.querySelector('#szStoryImgPreview');
+        const capEl = modal.querySelector('#szStoryCaption');
+
+        // Preview da imagem com altura limitada — a foto nunca come a tela.
+        function setPreview(dataUrl) {
+            if (!dataUrl) { imgPreview.innerHTML = ''; return; }
+            imgPreview.innerHTML = `<img src="${S.escape(dataUrl)}" alt=""
+                style="display:block;width:100%;max-height:${PREVIEW_MAX_H}px;object-fit:cover;border-radius:10px;margin-top:4px;" />`;
+        }
+
         modal.querySelector('#szStoryPick').addEventListener('click', async () => {
             const dataUrl = await S.settings?.pickAndCropSquare?.();
             if (!dataUrl) return;
             media = dataUrl;
-            modal.querySelector('#szStoryImgPreview').innerHTML = `<img src="${S.escape(dataUrl)}" alt="" />`;
+            setPreview(dataUrl);
         });
-        modal.querySelector('#szStoryCancel').addEventListener('click', () => modal.remove());
+        modal.querySelector('#szStoryCancel').addEventListener('click', closeModal);
         modal.querySelector('#szStoryPost').addEventListener('click', async () => {
             if (!media) { ctx.toast?.('Escolha uma foto', 'err'); return; }
-            const caption = modal.querySelector('#szStoryCaption').value.trim();
+            const caption = capEl.value.trim();
             try {
                 await SG.post(media, caption);
-                modal.remove();
+                closeModal();
                 ctx.toast?.('Story publicado', 'ok');
                 _lastHash = 0;
                 tick();
@@ -703,6 +728,19 @@
                 ctx.toast?.('Falha ao publicar', 'err');
             }
         });
+
+        function onKey(e) {
+            if (e.key === 'Escape') {
+                e.preventDefault();
+                e.stopPropagation();
+                closeModal();
+            }
+        }
+        function closeModal() {
+            document.removeEventListener('keydown', onKey, true);
+            try { modal.remove(); } catch(_) {}
+        }
+        document.addEventListener('keydown', onKey, true);
     }
 
     // ═══ LIFECYCLE ═══
