@@ -1094,6 +1094,23 @@
         try { _onIncoming(e?.detail); } catch(_) {}
     });
 
-    // expõe
-    window[UID] = { toggle, kill };
+    // expõe — mesma API dos outros módulos (yt.js etc)
+    window[UID] = {
+        kill,
+        toggle,
+        show: () => {
+            if (_frameEl) { _frameEl.hidden = false; }
+            else { _ensureFrame(); }
+            _tickClock();
+            if (_phase === 'idle' || _phase === 'busy') _showContacts();
+        },
+        hide: () => { if (_frameEl) _frameEl.hidden = true; }
+    };
+
+    // Auto-monta no carregamento — o hub só chama kill() pra descarregar.
+    try {
+        _ensureFrame();
+        _tickClock();
+        if (_phase === 'idle' || _phase === 'busy') _showContacts();
+    } catch(e) { console.warn('[Phone] init falhou:', e); }
 })();
