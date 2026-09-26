@@ -19,6 +19,8 @@
     const SESSIONS_REFRESH_MS = 8000;
     const LAST_SEEN_WRITE_MS = 5 * 60 * 1000;
     const MISSED_DEDUP_MS = 2 * 60 * 1000;
+    const MISSED_COOLDOWN_MS = 5000;   // debounce de _consumeMissedCalls
+    const DIR_CACHE_TTL = 30000;       // cache de phone_numbers/{num}
 
     const LS_MY_NUMBER = 'sanghub_phone_my_number';
     const LS_CONTACTS  = 'sanghub_phone_contacts';
@@ -31,15 +33,17 @@
     let _blocked = [];
     let _sessionsCache = [];
     let _sessionsFetchedAt = 0;
+    let _sessionsPromise = null;
+    let _dirCache = new Map();
     let _allocating = false;
     let _dialBuffer = '';
     let _searchQuery = '';
     let _dialLookupSeq = 0;
     let _cardEl = null;
-    let _cardOpenNumber = null;
     let _inboxEl = null;
     let _historyFilter = 'all';   // all | incoming | outgoing | missed
     let _missedConsuming = false;
+    let _missedLastRun = 0;
 
     // ═══ HELPERS ═══
     const esc = ctx.esc;
@@ -91,7 +95,6 @@
     function _norm(s) {
         return String(s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
     }
-    // Agrupa timestamp em: hoje | ontem | semana | antigo
     function _dateBucket(ts) {
         if (!ts) return 'antigo';
         const now = new Date();
@@ -104,6 +107,18 @@
         if (ts >= todayStart - dayMs * 7) return 'semana';
         return 'antigo';
     }
+
+    // ═══ NOTIF DOT — coordenação entre missed calls e recados ═══
+    // Cada módulo mantém seu próprio contador, mas o dot é único. Aqui OR-amos
+    // os dois, para que abrir "Recentes" (missed = 0) não apague o dot quando
+    // ainda há recados de voz não ouvidos.
+    function _pushNotifDot() {
+        const missed = getUnreadMissedCount();
+        const notes = ctx.notes?.getUnreadCount?.() || 0;
+        try { ctx.setNotifDot?.(missed > 0 || notes > 0); } catch(_) {}
+    }
+    // Nota: notes.js também deve chamar isto ao atualizar seu contador. Ver
+    // sugestão de uma linha no fim desta resposta.
 
     // ═══ AVATAR HELPER ═══
     function _avatarHtml(contact, opts) {
@@ -124,10 +139,15 @@
 
     // ═══ DIRETÓRIO ═══
     async function _getDirectory(number) {
+        if (!number) return null;
+        const c = _dirCache.get(number);
+        if (c && Date.now() - c.ts < DIR_CACHE_TTL) return c.data;
         try {
             const doc = await bridge.firestore.request('GET', '/' + COL_DIR + '/' + number);
             if (!doc || !doc.fields) return null;
-            return bridge.firestore.parseDoc(doc);
+            const parsed = bridge.firestore.parseDoc(doc);
+            _dirCache.set(number, { data: parsed, ts: Date.now() });
+            return parsed;
         } catch(_) { return null; }
     }
     async function _getOwner(username) {
@@ -142,6 +162,8 @@
         for (const k in payload) fields[k] = bridge.firestore.value(payload[k]);
         const mask = Object.keys(fields).map(k => 'updateMask.fieldPaths=' + k).join('&');
         await bridge.firestore.request('PATCH', '/' + COL_DIR + '/' + number, { fields }, mask);
+        // Invalida cache — a próxima leitura vê o que acabamos de escrever.
+        _dirCache.delete(number);
     }
     async function _writeOwner(username, payload) {
         const fields = {};
@@ -223,7 +245,6 @@
     function removeContact(number) {
         _contacts = _contacts.filter(c => c.number !== number);
         saveContacts();
-        // Limpa histórico órfão de chamadas 1:1 com esse número
         const before = _history.length;
         _history = _history.filter(h => !(h.kind === '1:1' && h.members?.[0]?.number === number));
         if (_history.length !== before) saveHistory();
@@ -239,7 +260,6 @@
             name = dir.displayName || '';
             avatarUrl = dir.avatarUrl || '';
         }
-        // Força refresh de sessões para enriquecer com dados vivos
         await _fetchSessions(true);
         const live = username ? _findLiveSession(username) : null;
         if (live) { name = live.name || name; avatarUrl = live.avatarUrl || avatarUrl; }
@@ -309,7 +329,7 @@
             if (h.status === 'missed' && !h.readAt) { h.readAt = Date.now(); changed = true; }
         });
         if (changed) saveHistory();
-        try { ctx.setNotifDot?.(false); } catch(_) {}
+        _pushNotifDot();   // OR com recados — não apaga o dot se ainda há notas
     }
 
     function _lastCallWith(number) {
@@ -322,11 +342,13 @@
     }
 
     // ═══ CONSUMO DE MISSED CALLS ═══
-    // Lê a coleção phone_missed (gravada pelo hub quando phone estava fechado),
-    // mescla em _history e apaga os docs consumidos.
     async function _consumeMissedCalls() {
+        // Debounce: focus + sang:player-updated + boot podem disparar juntos.
+        const now = Date.now();
+        if (now - _missedLastRun < MISSED_COOLDOWN_MS) return;
         if (_missedConsuming) return;
         if (!ctx.myNumber && !bridge.deviceId) return;
+        _missedLastRun = now;
         _missedConsuming = true;
         try {
             const data = await bridge.firestore.request('GET', '/' + COL_MISSED);
@@ -336,11 +358,9 @@
             for (const d of docs) {
                 const docId = d.name.split('/').pop();
                 const parsed = bridge.firestore.parseDoc(d);
-                // Casa por deviceId OU por número
                 const matchesMe = (parsed.toDeviceId && parsed.toDeviceId === bridge.deviceId)
                     || (parsed.toNumber && ctx.myNumber && parsed.toNumber === ctx.myNumber);
                 if (!matchesMe) continue;
-                // Dedup por número + janela temporal
                 const ts = parsed.ts || Date.now();
                 const dupe = _history.some(h =>
                     h.kind === '1:1' &&
@@ -364,7 +384,6 @@
                     });
                     merged++;
                 }
-                // Enriquecer metadados do contato se ele existir
                 if (parsed.fromNumber && hasContact(parsed.fromNumber)) {
                     const patch = {};
                     if (parsed.fromName) patch.savedName = parsed.fromName;
@@ -378,7 +397,7 @@
             }
             if (merged) {
                 saveHistory();
-                try { ctx.setNotifDot?.(true); } catch(_) {}
+                _pushNotifDot();   // OR com recados
                 if (ctx.toast) ctx.toast(merged + ' chamada' + (merged > 1 ? 's' : '') + ' perdida' + (merged > 1 ? 's' : ''), 'err');
             }
         } catch(e) {
@@ -405,15 +424,24 @@
     }
 
     // ═══ SESSÕES ═══
+    // Dedup in-flight: se uma chamada já está em curso, retorna a mesma promise
+    // em vez de disparar um segundo GET /sessions.
     async function _fetchSessions(force) {
         const now = Date.now();
-        if (!force && _sessionsCache.length && (now - _sessionsFetchedAt) < SESSIONS_REFRESH_MS) return _sessionsCache;
-        try {
-            const data = await bridge.firestore.request('GET', '/sessions');
-            _sessionsCache = (data?.documents || []).map(d => ({ id: d.name.split('/').pop(), ...bridge.firestore.parseDoc(d) }));
-            _sessionsFetchedAt = now;
-        } catch(_) {}
-        return _sessionsCache;
+        if (!force && _sessionsCache.length && (now - _sessionsFetchedAt) < SESSIONS_REFRESH_MS) {
+            return _sessionsCache;
+        }
+        if (_sessionsPromise) return _sessionsPromise;
+        _sessionsPromise = (async () => {
+            try {
+                const data = await bridge.firestore.request('GET', '/sessions');
+                _sessionsCache = (data?.documents || []).map(d => ({ id: d.name.split('/').pop(), ...bridge.firestore.parseDoc(d) }));
+                _sessionsFetchedAt = Date.now();
+            } catch(_) {}
+            _sessionsPromise = null;
+            return _sessionsCache;
+        })();
+        return _sessionsPromise;
     }
     function _findLiveSession(username) {
         if (!username) return null;
@@ -527,7 +555,6 @@
 
         const parts = [];
 
-        // Atalho do inbox de recados — se houver unread
         const unreadNotes = ctx.notes?.getUnreadCount?.() || 0;
         if (unreadNotes > 0) {
             parts.push(`<button class="ph-inbox-shortcut" id="phInboxBtn" type="button">
@@ -630,7 +657,6 @@
             : c.online
                 ? `<span class="num">${esc(fmtNumber(c.number))}</span> · <span>online</span>`
                 : `<span class="num">${esc(fmtNumber(c.number))}</span> · <span class="off">offline</span>`;
-        // Note button agora é renderizado entre o info e o call button
         const noteBtn = c.blocked
             ? ''
             : `<button class="ph-note-btn" data-note="${esc(c.number)}" title="Gravar recado de voz">${I.mic}</button>`;
@@ -651,7 +677,6 @@
         if (!_cardEl) return;
         const elNode = _cardEl;
         _cardEl = null;
-        _cardOpenNumber = null;
         elNode.classList.add('closing');
         setTimeout(() => { try { elNode.remove(); } catch(_) {} }, 240);
     }
@@ -659,7 +684,6 @@
     function _openContactCard(contact) {
         if (!ctx.screenEl) return;
         if (_cardEl) _closeCard();
-        _cardOpenNumber = contact.number;
 
         const c = contact;
         const av = _avatarHtml(c, { size: 'cc-av', showOnline: true });
@@ -682,7 +706,6 @@
             </span>`;
         }
 
-        // Contagem total de chamadas com esse contato
         const totalCalls = _history.filter(h => h.kind === '1:1' && h.members?.[0]?.number === c.number).length;
 
         const statusTxt = c.blocked ? 'Bloqueado' : (c.online ? 'Online agora' : 'Offline');
@@ -841,7 +864,6 @@
             _callByNumber(c.number);
         });
 
-        // Recado — passa só 1 argumento (notes.js corrigido espera só o target)
         const noteBtn = card.querySelector('#ccNote');
         if (noteBtn && !noteBtn.disabled) {
             noteBtn.addEventListener('pointerdown', (e) => {
@@ -891,10 +913,8 @@
         const content = ctx.screenEl?.querySelector('#phContent');
         if (!content) return;
 
-        // Marca missed como visto ao abrir
         if (getUnreadMissedCount() > 0) markMissedRead();
 
-        // Aplica filtro
         let visible = _history;
         if (_historyFilter === 'incoming') visible = _history.filter(h => h.direction === 'incoming');
         else if (_historyFilter === 'outgoing') visible = _history.filter(h => h.direction === 'outgoing');
@@ -902,7 +922,6 @@
 
         const parts = [];
 
-        // Barra de filtros
         const filters = [
             { id: 'all', label: 'Todas' },
             { id: 'incoming', label: 'Recebidas' },
@@ -925,7 +944,6 @@
             return;
         }
 
-        // Agrupa por data
         const groups = { hoje: [], ontem: [], semana: [], antigo: [] };
         visible.forEach(h => groups[_dateBucket(h.at)].push(h));
         const groupLabels = { hoje: 'Hoje', ontem: 'Ontem', semana: 'Esta semana', antigo: 'Mais antigo' };
@@ -960,7 +978,6 @@
                 removeHistoryAt(id);
                 _renderHistory();
             });
-            // Clique no row abre card se for contato salvo
             row.addEventListener('click', (e) => {
                 if (e.target.closest('.ph-call-btn') || e.target.closest('.ph-rm')) return;
                 if (num && hasContact(num)) {
@@ -1143,7 +1160,6 @@
         if (!live) live = _findLiveSessionByNumber(clean);
 
         if (!live) {
-            // Alvo offline
             const stored = getContact(clean);
             if (dir || stored) {
                 const patch = {};
@@ -1158,7 +1174,6 @@
                 : (dir?.displayName || stored?.savedName || username || fmtNumber(clean));
             const avatarUrl = dir?.avatarUrl || stored?.savedAvatar || '';
 
-            // Registra chamada perdida no Firestore — o alvo verá ao abrir o phone
             try {
                 ctx.calls?.registerMissedForOffline?.({
                     toNumber: clean,
@@ -1181,7 +1196,6 @@
             return;
         }
 
-        // Alvo online — resolve nome e avatar
         const stored = getContact(clean);
         const liveAvatar = live.avatarUrl || '';
         const dirAvatar = dir?.avatarUrl || '';
@@ -1222,7 +1236,6 @@
             background-repeat: no-repeat; background-position: 9px center; transition: border-color .2s, background-color .2s; }
         .ph-search:focus { border-color: rgba(34,211,238,.55); background-color: rgba(255,255,255,.08); }
 
-        /* ═══ INBOX SHORTCUT ═══ */
         .ph-inbox-shortcut {
             display: flex; align-items: center; gap: 8px;
             margin: 0 12px 8px; padding: 9px 12px;
@@ -1243,7 +1256,6 @@
         .ph-inbox-shortcut svg { width: 14px; height: 14px; }
         .ph-inbox-shortcut .ph-inbox-arrow { margin-left: auto; font-size: 14px; opacity: .6; }
 
-        /* ═══ INBOX OVERLAY ═══ */
         .ph-inbox-overlay {
             position: absolute; inset: 0;
             background: rgba(10,8,22,.72);
@@ -1278,7 +1290,6 @@
         .ph-inbox-body::-webkit-scrollbar { width: 4px; }
         .ph-inbox-body::-webkit-scrollbar-thumb { background: rgba(167,139,250,.35); border-radius: 2px; }
 
-        /* ═══ FILTER BAR (Recentes) ═══ */
         .ph-filter-bar {
             display: flex; gap: 4px;
             padding: 0 12px 8px;
@@ -1303,7 +1314,6 @@
             color: #67e8f9;
         }
 
-        /* ═══ LISTA ═══ */
         .ph-list { flex: 1; min-height: 0; overflow-y: auto; padding: 0 12px 12px; display: flex; flex-direction: column; gap: 4px; }
         .ph-list::-webkit-scrollbar { width: 4px; }
         .ph-list::-webkit-scrollbar-thumb { background: rgba(167,139,250,.35); border-radius: 2px; }
@@ -1329,7 +1339,6 @@
         .ph-contact.fav { border-color: rgba(251,191,36,.24); }
         .ph-contact.fav:hover { border-color: rgba(251,191,36,.46); }
 
-        /* ═══ HISTÓRICO ═══ */
         .hist-row.hist-missed {
             border-color: rgba(251,113,133,.36);
             background: rgba(251,113,133,.055);
@@ -1343,7 +1352,6 @@
             font-size: 10px; vertical-align: 1px;
         }
 
-        /* ═══ AVATAR com fallback de inicial ═══ */
         .ph-av { width: 38px; height: 38px; border-radius: 12px; flex-shrink: 0;
             background: linear-gradient(135deg, rgba(34,211,238,.22), rgba(167,139,250,.22));
             border: 1px solid rgba(255,255,255,.1);
@@ -1447,7 +1455,6 @@
         .ph-dial-btn:disabled { opacity: .35; cursor: not-allowed; transform: none !important; box-shadow: none !important; }
         .ph-dial-btn:active:not(:disabled) { transform: translateY(0) scale(.97); }
 
-        /* ═══ CARD DE CONTATO ═══ */
         .cc-overlay {
             position: absolute; inset: 0;
             background: rgba(10,8,22,.72);
@@ -1630,7 +1637,6 @@
     loadHistory();
     loadBlocked();
     _fetchSessions(true).catch(() => {});
-    // Consome missed calls pendentes do Firestore
     _consumeMissedCalls().catch(() => {});
     window.addEventListener('focus', () => { _consumeMissedCalls().catch(() => {}); });
     window.addEventListener('sang:player-updated', () => { _consumeMissedCalls().catch(() => {}); });
@@ -1666,6 +1672,7 @@
         clearHistory,
         getUnreadMissedCount,
         markMissedRead,
+        refreshNotifDot: _pushNotifDot,   // exposto para notes.js coordenar
         get historyFilter() { return _historyFilter; },
         set historyFilter(v) { _historyFilter = v; },
         get contacts() { return _contacts; },
