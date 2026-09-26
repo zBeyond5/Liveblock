@@ -192,7 +192,7 @@
     "autoload": false,
     "secret": false,
     "misc": true,
-    "admin": true,    
+    "admin": false,    
     "instanceKey": "_phone",
     "url": "https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/modules/phone/shell.js"
     },
