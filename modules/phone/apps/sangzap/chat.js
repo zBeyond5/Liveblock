@@ -1462,7 +1462,7 @@
         if (_typingTimer) { clearTimeout(_typingTimer); _typingTimer = null; }
         if (_presenceTimer) { clearInterval(_presenceTimer); _presenceTimer = null; }
         try { if (_myNumber) ctx.bridge.rtdb.put(`sangzap/presence/${_myNumber}`, { online: 0, lastSeen: Date.now() }); } catch(_) {}
-        try { S.audio?.stop?.(); } catch(_) {}
+        try { S.audio?.stopAll?.(); } catch(_) {}
         closeMenu();
         _chatId = null;
         _root = null;
