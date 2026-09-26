@@ -1575,6 +1575,6 @@
         _startPhasePoll();
     }
 
-    window[UID] = { toggle, kill };
+    window[UID] = { toggle, kill, _lock: _lock, _forceLock: _lock };
     _boot();
 })();
