@@ -12,11 +12,13 @@
     // ═══ CONFIG ═══
     const COL_DIR = 'phone_numbers';
     const COL_OWN = 'phone_owners';
+    const COL_MISSED = 'phone_missed';
     const ONLINE_MS = 5 * 60 * 1000;
-    const HISTORY_MAX = 40;
+    const HISTORY_MAX = 60;
     const MAX_CLAIM_ATTEMPTS = 8;
     const SESSIONS_REFRESH_MS = 8000;
     const LAST_SEEN_WRITE_MS = 5 * 60 * 1000;
+    const MISSED_DEDUP_MS = 2 * 60 * 1000;
 
     const LS_MY_NUMBER = 'sanghub_phone_my_number';
     const LS_CONTACTS  = 'sanghub_phone_contacts';
@@ -35,6 +37,9 @@
     let _dialLookupSeq = 0;
     let _cardEl = null;
     let _cardOpenNumber = null;
+    let _inboxEl = null;
+    let _historyFilter = 'all';   // all | incoming | outgoing | missed
+    let _missedConsuming = false;
 
     // ═══ HELPERS ═══
     const esc = ctx.esc;
@@ -83,14 +88,24 @@
             return pad(d.getDate()) + '/' + pad(d.getMonth() + 1) + '/' + d.getFullYear();
         } catch(_) { return ''; }
     }
-    // Busca com normalização: "Jose" acha "José", "ANGELO" acha "Ângelo"
     function _norm(s) {
         return String(s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
     }
+    // Agrupa timestamp em: hoje | ontem | semana | antigo
+    function _dateBucket(ts) {
+        if (!ts) return 'antigo';
+        const now = new Date();
+        const d = new Date(ts);
+        const startOfDay = (dt) => new Date(dt.getFullYear(), dt.getMonth(), dt.getDate()).getTime();
+        const todayStart = startOfDay(now);
+        const dayMs = 86400000;
+        if (ts >= todayStart) return 'hoje';
+        if (ts >= todayStart - dayMs) return 'ontem';
+        if (ts >= todayStart - dayMs * 7) return 'semana';
+        return 'antigo';
+    }
 
     // ═══ AVATAR HELPER ═══
-    // Renderiza o avatar com fallback: se a URL falhar (404/hotlink/CORS),
-    // o <img> é removido via onerror e a inicial por baixo aparece.
     function _avatarHtml(contact, opts) {
         opts = opts || {};
         const displayName = contact.name || contact.savedName || contact.username || '?';
@@ -204,7 +219,15 @@
     }
     function saveContacts() { try { localStorage.setItem(LS_CONTACTS, JSON.stringify(_contacts)); } catch(_) {} }
     function hasContact(number) { return _contacts.some(c => c.number === number); }
-    function removeContact(number) { _contacts = _contacts.filter(c => c.number !== number); saveContacts(); }
+    function getContact(number) { return _contacts.find(c => c.number === number) || null; }
+    function removeContact(number) {
+        _contacts = _contacts.filter(c => c.number !== number);
+        saveContacts();
+        // Limpa histórico órfão de chamadas 1:1 com esse número
+        const before = _history.length;
+        _history = _history.filter(h => !(h.kind === '1:1' && h.members?.[0]?.number === number));
+        if (_history.length !== before) saveHistory();
+    }
     async function addContactByNumber(number) {
         const clean = parseNumber(number);
         if (clean.length !== 6) return { ok: false, err: 'Número incompleto' };
@@ -216,7 +239,8 @@
             name = dir.displayName || '';
             avatarUrl = dir.avatarUrl || '';
         }
-        await _fetchSessions(false);
+        // Força refresh de sessões para enriquecer com dados vivos
+        await _fetchSessions(true);
         const live = username ? _findLiveSession(username) : null;
         if (live) { name = live.name || name; avatarUrl = live.avatarUrl || avatarUrl; }
         _contacts.push({
@@ -275,6 +299,18 @@
     }
     function pushHistory(entry) { _history.unshift(entry); saveHistory(); }
     function removeHistoryAt(id) { _history = _history.filter(h => h.id !== id); saveHistory(); }
+    function clearHistory() { _history = []; saveHistory(); }
+    function getUnreadMissedCount() {
+        return _history.filter(h => h.status === 'missed' && !h.readAt).length;
+    }
+    function markMissedRead() {
+        let changed = false;
+        _history.forEach(h => {
+            if (h.status === 'missed' && !h.readAt) { h.readAt = Date.now(); changed = true; }
+        });
+        if (changed) saveHistory();
+        try { ctx.setNotifDot?.(false); } catch(_) {}
+    }
 
     function _lastCallWith(number) {
         for (const h of _history) {
@@ -283,6 +319,73 @@
             if (m && m.number === number) return h;
         }
         return null;
+    }
+
+    // ═══ CONSUMO DE MISSED CALLS ═══
+    // Lê a coleção phone_missed (gravada pelo hub quando phone estava fechado),
+    // mescla em _history e apaga os docs consumidos.
+    async function _consumeMissedCalls() {
+        if (_missedConsuming) return;
+        if (!ctx.myNumber && !bridge.deviceId) return;
+        _missedConsuming = true;
+        try {
+            const data = await bridge.firestore.request('GET', '/' + COL_MISSED);
+            const docs = data?.documents || [];
+            if (!docs.length) return;
+            let merged = 0;
+            for (const d of docs) {
+                const docId = d.name.split('/').pop();
+                const parsed = bridge.firestore.parseDoc(d);
+                // Casa por deviceId OU por número
+                const matchesMe = (parsed.toDeviceId && parsed.toDeviceId === bridge.deviceId)
+                    || (parsed.toNumber && ctx.myNumber && parsed.toNumber === ctx.myNumber);
+                if (!matchesMe) continue;
+                // Dedup por número + janela temporal
+                const ts = parsed.ts || Date.now();
+                const dupe = _history.some(h =>
+                    h.kind === '1:1' &&
+                    h.members?.[0]?.number === parsed.fromNumber &&
+                    Math.abs((h.at || 0) - ts) < MISSED_DEDUP_MS
+                );
+                if (!dupe && parsed.fromNumber) {
+                    _history.unshift({
+                        id: 'h' + docId,
+                        direction: 'incoming',
+                        kind: '1:1',
+                        status: 'missed',
+                        members: [{
+                            number: parsed.fromNumber || '',
+                            name: parsed.fromName || fmtNumber(parsed.fromNumber || ''),
+                            avatarUrl: parsed.fromAvatar || ''
+                        }],
+                        at: ts,
+                        durationMs: 0,
+                        readAt: null
+                    });
+                    merged++;
+                }
+                // Enriquecer metadados do contato se ele existir
+                if (parsed.fromNumber && hasContact(parsed.fromNumber)) {
+                    const patch = {};
+                    if (parsed.fromName) patch.savedName = parsed.fromName;
+                    if (parsed.fromAvatar) patch.savedAvatar = parsed.fromAvatar;
+                    if (Object.keys(patch).length) {
+                        const stored = getContact(parsed.fromNumber);
+                        if (!stored?.manualName) updateContactMeta(parsed.fromNumber, patch);
+                    }
+                }
+                try { await bridge.firestore.request('DELETE', '/' + COL_MISSED + '/' + docId); } catch(_) {}
+            }
+            if (merged) {
+                saveHistory();
+                try { ctx.setNotifDot?.(true); } catch(_) {}
+                if (ctx.toast) ctx.toast(merged + ' chamada' + (merged > 1 ? 's' : '') + ' perdida' + (merged > 1 ? 's' : ''), 'err');
+            }
+        } catch(e) {
+            // silencioso
+        } finally {
+            _missedConsuming = false;
+        }
     }
 
     // ═══ BLOQUEIO ═══
@@ -320,12 +423,17 @@
             .filter(s => s.id !== myId && (now - (s.lastSeen || 0)) < ONLINE_MS)
             .find(s => s.name === username || s.username === username) || null;
     }
+    function _findLiveSessionByNumber(number) {
+        if (!number) return null;
+        const now = Date.now();
+        const myId = bridge.deviceId || '';
+        return _sessionsCache
+            .filter(s => s.id !== myId && (now - (s.lastSeen || 0)) < ONLINE_MS)
+            .find(s => s.phoneNumber === number) || null;
+    }
 
-    // Prioridade do nome: manualName > live > savedName > username > número
-    // Prioridade do avatar: live > savedAvatar
-    // Rastreia lastSeenAt quando online (refresh a cada 5min para não spammar writes)
     function _enrichContact(c) {
-        const live = _findLiveSession(c.username);
+        const live = _findLiveSession(c.username) || _findLiveSessionByNumber(c.number);
         let name;
         if (c.manualName) name = c.savedName || c.username || fmtNumber(c.number);
         else name = live?.name || c.savedName || c.username || fmtNumber(c.number);
@@ -337,7 +445,6 @@
             const patch = {};
             if (liveAvatar && liveAvatar !== c.savedAvatar) patch.savedAvatar = liveAvatar;
             if (!c.manualName && live.name && live.name !== c.savedName) patch.savedName = live.name;
-            // Só atualiza lastSeenAt a cada 5 min para não spammar writes
             if (!c.lastSeenAt || Date.now() - c.lastSeenAt > LAST_SEEN_WRITE_MS) patch.lastSeenAt = Date.now();
             if (Object.keys(patch).length) updateContactMeta(c.number, patch);
         }
@@ -350,6 +457,51 @@
             lastSeenAt: c.lastSeenAt || 0,
             liveLastSeen: live?.lastSeen || 0
         };
+    }
+
+    // ═══ UI — INBOX OVERLAY ═══
+    function _closeInbox() {
+        if (!_inboxEl) return;
+        const elNode = _inboxEl;
+        _inboxEl = null;
+        elNode.classList.add('closing');
+        setTimeout(() => { try { elNode.remove(); } catch(_) {} }, 220);
+        setTimeout(() => { try { _renderContacts(); } catch(_) {} }, 240);
+    }
+
+    function _openInbox() {
+        if (!ctx.screenEl) return;
+        if (_inboxEl) { _closeInbox(); return; }
+        const ov = el('div', { class: 'ph-inbox-overlay' });
+        ov.innerHTML = `
+            <div class="ph-inbox-head">
+                <div class="ph-inbox-title">Recados</div>
+                <button class="ph-inbox-close" id="phInboxClose" title="Fechar" aria-label="Fechar">✕</button>
+            </div>
+            <div class="ph-inbox-body" id="phInboxBody"></div>
+        `;
+        ctx.screenEl.appendChild(ov);
+        _inboxEl = ov;
+
+        const body = ov.querySelector('#phInboxBody');
+        if (ctx.notes?.renderInbox) {
+            try { ctx.notes.renderInbox(body); }
+            catch(_) { body.innerHTML = `<div class="ph-empty">Erro ao abrir recados.</div>`; }
+        } else {
+            body.innerHTML = `<div class="ph-empty">Módulo de recados indisponível.</div>`;
+        }
+
+        ov.querySelector('#phInboxClose').addEventListener('click', _closeInbox);
+
+        const escHandler = (e) => {
+            if (e.key === 'Escape') {
+                e.preventDefault();
+                e.stopPropagation();
+                document.removeEventListener('keydown', escHandler, true);
+                _closeInbox();
+            }
+        };
+        document.addEventListener('keydown', escHandler, true);
     }
 
     // ═══ UI — CONTATOS ═══
@@ -373,14 +525,28 @@
         const cntEl = ctx.frameEl?.querySelector('#phCount');
         if (cntEl) cntEl.textContent = String(onlineCount);
 
+        const parts = [];
+
+        // Atalho do inbox de recados — se houver unread
+        const unreadNotes = ctx.notes?.getUnreadCount?.() || 0;
+        if (unreadNotes > 0) {
+            parts.push(`<button class="ph-inbox-shortcut" id="phInboxBtn" type="button">
+                ${I.mic}
+                <span>${unreadNotes} recado${unreadNotes > 1 ? 's' : ''} novo${unreadNotes > 1 ? 's' : ''}</span>
+                <span class="ph-inbox-arrow">›</span>
+            </button>`);
+        }
+
         if (!all.length) {
-            content.innerHTML = `<div class="ph-list">
+            content.innerHTML = parts.join('') + `<div class="ph-list">
                 <div class="ph-empty">
                     <strong>Sem contatos ainda.</strong><br>
                     Vá em <b>Discar</b>, digite o número de alguém e toque em <b>Salvar</b>.
                     <div class="hint">Passe o seu número clicando no cartão acima ☝</div>
                 </div>
             </div>`;
+            const inboxBtn = content.querySelector('#phInboxBtn');
+            if (inboxBtn) inboxBtn.addEventListener('click', _openInbox);
             return;
         }
 
@@ -393,7 +559,6 @@
         const others = filtered.filter(c => !c.fav && !c.blocked).sort(sortFn);
         const blocked = filtered.filter(c => c.blocked).sort(sortFn);
 
-        const parts = [];
         parts.push(`<input class="ph-search" id="phSearch" type="text" placeholder="Buscar contato ou número…" value="${esc(_searchQuery)}" spellcheck="false" />`);
         parts.push(`<div class="ph-list" id="phListWrap">`);
         if (!favs.length && !others.length && !blocked.length) {
@@ -412,6 +577,9 @@
         }
         parts.push(`</div>`);
         content.innerHTML = parts.join('');
+
+        const inboxBtn = content.querySelector('#phInboxBtn');
+        if (inboxBtn) inboxBtn.addEventListener('click', _openInbox);
 
         const searchInput = content.querySelector('#phSearch');
         if (searchInput) {
@@ -462,25 +630,30 @@
             : c.online
                 ? `<span class="num">${esc(fmtNumber(c.number))}</span> · <span>online</span>`
                 : `<span class="num">${esc(fmtNumber(c.number))}</span> · <span class="off">offline</span>`;
+        // Note button agora é renderizado entre o info e o call button
+        const noteBtn = c.blocked
+            ? ''
+            : `<button class="ph-note-btn" data-note="${esc(c.number)}" title="Gravar recado de voz">${I.mic}</button>`;
         return `<div class="ph-contact ${c.blocked ? 'blocked' : (c.online ? '' : 'offline')} ${c.fav ? 'fav' : ''}" data-num="${esc(c.number)}" data-name="${esc(c.name)}" title="Clique para detalhes · Duplo clique para ligar">
             ${av}
             <div class="ph-info">
                 <div class="ph-name">${esc(c.name)}</div>
                 <div class="ph-meta">${meta}</div>
             </div>
-            <button class="ph-rm" data-rm="${esc(c.number)}" title="Remover">✕</button>
+            ${noteBtn}
             <button class="ph-call-btn" ${c.online && !c.blocked ? '' : 'disabled'} title="${c.blocked ? 'Bloqueado' : c.online ? 'Ligar' : 'Offline'}">${I.phone}</button>
+            <button class="ph-rm" data-rm="${esc(c.number)}" title="Remover">✕</button>
         </div>`;
     }
 
     // ═══ CARD DE CONTATO ═══
     function _closeCard() {
         if (!_cardEl) return;
-        const el = _cardEl;
+        const elNode = _cardEl;
         _cardEl = null;
         _cardOpenNumber = null;
-        el.classList.add('closing');
-        setTimeout(() => { try { el.remove(); } catch(_) {} }, 240);
+        elNode.classList.add('closing');
+        setTimeout(() => { try { elNode.remove(); } catch(_) {} }, 240);
     }
 
     function _openContactCard(contact) {
@@ -509,10 +682,12 @@
             </span>`;
         }
 
+        // Contagem total de chamadas com esse contato
+        const totalCalls = _history.filter(h => h.kind === '1:1' && h.members?.[0]?.number === c.number).length;
+
         const statusTxt = c.blocked ? 'Bloqueado' : (c.online ? 'Online agora' : 'Offline');
         const statusCls = c.blocked ? 'bad' : (c.online ? 'ok' : 'neutral');
 
-        // Linhas adicionais de metadata
         const extraRows = [];
         if (c.savedAt) {
             extraRows.push(`<div class="cc-meta-row">
@@ -524,6 +699,12 @@
             extraRows.push(`<div class="cc-meta-row">
                 <span class="cc-meta-label">Visto por último</span>
                 <span class="cc-meta-val">há ${esc(timeAgo(c.lastSeenAt))}</span>
+            </div>`);
+        }
+        if (totalCalls > 0) {
+            extraRows.push(`<div class="cc-meta-row">
+                <span class="cc-meta-label">Chamadas</span>
+                <span class="cc-meta-val">${totalCalls}</span>
             </div>`);
         }
 
@@ -604,11 +785,9 @@
         ctx.screenEl.appendChild(card);
         _cardEl = card;
 
-        // ─── Eventos ───
         card.querySelector('.cc-close').addEventListener('click', _closeCard);
         card.addEventListener('click', (e) => { if (e.target === card) _closeCard(); });
 
-        // Copiar número
         const copyBtn = card.querySelector('#ccCopy');
         copyBtn.addEventListener('click', async () => {
             try {
@@ -620,7 +799,6 @@
             } catch(_) { ctx.toast('Falha ao copiar', 'err'); }
         });
 
-        // Editar nome
         const nameDisplay = card.querySelector('#ccNameDisplay');
         const nameEdit = card.querySelector('.cc-name-edit');
         const nameInput = card.querySelector('#ccNameInput');
@@ -656,7 +834,6 @@
             if (e.key === 'Escape') { e.preventDefault(); exitEditMode(); }
         });
 
-        // Ligar
         const callBtn = card.querySelector('#ccCall');
         if (callBtn && !callBtn.disabled) callBtn.addEventListener('click', () => {
             _closeCard();
@@ -664,18 +841,17 @@
             _callByNumber(c.number);
         });
 
-        // Recado
+        // Recado — passa só 1 argumento (notes.js corrigido espera só o target)
         const noteBtn = card.querySelector('#ccNote');
         if (noteBtn && !noteBtn.disabled) {
             noteBtn.addEventListener('pointerdown', (e) => {
                 e.preventDefault();
                 e.stopPropagation();
                 _closeCard();
-                if (ctx.notes.startFromCard) ctx.notes.startFromCard({ number: c.number, name: c.name }, noteBtn);
+                if (ctx.notes.startFromCard) ctx.notes.startFromCard({ number: c.number, name: c.name });
             });
         }
 
-        // Favoritar
         card.querySelector('#ccFav').addEventListener('click', () => {
             const nowFav = toggleFav(c.number);
             ctx.tone.fav();
@@ -684,7 +860,6 @@
             _renderContacts();
         });
 
-        // Restaurar nome automático
         const resetBtn = card.querySelector('#ccReset');
         if (resetBtn) resetBtn.addEventListener('click', () => {
             clearManualName(c.number);
@@ -694,7 +869,6 @@
             _renderContacts();
         });
 
-        // Bloquear / desbloquear
         card.querySelector('#ccBlock').addEventListener('click', () => {
             const nowBlk = toggleBlock(c.number);
             ctx.tone.block();
@@ -703,7 +877,6 @@
             _renderContacts();
         });
 
-        // Remover
         card.querySelector('#ccRemove').addEventListener('click', () => {
             removeContact(c.number);
             ctx.tone.block();
@@ -717,70 +890,141 @@
     function _renderHistory() {
         const content = ctx.screenEl?.querySelector('#phContent');
         if (!content) return;
-        if (!_history.length) {
-            content.innerHTML = `<div class="ph-list">
-                <div class="ph-empty">
-                    <strong>Sem chamadas ainda.</strong>
-                    <div class="hint">Ligue para alguém pelo número ou pela lista de contatos.</div>
-                </div>
-            </div>`;
+
+        // Marca missed como visto ao abrir
+        if (getUnreadMissedCount() > 0) markMissedRead();
+
+        // Aplica filtro
+        let visible = _history;
+        if (_historyFilter === 'incoming') visible = _history.filter(h => h.direction === 'incoming');
+        else if (_historyFilter === 'outgoing') visible = _history.filter(h => h.direction === 'outgoing');
+        else if (_historyFilter === 'missed') visible = _history.filter(h => h.status === 'missed' || h.status === 'rejected');
+
+        const parts = [];
+
+        // Barra de filtros
+        const filters = [
+            { id: 'all', label: 'Todas' },
+            { id: 'incoming', label: 'Recebidas' },
+            { id: 'outgoing', label: 'Feitas' },
+            { id: 'missed', label: 'Perdidas' }
+        ];
+        parts.push(`<div class="ph-filter-bar">${filters.map(f =>
+            `<button class="ph-filter-btn${_historyFilter === f.id ? ' active' : ''}" data-filter="${f.id}">${f.label}</button>`
+        ).join('')}</div>`);
+
+        if (!visible.length) {
+            parts.push(`<div class="ph-list"><div class="ph-empty">
+                <strong>${_history.length ? 'Nada nesse filtro.' : 'Sem chamadas ainda.'}</strong>
+                <div class="hint">${_history.length ? 'Tente outro filtro.' : 'Ligue para alguém pelo número ou pela lista de contatos.'}</div>
+            </div></div>`);
+            content.innerHTML = parts.join('');
+            content.querySelectorAll('.ph-filter-btn').forEach(btn => {
+                btn.addEventListener('click', () => { _historyFilter = btn.dataset.filter; _renderHistory(); });
+            });
             return;
         }
-        const rows = _history.map(h => {
-            const first = h.members[0] || {};
-            const av = _avatarHtml({
-                name: first.name, avatarUrl: first.avatarUrl
-            });
-            const label = h.kind === 'group'
-                ? (first.name || 'Grupo') + ' +' + (h.members.length - 1)
-                : (first.name || fmtNumber(first.number));
-            const dirClass = (h.status === 'missed' || h.status === 'rejected') ? 'dir-miss'
-                            : (h.direction === 'incoming' ? 'dir-in' : 'dir-out');
-            const dirIcon = h.direction === 'incoming' ? I.arrowIn : I.arrowOut;
 
-            let durTxt, durCls;
-            if (h.durationMs > 0) {
-                durTxt = fmtDurShort(h.durationMs);
-                durCls = 'dur';
-            } else if (h.status === 'missed') {
-                durTxt = 'perdida';
-                durCls = 'miss';
-            } else if (h.status === 'rejected') {
-                durTxt = 'recusada';
-                durCls = 'rej';
-            } else {
-                durTxt = '—';
-                durCls = 'off';
-            }
+        // Agrupa por data
+        const groups = { hoje: [], ontem: [], semana: [], antigo: [] };
+        visible.forEach(h => groups[_dateBucket(h.at)].push(h));
+        const groupLabels = { hoje: 'Hoje', ontem: 'Ontem', semana: 'Esta semana', antigo: 'Mais antigo' };
 
-            const metaParts = [
-                `<span class="${dirClass}" style="display:inline-flex;align-items:center;width:10px;height:10px;">${dirIcon}</span>`,
-                h.kind === 'group' ? `<span class="grp">${h.members.length} pessoas</span>` : `<span class="num">${esc(fmtNumber(first.number))}</span>`,
-                `<span class="when">${timeAgo(h.at)}</span>`,
-                `<span class="dur ${durCls}">${esc(durTxt)}</span>`
-            ];
-            const canRecall = h.kind === '1:1' && first.number && first.number.length === 6 && !isBlocked(first.number);
-            const callBtn = canRecall ? `<button class="ph-call-btn" data-num="${esc(first.number)}" title="Ligar">${I.phone}</button>` : '';
-            const tooltip = `title="${esc(fullTimestamp(h.at))}${h.durationMs > 0 ? ' · ' + fmtDurShort(h.durationMs) : ''}"`;
-            return `<div class="ph-contact" data-history-id="${esc(h.id)}" ${canRecall ? `data-num="${esc(first.number)}"` : ''} ${tooltip}>
-                ${av}
-                <div class="ph-info">
-                    <div class="ph-name">${esc(label)}</div>
-                    <div class="ph-meta">${metaParts.join('')}</div>
-                </div>
-                <button class="ph-rm" data-rm-id="${esc(h.id)}" title="Apagar">✕</button>
-                ${callBtn}
-            </div>`;
-        }).join('');
-        content.innerHTML = `<div class="ph-list">${rows}</div>`;
+        let html = '';
+        for (const key of ['hoje', 'ontem', 'semana', 'antigo']) {
+            const arr = groups[key];
+            if (!arr.length) continue;
+            html += `<div class="ph-section-hdr"><span>${groupLabels[key]}</span><span class="line"></span></div>`;
+            html += arr.map(h => _historyRowHtml(h)).join('');
+        }
+
+        parts.push(`<div class="ph-list">${html}</div>`);
+        content.innerHTML = parts.join('');
+
+        content.querySelectorAll('.ph-filter-btn').forEach(btn => {
+            btn.addEventListener('click', () => { _historyFilter = btn.dataset.filter; _renderHistory(); });
+        });
+
         content.querySelectorAll('.ph-contact').forEach(row => {
             const num = row.dataset.num;
             const id = row.dataset.historyId;
             const callBtn = row.querySelector('.ph-call-btn');
             const rmBtn = row.querySelector('.ph-rm');
-            if (callBtn && num) callBtn.addEventListener('click', (e) => { e.stopPropagation(); ctx.tone.dial(); _callByNumber(num); });
-            if (rmBtn) rmBtn.addEventListener('click', (e) => { e.stopPropagation(); removeHistoryAt(id); _renderHistory(); });
+            if (callBtn && num) callBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                ctx.tone.dial();
+                _callByNumber(num);
+            });
+            if (rmBtn) rmBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                removeHistoryAt(id);
+                _renderHistory();
+            });
+            // Clique no row abre card se for contato salvo
+            row.addEventListener('click', (e) => {
+                if (e.target.closest('.ph-call-btn') || e.target.closest('.ph-rm')) return;
+                if (num && hasContact(num)) {
+                    const c = _contacts.map(_enrichContact).find(x => x.number === num);
+                    if (c) _openContactCard(c);
+                }
+            });
         });
+    }
+
+    function _historyRowHtml(h) {
+        const first = h.members[0] || {};
+        const isMissed = h.status === 'missed';
+        const isRejected = h.status === 'rejected';
+
+        const av = _avatarHtml({
+            name: first.name,
+            avatarUrl: first.avatarUrl
+        });
+
+        const isFav = first.number && hasContact(first.number) && getContact(first.number)?.fav;
+        const label = h.kind === 'group'
+            ? (first.name || 'Grupo') + ' +' + (h.members.length - 1)
+            : (first.name || fmtNumber(first.number));
+
+        const dirClass = (isMissed || isRejected) ? 'dir-miss'
+                        : (h.direction === 'incoming' ? 'dir-in' : 'dir-out');
+        const dirIcon = h.direction === 'incoming' ? I.arrowIn : I.arrowOut;
+
+        let durTxt, durCls;
+        if (h.durationMs > 0) {
+            durTxt = fmtDurShort(h.durationMs);
+            durCls = 'dur';
+        } else if (isMissed) {
+            durTxt = 'perdida';
+            durCls = 'miss';
+        } else if (isRejected) {
+            durTxt = 'recusada';
+            durCls = 'rej';
+        } else {
+            durTxt = '—';
+            durCls = 'off';
+        }
+
+        const metaParts = [
+            `<span class="${dirClass}" style="display:inline-flex;align-items:center;width:10px;height:10px;">${dirIcon}</span>`,
+            h.kind === 'group' ? `<span class="grp">${h.members.length} pessoas</span>` : `<span class="num">${esc(fmtNumber(first.number))}</span>`,
+            `<span class="when">${timeAgo(h.at)}</span>`,
+            `<span class="dur ${durCls}">${esc(durTxt)}</span>`
+        ];
+        const canRecall = h.kind === '1:1' && first.number && first.number.length === 6 && !isBlocked(first.number);
+        const callBtn = canRecall ? `<button class="ph-call-btn" data-num="${esc(first.number)}" title="Ligar">${I.phone}</button>` : '';
+        const tooltip = `title="${esc(fullTimestamp(h.at))}${h.durationMs > 0 ? ' · ' + fmtDurShort(h.durationMs) : ''}"`;
+        const favStar = isFav ? `<span class="hist-fav">★</span>` : '';
+
+        return `<div class="ph-contact hist-row${isMissed ? ' hist-missed' : ''}${isRejected ? ' hist-rejected' : ''}" data-history-id="${esc(h.id)}" ${canRecall ? `data-num="${esc(first.number)}"` : ''} ${tooltip}>
+            ${av}
+            <div class="ph-info">
+                <div class="ph-name">${favStar}${esc(label)}</div>
+                <div class="ph-meta">${metaParts.join('')}</div>
+            </div>
+            <button class="ph-rm" data-rm-id="${esc(h.id)}" title="Apagar">✕</button>
+            ${callBtn}
+        </div>`;
     }
 
     // ═══ UI — DISCADOR ═══
@@ -881,7 +1125,7 @@
         return head + ' <span class="dash">—</span> ' + tail + tailPad;
     }
 
-    // ═══ LIGAR POR NÚMERO — respeita apelido manual + fallback de avatar ═══
+    // ═══ LIGAR POR NÚMERO ═══
     async function _callByNumber(number) {
         const clean = parseNumber(number);
         if (clean.length !== 6) { ctx.toast('Número incompleto', 'err'); return; }
@@ -896,15 +1140,11 @@
 
         let live = null;
         if (username) live = _findLiveSession(username);
-        if (!live) {
-            const now = Date.now();
-            const myId = bridge.deviceId || '';
-            live = _sessionsCache.find(s => s.id !== myId && s.phoneNumber === clean && (now - (s.lastSeen || 0)) < ONLINE_MS) || null;
-        }
+        if (!live) live = _findLiveSessionByNumber(clean);
 
         if (!live) {
-            // Atualiza metadados sem sobrescrever apelido manual
-            const stored = _contacts.find(c => c.number === clean);
+            // Alvo offline
+            const stored = getContact(clean);
             if (dir || stored) {
                 const patch = {};
                 if (dir?.username && (!stored?.username || stored.username !== dir.username)) patch.username = dir.username;
@@ -917,26 +1157,38 @@
                 ? (stored.savedName || username || fmtNumber(clean))
                 : (dir?.displayName || stored?.savedName || username || fmtNumber(clean));
             const avatarUrl = dir?.avatarUrl || stored?.savedAvatar || '';
+
+            // Registra chamada perdida no Firestore — o alvo verá ao abrir o phone
+            try {
+                ctx.calls?.registerMissedForOffline?.({
+                    toNumber: clean,
+                    toDeviceId: '',
+                    fromId: bridge.deviceId,
+                    fromNumber: ctx.myNumber,
+                    fromName: bridge.player?.name || '',
+                    fromAvatar: bridge.player?.avatarUrl || '',
+                    reason: 'offline'
+                });
+            } catch(_) {}
+
             pushHistory({
                 id: 'h' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5),
                 direction: 'outgoing', kind: '1:1', status: 'missed',
                 members: [{ number: clean, name, avatarUrl }],
-                at: Date.now(), durationMs: 0
+                at: Date.now(), durationMs: 0, readAt: Date.now()
             });
             ctx.calls.busyTone?.('Fora de área', name + ' não está disponível.');
             return;
         }
 
-        // ─── RESOLUÇÃO DE NOME E AVATAR (o coração da correção) ───
-        const stored = _contacts.find(c => c.number === clean);
+        // Alvo online — resolve nome e avatar
+        const stored = getContact(clean);
         const liveAvatar = live.avatarUrl || '';
         const dirAvatar = dir?.avatarUrl || '';
         const storedAvatar = stored?.savedAvatar || '';
 
-        // Avatar: live > dir > saved (fallback em cadeia)
         const finalAvatar = liveAvatar || dirAvatar || storedAvatar;
 
-        // Nome: respeita manualName
         let finalName;
         if (stored?.manualName) {
             finalName = stored.savedName || live.name || dir?.displayName || username || fmtNumber(clean);
@@ -944,7 +1196,6 @@
             finalName = live.name || dir?.displayName || stored?.savedName || username || fmtNumber(clean);
         }
 
-        // Atualiza meta do contato salvo (sem sobrescrever manualName)
         if (hasContact(clean)) {
             const patch = {};
             if (username && (!stored?.username || stored.username !== username)) patch.username = username;
@@ -970,6 +1221,89 @@
             background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 24 24' fill='none' stroke='%238890a8' stroke-width='2.6' stroke-linecap='round'><circle cx='11' cy='11' r='7'/><line x1='21' y1='21' x2='16.5' y2='16.5'/></svg>");
             background-repeat: no-repeat; background-position: 9px center; transition: border-color .2s, background-color .2s; }
         .ph-search:focus { border-color: rgba(34,211,238,.55); background-color: rgba(255,255,255,.08); }
+
+        /* ═══ INBOX SHORTCUT ═══ */
+        .ph-inbox-shortcut {
+            display: flex; align-items: center; gap: 8px;
+            margin: 0 12px 8px; padding: 9px 12px;
+            border-radius: 11px;
+            background: linear-gradient(120deg, rgba(167,139,250,.16), rgba(244,114,182,.16));
+            border: 1px solid rgba(167,139,250,.4);
+            color: #e9d5ff;
+            font-family: inherit; font-size: 11px; font-weight: 800;
+            letter-spacing: .03em;
+            cursor: pointer;
+            transition: all .16s cubic-bezier(.22,1,.36,1);
+        }
+        .ph-inbox-shortcut:hover {
+            background: linear-gradient(120deg, rgba(167,139,250,.26), rgba(244,114,182,.26));
+            transform: translateY(-1px);
+            box-shadow: 0 6px 16px rgba(0,0,0,.3);
+        }
+        .ph-inbox-shortcut svg { width: 14px; height: 14px; }
+        .ph-inbox-shortcut .ph-inbox-arrow { margin-left: auto; font-size: 14px; opacity: .6; }
+
+        /* ═══ INBOX OVERLAY ═══ */
+        .ph-inbox-overlay {
+            position: absolute; inset: 0;
+            background: rgba(10,8,22,.72);
+            backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+            display: flex; flex-direction: column;
+            z-index: 25;
+            animation: phFadeIn .22s ease;
+        }
+        .ph-inbox-overlay.closing { animation: ccOut .2s ease forwards; }
+        .ph-inbox-head {
+            padding: 14px 16px 12px;
+            display: flex; align-items: center; justify-content: space-between;
+            border-bottom: 1px solid rgba(255,255,255,.06);
+            background: linear-gradient(180deg, rgba(20,18,40,.9), rgba(20,18,40,.7));
+        }
+        .ph-inbox-title {
+            font-size: 11px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase;
+            color: #c4b5fd;
+        }
+        .ph-inbox-close {
+            width: 26px; height: 26px; border-radius: 7px;
+            background: transparent; border: 1px solid rgba(255,255,255,.12);
+            color: #a8aec4; cursor: pointer; font-family: inherit; font-size: 13px;
+            display: flex; align-items: center; justify-content: center;
+            transition: all .15s;
+        }
+        .ph-inbox-close:hover { background: rgba(251,113,133,.16); color: #fca5b1; border-color: rgba(251,113,133,.4); }
+        .ph-inbox-body {
+            flex: 1; min-height: 0; overflow-y: auto;
+            padding: 8px 12px 12px;
+        }
+        .ph-inbox-body::-webkit-scrollbar { width: 4px; }
+        .ph-inbox-body::-webkit-scrollbar-thumb { background: rgba(167,139,250,.35); border-radius: 2px; }
+
+        /* ═══ FILTER BAR (Recentes) ═══ */
+        .ph-filter-bar {
+            display: flex; gap: 4px;
+            padding: 0 12px 8px;
+            flex-shrink: 0;
+        }
+        .ph-filter-btn {
+            flex: 1;
+            padding: 6px 4px;
+            border-radius: 8px;
+            background: rgba(255,255,255,.04);
+            border: 1px solid rgba(255,255,255,.08);
+            color: #8a90a8;
+            font-family: inherit; font-size: 9.5px; font-weight: 800;
+            letter-spacing: .04em;
+            cursor: pointer;
+            transition: all .16s cubic-bezier(.22,1,.36,1);
+        }
+        .ph-filter-btn:hover { background: rgba(255,255,255,.08); color: #c7cad6; }
+        .ph-filter-btn.active {
+            background: linear-gradient(120deg, rgba(34,211,238,.2), rgba(167,139,250,.2));
+            border-color: rgba(34,211,238,.44);
+            color: #67e8f9;
+        }
+
+        /* ═══ LISTA ═══ */
         .ph-list { flex: 1; min-height: 0; overflow-y: auto; padding: 0 12px 12px; display: flex; flex-direction: column; gap: 4px; }
         .ph-list::-webkit-scrollbar { width: 4px; }
         .ph-list::-webkit-scrollbar-thumb { background: rgba(167,139,250,.35); border-radius: 2px; }
@@ -994,6 +1328,20 @@
         .ph-contact.blocked .ph-name { text-decoration: line-through; color: #a8aec4; }
         .ph-contact.fav { border-color: rgba(251,191,36,.24); }
         .ph-contact.fav:hover { border-color: rgba(251,191,36,.46); }
+
+        /* ═══ HISTÓRICO ═══ */
+        .hist-row.hist-missed {
+            border-color: rgba(251,113,133,.36);
+            background: rgba(251,113,133,.055);
+        }
+        .hist-row.hist-missed .ph-name { color: #fca5b1; font-weight: 800; }
+        .hist-row.hist-rejected {
+            border-color: rgba(251,113,133,.22);
+        }
+        .hist-fav {
+            color: #fbbf24; margin-right: 4px;
+            font-size: 10px; vertical-align: 1px;
+        }
 
         /* ═══ AVATAR com fallback de inicial ═══ */
         .ph-av { width: 38px; height: 38px; border-radius: 12px; flex-shrink: 0;
@@ -1043,14 +1391,14 @@
         .ph-call-btn:hover { background: rgba(52,211,153,.24); box-shadow: 0 0 12px rgba(52,211,153,.35); }
         .ph-call-btn:disabled { opacity: .35; cursor: not-allowed; }
         .ph-call-btn svg { width: 12px; height: 12px; }
-        .ph-note-btn { flex-shrink: 0; width: 28px; height: 28px; border-radius: 50%;
+        .ph-note-btn { flex-shrink: 0; width: 26px; height: 26px; border-radius: 50%;
             border: 1px solid rgba(167,139,250,.4); background: rgba(167,139,250,.14);
             color: #c4b5fd; cursor: pointer; display: flex; align-items: center; justify-content: center;
             transition: all .2s cubic-bezier(.22,1,.36,1); pointer-events: auto; touch-action: none; }
         .ph-note-btn:hover { background: rgba(167,139,250,.24); box-shadow: 0 0 12px rgba(167,139,250,.35); }
         .ph-note-btn.recording { background: linear-gradient(135deg, #fb7185, #f472b6); color: #fff; border-color: transparent; animation: phSpeaking 1.4s ease-in-out infinite; }
-        .ph-note-btn svg { width: 12px; height: 12px; }
-        .ph-rm { flex-shrink: 0; width: 22px; height: 22px; border-radius: 6px; background: transparent;
+        .ph-note-btn svg { width: 11px; height: 11px; }
+        .ph-rm { flex-shrink: 0; width: 20px; height: 20px; border-radius: 6px; background: transparent;
             border: none; cursor: pointer; color: #7d8399; font-family: inherit; font-size: 12px; line-height: 1;
             display: flex; align-items: center; justify-content: center;
             opacity: 0; transition: opacity .15s, color .15s, background .15s; }
@@ -1145,7 +1493,6 @@
         .cc-close:hover { background: rgba(251,113,133,.16); color: #fca5b1; border-color: rgba(251,113,133,.4); }
 
         .cc-top { display: flex; align-items: center; gap: 14px; margin-bottom: 16px; margin-top: 4px; }
-        /* .cc-av já definido no bloco .ph-av.cc-av acima */
 
         .cc-nameline { flex: 1; min-width: 0; }
         .cc-name-display {
@@ -1274,7 +1621,7 @@
 
         @media (prefers-reduced-motion: reduce) {
             .cc-panel { animation: none !important; }
-            .cc-overlay, .cc-overlay.closing { animation: none !important; }
+            .cc-overlay, .cc-overlay.closing, .ph-inbox-overlay, .ph-inbox-overlay.closing { animation: none !important; }
         }
     `);
 
@@ -1283,6 +1630,10 @@
     loadHistory();
     loadBlocked();
     _fetchSessions(true).catch(() => {});
+    // Consome missed calls pendentes do Firestore
+    _consumeMissedCalls().catch(() => {});
+    window.addEventListener('focus', () => { _consumeMissedCalls().catch(() => {}); });
+    window.addEventListener('sang:player-updated', () => { _consumeMissedCalls().catch(() => {}); });
 
     // ═══ EXPORTAR ═══
     Object.assign(ctx.contacts, {
@@ -1292,10 +1643,12 @@
         renderDial: _renderDial,
         renderHistory: _renderHistory,
         findLiveSession: _findLiveSession,
+        findLiveSessionByNumber: _findLiveSessionByNumber,
         fetchSessions: _fetchSessions,
         pushHistory,
         isBlocked,
         hasContact,
+        getContact,
         addContactByNumber,
         removeContact,
         updateContactMeta,
@@ -1307,6 +1660,14 @@
         parseNumber,
         openContactCard: _openContactCard,
         closeContactCard: _closeCard,
+        openInbox: _openInbox,
+        closeInbox: _closeInbox,
+        consumeMissedCalls: _consumeMissedCalls,
+        clearHistory,
+        getUnreadMissedCount,
+        markMissedRead,
+        get historyFilter() { return _historyFilter; },
+        set historyFilter(v) { _historyFilter = v; },
         get contacts() { return _contacts; },
         get history() { return _history; },
         get blocked() { return _blocked; },
