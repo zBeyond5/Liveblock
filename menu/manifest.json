@@ -194,7 +194,7 @@
     "misc": true,
     "admin": true,    
     "instanceKey": "_phone",
-    "url": "https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/modules/celular.js"
+    "url": "https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/modules/phone/shell.js"
     },
     {
       "id": "bot",
