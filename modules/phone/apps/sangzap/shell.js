@@ -61,30 +61,25 @@
     const chatIdFor = (a, b) => safe(() => S?.chatIdFor?.(a, b), [String(a), String(b)].sort().join('-'));
 
     // ═══ MODULE LOADER ═══
-    function loadScript(src, timeoutMs) {
+    async function loadScript(src, timeoutMs) {
         timeoutMs = timeoutMs || 8000;
-        return new Promise((resolve) => {
+        const ctrl = new AbortController();
+        const t = setTimeout(() => { try { ctrl.abort(); } catch(_) {} }, timeoutMs);
+        try {
+            const res = await fetch(src, { cache: 'no-store', signal: ctrl.signal });
+            if (!res.ok) throw new Error('HTTP ' + res.status);
+            const code = await res.text();
             const s = document.createElement('script');
-            let settled = false;
-            const t = setTimeout(() => {
-                if (settled) return;
-                settled = true;
-                console.warn('[Sangzap] timeout', src);
-                resolve(false);
-            }, timeoutMs);
-            const done = (ok) => {
-                if (settled) return;
-                settled = true;
-                clearTimeout(t);
-                if (!ok) console.warn('[Sangzap] falha ao carregar', src);
-                resolve(ok);
-            };
-            s.src = src;
-            s.async = false;    // preserva ordem de execução
-            s.onload = () => done(true);
-            s.onerror = () => done(false);
+            s.textContent = code;
             document.head.appendChild(s);
-        });
+            s.remove();
+            return true;
+        } catch(e) {
+            console.warn('[Sangzap] falha ao carregar', src, e.message || e);
+            return false;
+        } finally {
+            clearTimeout(t);
+        }
     }
 
     function loadModules() {
