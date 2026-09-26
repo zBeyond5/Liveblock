@@ -155,7 +155,10 @@
     }
     function _notifyUnread() {
         const n = getUnreadCount();
-        try { ctx.setNotifDot?.(n > 0); } catch(_) {}
+        try {
+              const missed = ctx.contacts?.getUnreadMissedCount?.() || 0;
+              ctx.setNotifDot?.(n > 0 || missed > 0);
+            } catch(_) {}
         _unreadSubs.forEach(fn => { try { fn(n); } catch(_) {} });
     }
     function getUnreadCount() {
