@@ -6,9 +6,15 @@
     if (!ctx || !S) return;
     if (S.roster) return;
 
+    // ═══ FS HELPERS — tradução inline Firestore REST ═══
+    // Instala funções compartilhadas com chat.js: fsWrite, fsCreate, fsGet, fsDel.
+    // Além dessas, roster define fsQuery (query estruturada), que chat.js não tem.
+    //
+    // Guard usa S.fsQuery (única deste arquivo) em vez de S.__fsFull, porque chat.js
+    // e roster.js carregam em paralelo e ambos setam __fsFull. Se chat ganhar a corrida,
+    // __fsFull fica true e roster bailaria sem instalar fsQuery → fetchChats falharia.
     (function ensureFsHelpers() {
-        if (S.__fsFull) return;
-        S.__fsFull = true;
+        if (S.fsQuery) return;
 
         function toFs(v) {
             if (v === null || v === undefined) return { nullValue: null };
@@ -91,8 +97,10 @@
 
         // Query estruturada — única forma de filtrar por array-contains no REST.
         // Envia POST em :runQuery com corpo { structuredQuery }.
+        // Path precisa da barra inicial: hub faz FS_BASE + path, então ':runQuery'
+        // geraria '.../documents:runQuery' (inválido). Correto é '/:runQuery'.
         S.fsQuery = async function(structuredQuery) {
-            const res = await ctx.bridge.firestore.request('POST', ':runQuery', { structuredQuery });
+            const res = await ctx.bridge.firestore.request('POST', '/:runQuery', { structuredQuery });
             return (Array.isArray(res) ? res : []).map(r => {
                 if (!r || !r.document) return null;
                 return {
@@ -407,6 +415,7 @@
     async function tick() {
         if (_abort || !_running) return;
         try {
+            // Acessor tolerante do common.js — cobre qualquer nome que contacts.js exponha.
             const contacts = S.getContacts ? S.getContacts() : (ctx.contacts?.contacts || []).slice();
             const chats = await fetchChats();
             if (chats === null) return; // falha: mantém cache
