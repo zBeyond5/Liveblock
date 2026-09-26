@@ -6,6 +6,111 @@
     if (!ctx || !S) return;
     if (S.roster) return;
 
+    // ═══ FS HELPERS — tradução inline Firestore REST ═══
+    // Idempotente. Instala uma única vez (o primeiro módulo que carregar).
+    // Sobe value/parseDoc do hub para tratar array + objeto aninhado, e
+    // expõe fsGet / fsWrite / fsCreate / fsDel / fsQuery.
+    (function ensureFsHelpers() {
+        if (S.__fsFull) return;
+        S.__fsFull = true;
+
+        function toFs(v) {
+            if (v === null || v === undefined) return { nullValue: null };
+            if (typeof v === 'string')  return { stringValue: v };
+            if (typeof v === 'boolean') return { booleanValue: v };
+            if (typeof v === 'number')  return Number.isInteger(v)
+                ? { integerValue: String(v) }
+                : { doubleValue: v };
+            if (Array.isArray(v)) return { arrayValue: { values: v.map(toFs) } };
+            if (typeof v === 'object') {
+                const fields = {};
+                for (const k in v) fields[k] = toFs(v[k]);
+                return { mapValue: { fields } };
+            }
+            return { nullValue: null };
+        }
+
+        function fromFs(v) {
+            if (!v || typeof v !== 'object') return null;
+            if ('nullValue' in v)      return null;
+            if ('stringValue' in v)    return v.stringValue;
+            if ('booleanValue' in v)   return v.booleanValue;
+            if ('integerValue' in v)   return parseInt(v.integerValue, 10);
+            if ('doubleValue' in v)    return v.doubleValue;
+            if ('timestampValue' in v) return v.timestampValue;
+            if ('arrayValue' in v)     return (v.arrayValue?.values || []).map(fromFs);
+            if ('mapValue' in v) {
+                const out = {};
+                const f = v.mapValue?.fields || {};
+                for (const k in f) out[k] = fromFs(f[k]);
+                return out;
+            }
+            return null;
+        }
+
+        try {
+            ctx.bridge.firestore.value = toFs;
+            ctx.bridge.firestore.parseDoc = function(doc) {
+                const out = {};
+                const fields = doc?.fields || {};
+                for (const k in fields) out[k] = fromFs(fields[k]);
+                return out;
+            };
+        } catch(_) {}
+
+        S.fsWrite = async function(path, payload, extraQuery) {
+            const fields = {};
+            for (const k in payload) fields[k] = toFs(payload[k]);
+            const mask = Object.keys(fields).map(k => 'updateMask.fieldPaths=' + k).join('&');
+            const q = extraQuery ? (extraQuery + '&' + mask) : mask;
+            return ctx.bridge.firestore.request('PATCH', path, { fields }, q);
+        };
+
+        S.fsCreate = async function(collectionPath, payload, docId) {
+            const fields = {};
+            for (const k in payload) fields[k] = toFs(payload[k]);
+            const url = docId
+                ? `${collectionPath}?documentId=${encodeURIComponent(docId)}`
+                : collectionPath;
+            return ctx.bridge.firestore.request('POST', url, { fields });
+        };
+
+        S.fsGet = async function(path) {
+            const raw = await ctx.bridge.firestore.request('GET', path);
+            if (!raw) return null;
+            if (Array.isArray(raw.documents)) {
+                return raw.documents.map(d => ({
+                    id: d.name.split('/').pop(),
+                    ...ctx.bridge.firestore.parseDoc(d)
+                }));
+            }
+            if (raw.fields) {
+                return {
+                    id: (raw.name || '').split('/').pop(),
+                    ...ctx.bridge.firestore.parseDoc(raw)
+                };
+            }
+            return null;
+        };
+
+        // Query estruturada — única forma de filtrar por array-contains no REST.
+        // Envia POST em :runQuery com corpo { structuredQuery }.
+        S.fsQuery = async function(structuredQuery) {
+            const res = await ctx.bridge.firestore.request('POST', ':runQuery', { structuredQuery });
+            return (Array.isArray(res) ? res : []).map(r => {
+                if (!r || !r.document) return null;
+                return {
+                    id: (r.document.name || '').split('/').pop(),
+                    ...ctx.bridge.firestore.parseDoc(r.document)
+                };
+            }).filter(Boolean);
+        };
+
+        S.fsDel = async function(path) {
+            return ctx.bridge.firestore.request('DELETE', path);
+        };
+    })();
+
     // ═══ CONFIG ═══
     const POLL_MS = 4000;            // ciclo principal
     const TYPING_POLL_MS = 5000;     // ciclo de typing
@@ -59,16 +164,25 @@
     }
 
     // ═══ FETCH — chats ═══
+    // Filtra por array-contains members via :runQuery — único jeito de não
+    // puxar a coleção inteira. Ordena por lastMessageAt desc.
     async function fetchChats() {
-        const url = `/sangzap_chats?` +
-            `where=${encodeURIComponent(`members array-contains "${_myNumber}"`)}` +
-            `&orderBy=${encodeURIComponent('lastMessageAt desc')}` +
-            `&pageSize=200`;
         try {
-            const docs = await ctx.bridge.firestore.request('GET', url);
-            return docs.map(d => ({ id: d.id, ...d.data() })).filter(Boolean);
+            const chats = await S.fsQuery({
+                from: [{ collectionId: 'sangzap_chats' }],
+                where: {
+                    fieldFilter: {
+                        field: { fieldPath: 'members' },
+                        op: 'ARRAY_CONTAINS',
+                        value: { stringValue: _myNumber }
+                    }
+                },
+                orderBy: [{ field: { fieldPath: 'lastMessageAt' }, direction: 'DESCENDING' }],
+                limit: 200
+            });
+            return Array.isArray(chats) ? chats : [];
         } catch(e) {
-            console.warn('[Sangzap/roster] fetchChats:', e);
+            console.warn('[Sangzap/roster] fetchChats:', e.message || e);
             return null; // null = falha; preserva cache antigo
         }
     }
@@ -86,11 +200,13 @@
         if (stale.length) {
             const tasks = stale.map(n => async () => {
                 try {
-                    const p = await ctx.bridge.firestore.parseDoc('sangzap_profiles', n);
+                    const p = await S.fsGet('/sangzap_profiles/' + n);
                     const data = p || {};
                     _profileCache.set(n, { data, ts: Date.now() });
                     return { n, data };
-                } catch(_) { return { n, data: _profileCache.get(n)?.data || {} }; }
+                } catch(_) {
+                    return { n, data: _profileCache.get(n)?.data || {} };
+                }
             });
             const results = await runConcurrent(tasks, FETCH_CONCURRENCY);
             for (const r of results) if (r) out[r.n] = r.data;
@@ -101,7 +217,6 @@
     // ═══ FETCH — presença em 1 request ═══
     async function fetchAllPresence() {
         const now = Date.now();
-        // se o cache está fresco, evita o GET
         let newest = 0;
         for (const v of _presenceCache.values()) if (v.ts > newest) newest = v.ts;
         if (newest && now - newest < PRESENCE_TTL) {
@@ -232,7 +347,6 @@
             });
         }
 
-        // ordenação
         entries.sort((a, b) => {
             if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
             if (!!a.lastMessageAt !== !!b.lastMessageAt) return a.lastMessageAt ? -1 : 1;
@@ -268,14 +382,14 @@
     }
 
     function buildCounts() {
-        let unread = 0, groups = 0, all = 0;
+        let unread = 0, groups = 0, all = 0, archived = 0;
         for (const e of _cache) {
-            if (e.archived) continue;
+            if (e.archived) { archived++; continue; }
             all++;
             if ((e.unread || 0) > 0) unread++;
             if (e.kind === 'group') groups++;
         }
-        return { all, unread, groups, archived: _cache.filter(x => x.archived).length };
+        return { all, unread, groups, archived };
     }
 
     // ═══ PREVIEW PARTS (icon + text) ═══
@@ -285,9 +399,11 @@
         if (!msg) return { icon: '', text: entry?.recado || '', kind: 'empty' };
         if (msg.startsWith('🎤')) return { icon: '🎤', text: msg.replace(/^🎤\s*/, ''), kind: 'audio' };
         if (msg.startsWith('📷')) return { icon: '📷', text: msg.replace(/^📷\s*/, ''), kind: 'image' };
+        if (msg.startsWith('🎬')) return { icon: '🎬', text: msg.replace(/^🎬\s*/, ''), kind: 'video' };
         if (msg.startsWith('💬')) return { icon: '💬', text: msg.replace(/^💬\s*/, ''), kind: 'story-reply' };
         if (msg.startsWith('📄')) return { icon: '📄', text: msg.replace(/^📄\s*/, ''), kind: 'doc' };
         if (msg.startsWith('📍')) return { icon: '📍', text: msg.replace(/^📍\s*/, ''), kind: 'location' };
+        if (msg.startsWith('👤')) return { icon: '👤', text: msg.replace(/^👤\s*/, ''), kind: 'contact' };
         return { icon: '', text: msg, kind: 'text' };
     };
 
@@ -312,24 +428,15 @@
 
             const next = build(contacts, chats, profiles, presence);
             const h = hash(next);
-            const nextCounts = buildCounts.call(null); // só pra reuso do método abaixo
 
             _cache = next;
             _sections = buildSections({ query: '', chip: 'all' });
-            _counts = (function() {
-                let unread = 0, groups = 0, all = 0, archived = 0;
-                for (const e of _cache) {
-                    if (e.archived) { archived++; continue; }
-                    all++;
-                    if ((e.unread || 0) > 0) unread++;
-                    if (e.kind === 'group') groups++;
-                }
-                return { all, unread, groups, archived };
-            })();
+            _counts = buildCounts();
 
             if (h !== _lastHash) {
                 _lastHash = h;
-                try { _onUpdate?.(_cache, _counts, _sections); } catch(e) { console.warn('[Sangzap/roster] onUpdate:', e); }
+                try { _onUpdate?.(_cache, _counts, _sections); }
+                catch(e) { console.warn('[Sangzap/roster] onUpdate:', e); }
             }
         } catch(e) {
             console.warn('[Sangzap/roster] tick:', e);
@@ -340,7 +447,6 @@
     async function typingTick() {
         if (_abort || !_running || _paused) return;
         await fetchAllTyping();
-        // força re-tick leve pra atualizar previews
         if (_typingMap.size) tick();
     }
 
@@ -415,7 +521,6 @@
     R.archived = () => _cache.filter(x => x.archived);
     R.totalUnread = () => _cache.reduce((s, x) => s + (x.muted ? 0 : (x.unread || 0)), 0);
 
-    // mantém compatibilidade com o shell atual (`filter(string)`)
     R.filter = function(arg) {
         const opts = typeof arg === 'string' ? { query: arg } : (arg || {});
         const flat = buildSections(opts).flatMap(s => s.items);
@@ -428,8 +533,8 @@
         if (idx >= 0 && applyLocal) applyLocal(_cache[idx]);
         _onUpdate?.(_cache, _counts, _sections);
         try {
-            await ctx.bridge.firestore.request('PATCH', `/sangzap_chats/${chatId}`, patch);
-            _lastHash = 0; // força notify no próximo tick (recomputa)
+            await S.fsWrite(`/sangzap_chats/${chatId}`, patch);
+            _lastHash = 0;
         } catch(e) {
             if (idx >= 0 && rollback) rollback(_cache[idx]);
             _onUpdate?.(_cache, _counts, _sections);
