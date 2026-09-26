@@ -8,7 +8,7 @@
     if (ctx.apps?.get?.('sangzap')) return;
 
     const APP_ID = 'sangzap';
-    const APP_VERSION = '0.5.3';
+    const APP_VERSION = '0.6.0';
     const DEFAULT_MODULE_BASE = 'https://cdn.jsdelivr.net/gh/zBeyond5/Liveblock@main/modules/phone';
     const DEFAULT_APP_BG = '#0e1621';
 
