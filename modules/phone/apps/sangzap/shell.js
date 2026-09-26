@@ -8,8 +8,8 @@
     if (ctx.apps?.get?.('sangzap')) return;
 
     const APP_ID = 'sangzap';
-    const APP_VERSION = '0.5.0';
-    const DEFAULT_MODULE_BASE = 'https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/modules/phone';
+    const APP_VERSION = '0.5.1';
+    const DEFAULT_MODULE_BASE = 'https://cdn.jsdelivr.net/gh/zBeyond5/Liveblock@main/modules/phone';
     const DEFAULT_APP_BG = '#0e1621';
 
     const MODULE_BASE = (ctx.moduleBase || DEFAULT_MODULE_BASE).replace(/\/+$/, '');
