@@ -9,6 +9,7 @@
     const C = {};
     const POLL_MS = 1500;
     const TYPING_TTL = 4000;
+    const EDIT_WINDOW = 15 * 60 * 1000;
 
     let _timer = null;
     let _typingTimer = null;
@@ -17,18 +18,19 @@
     let _onUpdate = null;
     let _lastMsgTs = 0;
     let _typingSent = 0;
+    let _meta = {};
 
     // ═══ FETCH ═══
     async function fetchMessages(sinceTs) {
         const path = `/sangzap_chats/${_chatId}/messages`;
         const url = sinceTs
             ? `${path}?where=${encodeURIComponent(`sentAt > ${sinceTs}`)}&orderBy=${encodeURIComponent('sentAt asc')}`
-            : `${path}?orderBy=${encodeURIComponent('sentAt asc')}&pageSize=120`;
+            : `${path}?orderBy=${encodeURIComponent('sentAt asc')}&pageSize=200`;
         try {
             const docs = await ctx.bridge.firestore.request('GET', url);
-            return docs.map(d => ({ id: d.id, ...d.data })).filter(Boolean);
+            return docs.map(d => ({ id: d.id, ...d.data() })).filter(Boolean);
         } catch(e) {
-            console.warn('[Sangzap/chat] fetch falhou:', e);
+            console.warn('[Sangzap/chat] fetch:', e);
             return [];
         }
     }
@@ -41,8 +43,11 @@
             sentAt: Date.now(),
             deliveredAt: null,
             readAt: null,
-            ...(payload.audio ? { audio: payload.audio, mime: payload.mime, size: payload.size } : {}),
-            ...(payload.media ? { media: payload.media, mime: payload.mime, size: payload.size } : {})
+            ...(payload.replyTo ? { replyTo: payload.replyTo } : {}),
+            ...(payload.mentions ? { mentions: payload.mentions } : {}),
+            ...(payload.audio ? { audio: payload.audio, mime: payload.mime, size: payload.size, duration: payload.duration } : {}),
+            ...(payload.media ? { media: payload.media, mime: payload.mime, size: payload.size } : {}),
+            ...(payload.storyId ? { storyId: payload.storyId } : {})
         };
         const msgId = S.msgId();
         await ctx.bridge.firestore.request('POST', `/sangzap_chats/${_chatId}/messages?documentId=${msgId}`, doc);
@@ -65,14 +70,24 @@
         ));
     }
 
-    // ═══ TYPING (RTDB) ═══
+    // ═══ EDIT / DELETE ═══
+    async function editMessage(msgId, newBody) {
+        await ctx.bridge.firestore.request('PATCH',
+            `/sangzap_chats/${_chatId}/messages/${msgId}`,
+            { body: S.sanitize(newBody), editedAt: Date.now() });
+    }
+    async function deleteMessage(msgId) {
+        await ctx.bridge.firestore.request('PATCH',
+            `/sangzap_chats/${_chatId}/messages/${msgId}`,
+            { body: '', deletedAt: Date.now() });
+    }
+
+    // ═══ TYPING ═══
     function sendTyping() {
         const now = Date.now();
         if (now - _typingSent < TYPING_TTL / 2) return;
         _typingSent = now;
-        try {
-            ctx.bridge.rtdb.put(`sangzap/typing/${_chatId}/${_myNumber}`, { on: 1, ts: now });
-        } catch(_) {}
+        try { ctx.bridge.rtdb.put(`sangzap/typing/${_chatId}/${_myNumber}`, { on: 1, ts: now }); } catch(_) {}
     }
     async function fetchTyping() {
         try {
@@ -87,6 +102,12 @@
             return out;
         } catch(_) { return []; }
     }
+
+    // ═══ PRESENCE ═══
+    function beatPresence() {
+        try { ctx.bridge.rtdb.put(`sangzap/presence/${_myNumber}`, { online: 1, lastSeen: Date.now() }); } catch(_) {}
+    }
+    let _presenceTimer = null;
 
     // ═══ POLL ═══
     async function tick() {
@@ -105,25 +126,46 @@
     }
 
     // ═══ PUBLIC ═══
-    C.open = function(chatId, myNumber, onUpdate) {
+    C.open = function(chatId, myNumber, meta, onUpdate) {
         C.close();
         _chatId = chatId;
         _myNumber = myNumber;
+        _meta = meta || {};
         _onUpdate = onUpdate;
         _lastMsgTs = 0;
         tick();
         _timer = setInterval(tick, POLL_MS);
+        beatPresence();
+        _presenceTimer = setInterval(beatPresence, 25000);
     };
     C.close = function() {
         if (_timer) { clearInterval(_timer); _timer = null; }
         if (_typingTimer) { clearTimeout(_typingTimer); _typingTimer = null; }
+        if (_presenceTimer) { clearInterval(_presenceTimer); _presenceTimer = null; }
+        try { if (_myNumber) ctx.bridge.rtdb.put(`sangzap/presence/${_myNumber}`, { online: 0, lastSeen: Date.now() }); } catch(_) {}
         _chatId = null;
         _onUpdate = null;
     };
-    C.send = function(text) {
+
+    C.send = function(text, opts) {
         if (!_chatId) return Promise.resolve(null);
-        return postMessage({ kind: 'text', body: text });
+        const mentions = S.extractMentions(text);
+        return postMessage({ kind: 'text', body: text, mentions, ...(opts || {}) });
     };
+    C.sendAudio = function(payload, opts) {
+        if (!_chatId) return Promise.resolve(null);
+        return postMessage({ kind: 'audio', audio: payload.audio, mime: payload.mime, size: payload.size, duration: payload.duration, ...(opts || {}) });
+    };
+    C.sendImage = function(payload, opts) {
+        if (!_chatId) return Promise.resolve(null);
+        return postMessage({ kind: 'image', media: payload.media, mime: payload.mime, size: payload.size, ...(opts || {}) });
+    };
+    C.sendStoryReply = function(storyId, text) {
+        if (!_chatId) return Promise.resolve(null);
+        return postMessage({ kind: 'story-reply', body: text, storyId });
+    };
+    C.edit = editMessage;
+    C.delete = deleteMessage;
     C.typing = function() {
         if (!_chatId) return;
         sendTyping();
@@ -132,7 +174,9 @@
             try { ctx.bridge.rtdb.put(`sangzap/typing/${_chatId}/${_myNumber}`, { on: 0, ts: Date.now() }); } catch(_) {}
         }, TYPING_TTL);
     };
+    C.canEdit = (msg) => msg && msg.from === _myNumber && !msg.deletedAt && (Date.now() - (msg.sentAt || 0)) < EDIT_WINDOW;
     C.chatId = () => _chatId;
+    C.meta = () => _meta;
 
     S.chat = C;
 })();
