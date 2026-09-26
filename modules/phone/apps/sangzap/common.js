@@ -91,19 +91,17 @@
             && da.getMonth() === db.getMonth()
             && da.getDate() === db.getDate();
     };
-    // Injeta separadores { _sep:true, label } entre dias diferentes.
-    // Use no paint() do chat: iterar e renderizar separadores como bloco próprio.
     S.withDateSeparators = function(messages) {
         if (!Array.isArray(messages)) return [];
         const out = [];
         let lastTs = 0;
         for (const m of messages) {
-            if (!m || !m.ts) { out.push(m); continue; }
-            if (!lastTs || !S.sameDay(lastTs, m.ts)) {
-                out.push({ _sep: true, ts: m.ts, label: S.dateLabel(m.ts) });
+            if (!m || !m.sentAt) { out.push(m); continue; }
+            if (!lastTs || !S.sameDay(lastTs, m.sentAt)) {
+                out.push({ _sep: true, ts: m.sentAt, label: S.dateLabel(m.sentAt) });
             }
             out.push(m);
-            lastTs = m.ts;
+            lastTs = m.sentAt;
         }
         return out;
     };
@@ -116,7 +114,6 @@
 
     // ═══ TEXT — MARKUP (WhatsApp style) ═══
     // *bold*  _italic_  ~strike~  `mono`
-    // Code spans protegidos por placeholder pra não sofrerem markup interno.
     const SLOT = '\uE000';   // private-use char, não colide com texto normal
     function applyMarkup(t) {
         const slots = [];
@@ -126,11 +123,11 @@
             slots.push(inner);
             return SLOT + i + SLOT;
         });
-        // 2) *bold* — conteúdo não pode começar/terminar em whitespace
+        // 2) *bold*
         t = t.replace(/(^|[^\w])\*([^\s\*](?:[^\*\n]*?[^\s\*])?)\*(?=[^\w]|$)/g, '$1<strong>$2</strong>');
-        // 3) _italic_ — mesma regra de borda
+        // 3) _italic_
         t = t.replace(/(^|[^\w])_([^\s_](?:[^_\n]*?[^\s_])?)_(?=[^\w]|$)/g, '$1<em>$2</em>');
-        // 4) ~strike~ — mesma regra
+        // 4) ~strike~
         t = t.replace(/(^|[^\w])~([^\s~](?:[^~\n]*?[^\s~])?~)?/g, (m, pre, body) => {
             if (!body) return m;
             return pre + '<del>' + body.replace(/~$/, '') + '</del>';
@@ -142,8 +139,6 @@
     }
 
     // ═══ TEXT — LINKIFY + MENÇÕES + MARKUP ═══
-    // Ordem importa: split por URL → markup/menção só nos segmentos de texto.
-    // Garante que `_` ou `@` dentro de URL não sejam corrompidos.
     S.renderText = function(text, opts) {
         opts = opts || {};
         if (!text) return '';
@@ -156,7 +151,6 @@
         while ((m = urlRe.exec(s))) {
             if (m.index > last) parts.push({ u: false, v: s.slice(last, m.index) });
             let url = m[0];
-            // strip pontuação final que gruda por acidente
             const tail = url.match(/[.,;:!?)\]}]+$/);
             if (tail) url = url.slice(0, -tail[0].length);
             parts.push({ u: true, v: url });
@@ -171,12 +165,10 @@
                 return `<a class="sz-link" href="${href}" target="_blank" rel="noopener noreferrer">${p.v}</a>`;
             }
             let t = p.v;
-            // menções
             t = t.replace(/(^|[^\w])@([\w\u00C0-\u017F]+)/g, (_, pre, name) => {
                 const mine = myName && name.toLowerCase() === myName;
                 return pre + `<span class="sz-mention"${mine ? ' data-me="1"' : ''}>@${name}</span>`;
             });
-            // markup
             t = applyMarkup(t);
             return t;
         }).join('');
@@ -188,6 +180,10 @@
         const kind = msg.kind || 'text';
         if (kind === 'audio') return '🎤 Áudio';
         if (kind === 'image') return '📷 Imagem';
+        if (kind === 'video') return '🎬 Vídeo';
+        if (kind === 'doc')   return '📄 Documento';
+        if (kind === 'location') return '📍 Localização';
+        if (kind === 'contact')  return '👤 Contato';
         if (kind === 'story-reply') return '💬 Respondeu ao story';
         if (kind === 'system') return msg.body || '';
         return S.sanitize(msg.body || '');
@@ -215,6 +211,115 @@
 
     // ═══ RECENTES ═══
     S.recentEmojis = ['❤️', '😂', '😮', '😢', '👏', '🔥', '👍', '🎉'];
+
+    // ═══ FIRESTORE ADAPTER ═══
+    // O hub expõe Firestore REST cru. O Sangzap trabalha com objetos JS planos.
+    // Este adapter traduz os dois sentidos — corpo → { fields } + updateMask em
+    // escrita, resposta → [ { id, ...campos } ] em leitura. Idempotente: se o body
+    // já vem no formato Firestore, repassa sem alterar.
+    (function installFirestoreAdapter() {
+        const fs = ctx.bridge?.firestore;
+        if (!fs || fs.__sangzapAdapted) return;
+        fs.__sangzapAdapted = true;
+        const orig = fs.request.bind(fs);
+
+        function toFsValue(v) {
+            if (v === null || v === undefined) return { nullValue: null };
+            if (typeof v === 'string')  return { stringValue: v };
+            if (typeof v === 'boolean') return { booleanValue: v };
+            if (typeof v === 'number') {
+                return Number.isInteger(v)
+                    ? { integerValue: String(v) }
+                    : { doubleValue: v };
+            }
+            if (Array.isArray(v)) return { arrayValue: { values: v.map(toFsValue) } };
+            if (typeof v === 'object') {
+                const fields = {};
+                for (const k in v) fields[k] = toFsValue(v[k]);
+                return { mapValue: { fields } };
+            }
+            return { nullValue: null };
+        }
+
+        function fromFsValue(v) {
+            if (!v || typeof v !== 'object') return null;
+            if ('nullValue' in v)    return null;
+            if ('stringValue' in v)  return v.stringValue;
+            if ('booleanValue' in v) return v.booleanValue;
+            if ('integerValue' in v) return parseInt(v.integerValue, 10);
+            if ('doubleValue' in v)  return v.doubleValue;
+            if ('timestampValue' in v) return v.timestampValue;
+            if ('arrayValue' in v)   return (v.arrayValue?.values || []).map(fromFsValue);
+            if ('mapValue' in v) {
+                const out = {};
+                const f = v.mapValue?.fields || {};
+                for (const k in f) out[k] = fromFsValue(f[k]);
+                return out;
+            }
+            return null;
+        }
+
+        function docToObj(doc) {
+            if (!doc || typeof doc !== 'object') return null;
+            const id  = (doc.name || '').split('/').pop() || '';
+            const fields = doc.fields || {};
+            const data = {};
+            for (const k in fields) data[k] = fromFsValue(fields[k]);
+            return Object.assign({ id, data: () => ({ ...data }) }, data);
+        }
+
+        function bodyToFs(body) {
+            if (!body || typeof body !== 'object') return body;
+            if ('fields' in body && typeof body.fields === 'object') return body;
+            const fields = {};
+            for (const k in body) fields[k] = toFsValue(body[k]);
+            return { fields };
+        }
+
+        fs.request = async function(method, path, body, extraQuery) {
+            const m = String(method || 'GET').toUpperCase();
+            let p = path || '';
+            let q = extraQuery || '';
+
+            // separa query embutida no path (?documentId=xxx / ?where=...)
+            const qi = p.indexOf('?');
+            if (qi !== -1) {
+                q = p.slice(qi + 1) + (q ? '&' + q : '');
+                p = p.slice(0, qi);
+            }
+
+            // corpo: converte pra formato Firestore se estiver cru
+            let b = bodyToFs(body);
+
+            // PATCH precisa de updateMask pra fazer merge em vez de replace total
+            if (m === 'PATCH' && b && b.fields) {
+                const mask = Object.keys(b.fields)
+                    .map(k => 'updateMask.fieldPaths=' + encodeURIComponent(k))
+                    .join('&');
+                q = q ? q + '&' + mask : mask;
+            }
+
+            let res;
+            try {
+                res = await orig(m, p, b, q);
+            } catch(e) {
+                console.warn('[Sangzap/fs] ' + m + ' ' + p + ' falhou:', e.message);
+                throw e;
+            }
+
+            if (res && typeof res === 'object') {
+                if (Array.isArray(res.documents)) return res.documents.map(docToObj).filter(Boolean);
+                if (res.name && res.fields) return docToObj(res);
+                if (res.name && !res.fields) {
+                    const id = (res.name || '').split('/').pop() || '';
+                    return { id, data: () => ({}) };
+                }
+            }
+            return res;
+        };
+
+        console.log('[Sangzap] Firestore adapter instalado');
+    })();
 
     window._sangzapCtx = S;
 })();
