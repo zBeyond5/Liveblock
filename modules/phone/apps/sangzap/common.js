@@ -205,5 +205,22 @@
 
     S.recentEmojis = ['❤️', '😂', '😮', '😢', '👏', '🔥', '👍', '🎉'];
 
+    // ═══ CONTATOS ═══
+    S.getContacts = function() {
+        const c = ctx.contacts;
+        if (!c) return [];
+        if (Array.isArray(c.contacts)) return c.contacts.slice();
+        if (Array.isArray(c.list))     return c.list.slice();
+        if (Array.isArray(c.all))      return c.all.slice();
+        if (typeof c.list     === 'function') { try { return c.list()     || []; } catch(_) { return []; } }
+        if (typeof c.all      === 'function') { try { return c.all()      || []; } catch(_) { return []; } }
+        if (typeof c.getAll   === 'function') { try { return c.getAll()   || []; } catch(_) { return []; } }
+        if (typeof c.getList  === 'function') { try { return c.getList()  || []; } catch(_) { return []; } }
+        if (typeof c.getContacts === 'function') { try { return c.getContacts() || []; } catch(_) { return []; } }
+        return [];
+    };
+
+    // ═══ STYLE (definido por style.js) ═══
+
     window._sangzapCtx = S;
 })();
