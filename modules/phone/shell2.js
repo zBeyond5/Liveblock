@@ -21,6 +21,75 @@
         console.warn('[Phone] Firestore off.'); return;
     }
 
+    // ═══ FIRESTORE GATE — rate limit + backoff + prioridade de escrita ═══
+    // Firestore REST tem limite de burst. Sem isso, todos os módulos (phone +
+    // sangzap) disparam em paralelo e tomam 429 em cascata. Aqui centralizamos:
+    //   - no máx 3 requests em voo
+    //   - ~8 req/s (gap mínimo de 120ms entre despachos)
+    //   - escrita (POST/PATCH/DELETE/PUT) tem fila prioritária sobre leitura
+    //   - 429 → backoff exponencial (1.5s, 3s, 6s, 12s), máx 2 retries por request
+    // Como o shell já está bootado antes de todos os outros módulos carregarem,
+    // todo mundo pega a versão gateada via bridge.firestore.request.
+    (function installFirestoreGate() {
+        const fs = bridge.firestore;
+        if (!fs || fs.__gated) return;
+        fs.__gated = true;
+        const origRequest = fs.request.bind(fs);
+
+        const MAX_CONCURRENT = 3;
+        const MIN_GAP_MS     = 120;
+        const BACKOFF_STEPS  = [1500, 3000, 6000, 12000];
+
+        let inFlight      = 0;
+        let lastDispatch  = 0;
+        let backoffUntil  = 0;
+        let backoffIdx    = 0;
+        const readQ  = [];
+        const writeQ = [];
+
+        const isWrite = (m) => m === 'POST' || m === 'PATCH' || m === 'DELETE' || m === 'PUT';
+
+        function pump() {
+            if (inFlight >= MAX_CONCURRENT) return;
+            if (!readQ.length && !writeQ.length) return;
+            const now = Date.now();
+            if (now < backoffUntil) {
+                setTimeout(pump, backoffUntil - now + 50);
+                return;
+            }
+            const since = now - lastDispatch;
+            if (since < MIN_GAP_MS) {
+                setTimeout(pump, MIN_GAP_MS - since);
+                return;
+            }
+            const item = writeQ.shift() || readQ.shift();
+            lastDispatch = Date.now();
+            inFlight++;
+            origRequest(item.method, item.path, item.body, item.q)
+                .then((r) => { backoffIdx = 0; item.resolve(r); })
+                .catch((e) => {
+                    const msg = String(e?.message || e);
+                    if (/\b429\b/.test(msg) && (item.attempt || 0) < 2) {
+                        item.attempt = (item.attempt || 0) + 1;
+                        backoffUntil = Date.now() + BACKOFF_STEPS[Math.min(backoffIdx, BACKOFF_STEPS.length - 1)];
+                        backoffIdx = Math.min(backoffIdx + 1, BACKOFF_STEPS.length - 1);
+                        (isWrite(item.method) ? writeQ : readQ).unshift(item);
+                    } else {
+                        item.reject(e);
+                    }
+                })
+                .finally(() => { inFlight--; setTimeout(pump, 10); });
+        }
+
+        fs.request = function(method, path, body, q) {
+            return new Promise((resolve, reject) => {
+                const item = { method, path, body, q, resolve, reject, attempt: 0 };
+                (isWrite(method) ? writeQ : readQ).push(item);
+                pump();
+            });
+        };
+    })();
+
     // CONFIG — imutável; preservado entre mounts para consistência de referências.
     // Se precisares de campo mutável, NÃO edite P.config; usa P.state.
     if (!P.config) {
