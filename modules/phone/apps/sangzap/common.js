@@ -8,16 +8,9 @@
     const S = {};
 
     // ═══ IDS ═══
-    S.chatIdFor = function(a, b) {
-        const [x, y] = [String(a), String(b)].sort();
-        return x + '-' + y;
-    };
-    S.groupChatId = function() {
-        return 'g' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
-    };
-    S.msgId = function() {
-        return 'm' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
-    };
+    S.chatIdFor = (a, b) => [String(a), String(b)].sort().join('-');
+    S.groupChatId = () => 'g' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+    S.msgId = () => 'm' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 
     // ═══ FORMAT ═══
     S.fmtTime = function(ts) {
@@ -40,38 +33,57 @@
         if (diff < 604800000) return Math.floor(diff / 86400000) + 'd';
         return S.fmtTime(ts);
     };
-    S.shortNum = function(n) {
-        return String(n || '').replace(/^(\d{3})(\d{3})$/, '$1 $2');
-    };
+    S.shortNum = (n) => String(n || '').replace(/^(\d{3})(\d{3})$/, '$1 $2');
 
     // ═══ TEXT ═══
-    S.sanitize = function(text) {
-        return String(text || '').slice(0, 4000);
-    };
+    S.sanitize = (text) => String(text || '').slice(0, 4000);
     S.escape = ctx.esc || (s => String(s || '').replace(/[&<>"']/g, c => ({
         '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
     })[c]));
 
-    // ═══ PREVIEW ═══
     S.preview = function(msg) {
         if (!msg) return '';
         const kind = msg.kind || 'text';
         if (kind === 'audio') return '🎤 Áudio';
         if (kind === 'image') return '📷 Imagem';
+        if (kind === 'story-reply') return '💬 Respondeu ao story';
         if (kind === 'system') return msg.body || '';
         return S.sanitize(msg.body || '');
     };
 
-    // ═══ UNREAD ═══
     S.countUnread = function(messages, myNumber) {
         if (!Array.isArray(messages)) return 0;
         let n = 0;
-        for (const m of messages) {
-            if (m && m.from !== myNumber && !m.readAt) n++;
-        }
+        for (const m of messages) if (m && m.from !== myNumber && !m.readAt) n++;
         return n;
     };
 
+    // ═══ RECENTES ═══
+    S.recentEmojis = ['❤️', '😂', '😮', '😢', '👏', '🔥', '👍', '🎉'];
+
+    // ═══ TIME-AGO (PT-BR) ═══
+    S.timeAgo = function(ts) {
+        if (!ts) return '';
+        const diff = Date.now() - ts;
+        const s = Math.floor(diff / 1000);
+        if (s < 60) return 'agora';
+        const m = Math.floor(s / 60);
+        if (m < 60) return `há ${m} min`;
+        const h = Math.floor(m / 60);
+        if (h < 24) return `há ${h}h`;
+        const d = Math.floor(h / 24);
+        if (d < 7) return `há ${d}d`;
+        return S.fmtTime(ts);
+    };
+
+    // ═══ MENÇÕES ═══
+    S.extractMentions = function(text) {
+        const out = new Set();
+        const re = /@([\w\u00C0-\u017F]+)/g;
+        let m;
+        while ((m = re.exec(text))) out.add(m[1].toLowerCase());
+        return [...out];
+    };
+
     window._sangzapCtx = S;
-    window._sangzapCtx.__booted = true;
 })();
