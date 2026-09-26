@@ -173,7 +173,6 @@
         });
     }
 
-    // Fallback via GM_xmlhttpRequest para hosts sem CORS
     function fetchImageViaGM(url) {
         return new Promise((resolve, reject) => {
             if (typeof GM_xmlhttpRequest !== 'function') {
@@ -202,11 +201,9 @@
         });
     }
 
-    // Download robusto: tenta <img crossOrigin>, cai pro GM se CORS bloquear
     async function loadPresetImage(url) {
         try {
             const img = await loadImageFromUrl(url);
-            // testa se o canvas está "tainted" (CORS sem header correto)
             try {
                 const c = document.createElement('canvas');
                 c.width = 1; c.height = 1;
@@ -718,6 +715,7 @@
         let buf = '';
         let firstPin = '';
         let mode = opts.mode;
+        let completing = false;
 
         const dots = modal.querySelectorAll('.cfg-pin-dot');
         const subEl = modal.querySelector('#cfgPinSub');
@@ -747,12 +745,16 @@
             if (subEl) subEl.textContent = msg;
             buf = ''; updateDots();
             setTimeout(() => { if (subEl) subEl.textContent = opts.sub; }, 900);
+            completing = false;
         };
 
-        const complete = () => {
-            const pin = buf;
+        const complete = (pinArg) => {
+            if (completing) return;
+            completing = true;
+            const pin = pinArg != null ? pinArg : buf;
+
             if (mode === 'check-current') {
-                if (pin !== getPin()) return fail('PIN incorreto');
+                if (pin !== getPin()) { return fail('PIN incorreto'); }
                 try { ctx.tone.unlock?.(); } catch(_) {}
                 closeModal();
                 opts.onDone?.();
@@ -764,6 +766,7 @@
                 buf = '';
                 if (subEl) subEl.textContent = 'Repita os 4 dígitos';
                 updateDots();
+                completing = false;
                 return;
             }
             if (mode === 'set-confirm') {
@@ -788,11 +791,11 @@
                     try { ctx.tone.key?.(); } catch(_) {}
                     buf = buf.slice(0, -1);
                 } else if (btn.dataset.util === 'ok') {
-                    if (buf.length === 4) complete();
+                    if (buf.length === 4) { const p = buf; complete(p); }
                     return;
                 }
                 updateDots();
-                if (buf.length === 4) setTimeout(complete, 60);
+                if (buf.length === 4) { const p = buf; setTimeout(() => complete(p), 60); }
             });
         });
         modal.querySelector('#cfgPinCancel').addEventListener('click', closeModal);
@@ -802,7 +805,6 @@
     ctx.appendStyle(`
         .ph-screen.cfg-hide-bar .ph-app-bar { display: none !important; }
 
-        /* ═══ APP ROOT ═══ */
         .cfg-app {
             display: flex; flex-direction: column;
             min-height: 0; height: 100%;
@@ -811,7 +813,6 @@
             position: relative;
         }
 
-        /* ═══ HEADER ═══ */
         .cfg-hdr {
             position: sticky; top: 0; z-index: 12;
             display: flex; align-items: center; gap: 10px;
@@ -869,7 +870,6 @@
             letter-spacing: .06em; padding: 12px 0 4px;
         }
 
-        /* ═══ HERO ═══ */
         .cfg-hero {
             display: flex; align-items: center; gap: 14px;
             padding: 14px; border-radius: 16px;
@@ -894,7 +894,6 @@
         .cfg-hero-title { font-size: 13px; font-weight: 800; color: #f1f2f8; letter-spacing: .01em; }
         .cfg-hero-sub { font-size: 9.5px; color: #8a90a8; margin-top: 3px; line-height: 1.4; }
 
-        /* ═══ SECTIONS ═══ */
         .cfg-section {
             display: flex; flex-direction: column; gap: 8px;
             padding: 12px; border-radius: 14px;
@@ -909,7 +908,6 @@
             margin-bottom: 2px;
         }
 
-        /* ═══ ACTIONS ═══ */
         .cfg-action {
             display: flex; align-items: center; justify-content: space-between;
             gap: 10px; padding: 11px 12px;
@@ -929,7 +927,6 @@
         .cfg-action.danger .cfg-action-val { color: #fca5b1; }
         .cfg-action.danger:hover { border-color: rgba(251,113,133,.4); background: rgba(251,113,133,.08); }
 
-        /* ═══ FIELDS ═══ */
         .cfg-field { display: flex; flex-direction: column; gap: 6px; }
         .cfg-field-label {
             font-size: 9.5px; font-weight: 800; letter-spacing: .06em;
@@ -961,7 +958,6 @@
         .cfg-mini-btn:hover { background: rgba(34,211,238,.14); color: #67e8f9; border-color: rgba(34,211,238,.4); transform: translateY(-1px); }
         .cfg-mini-btn:active { transform: translateY(0) scale(.96); }
 
-        /* ═══ RADIO ═══ */
         .cfg-option-row { display: flex; flex-direction: column; gap: 6px; }
         .cfg-option-label {
             font-size: 9.5px; font-weight: 800; letter-spacing: .06em;
@@ -990,7 +986,6 @@
         }
         .cfg-radio:active:not(.active) { transform: scale(.96); }
 
-        /* ═══ PRESETS ═══ */
         .cfg-preset-grid {
             display: grid;
             grid-template-columns: repeat(3, 1fr);
@@ -1028,7 +1023,6 @@
         }
         .cfg-preset.active .cfg-preset-lbl { color: #67e8f9; }
 
-        /* ═══ WALLPAPER ═══ */
         .cfg-wall-block { display: flex; gap: 12px; align-items: stretch; }
         .cfg-wall-preview {
             width: 70px; height: 148px;
@@ -1112,7 +1106,6 @@
         .cfg-url-wrap .cfg-input { flex: 1; min-width: 0; }
         .cfg-url-wrap .cfg-mini-btn { align-self: stretch; padding: 0 12px; }
 
-        /* ═══ TOGGLES ═══ */
         .cfg-toggle-row { display: flex; align-items: center; gap: 12px; padding: 4px 0; }
         .cfg-toggle-row + .cfg-toggle-row { border-top: 1px dashed rgba(255,255,255,.05); padding-top: 9px; }
         .cfg-toggle-text { flex: 1; min-width: 0; }
@@ -1144,7 +1137,6 @@
             box-shadow: 0 0 8px rgba(52,211,153,.75);
         }
 
-        /* ═══ INFO ═══ */
         .cfg-info-row {
             display: flex; align-items: center; justify-content: space-between; gap: 10px;
             padding: 6px 0; font-size: 11px;
@@ -1159,7 +1151,6 @@
             font-size: 9.5px; color: #67e8f9; letter-spacing: .02em;
         }
 
-        /* ═══ RESET ═══ */
         .cfg-reset-btn {
             padding: 11px 12px; border-radius: 11px;
             background: rgba(255,255,255,.04);
@@ -1179,7 +1170,6 @@
         }
         .cfg-reset-btn.danger:hover { background: rgba(251,113,133,.22); }
 
-        /* ═══ PIN MODAL ═══ */
         .cfg-pin-modal {
             position: absolute; inset: 0; z-index: 30;
             background: linear-gradient(175deg, rgba(20,18,40,.98), rgba(10,8,26,.99));
