@@ -17,6 +17,7 @@
     const LS_MINIMIZED = 'sanghub_phone_minimized';
     const LS_PIN = 'sanghub_phone_pin';
     const LS_LAYOUT = 'sanghub_phone_layout';
+    const LS_HOME_CFG = 'sanghub_phone_home_cfg';
     const MODULES_BASE = 'https://cdn.jsdelivr.net/gh/zBeyond5/Liveblock@main/modules/phone';
     const MAX_DOCK_APPS = 4;
     const GRID_COLS = 4;
@@ -25,16 +26,16 @@
     const DEFAULT_APP_BG = 'linear-gradient(180deg, #16181c 0%, #0d0f12 100%)';
     const DEFAULT_APP_BG_SOLID = '#0f1115';
 
-   // ═══ CTX ═══
-const ctx = window._phoneCtx = window._phoneCtx || {};
-ctx.moduleBase = MODULES_BASE;
-ctx.phase = 'idle';
-ctx.myNumber = null;
-ctx.deviceId = bridge.deviceId || '';
-ctx.bridge = bridge;                  
-ctx.contacts = ctx.contacts || {};
-ctx.calls = ctx.calls || {};
-ctx.notes = ctx.notes || {};
+    // ═══ CTX ═══
+    const ctx = window._phoneCtx = window._phoneCtx || {};
+    ctx.moduleBase = MODULES_BASE;
+    ctx.phase = 'idle';
+    ctx.myNumber = null;
+    ctx.deviceId = bridge.deviceId || '';
+    ctx.bridge = bridge;
+    ctx.contacts = ctx.contacts || {};
+    ctx.calls = ctx.calls || {};
+    ctx.notes = ctx.notes || {};
 
     // ═══ UTILS ═══
     function el(tag, attrs, ...children) {
@@ -188,7 +189,7 @@ ctx.notes = ctx.notes || {};
     let _prevView = 'home';
     let _currentPage = 0;
 
-    // ═══ LAYOUT (novo formato: pages[pageIndex][slot] = appId | null) ═══
+    // ═══ LAYOUT (pages[pageIndex][slot] = appId | null) ═══
     let _layout = {
         pages: [new Array(PAGE_SIZE).fill(null)],
         dock: []
@@ -202,7 +203,6 @@ ctx.notes = ctx.notes || {};
             const p = JSON.parse(raw);
             if (!p || typeof p !== 'object') return;
 
-            // Formato novo
             if (Array.isArray(p.pages) && p.pages.length) {
                 _layout.pages = p.pages.map(pg => {
                     const a = new Array(PAGE_SIZE).fill(null);
@@ -211,7 +211,6 @@ ctx.notes = ctx.notes || {};
                 });
                 _layoutInitialized = true;
             }
-            // Migração do formato antigo (grid plano)
             else if (Array.isArray(p.grid)) {
                 _layout.pages = [new Array(PAGE_SIZE).fill(null)];
                 p.grid.forEach((id, i) => {
@@ -232,8 +231,36 @@ ctx.notes = ctx.notes || {};
         try { localStorage.setItem(LS_LAYOUT, JSON.stringify(_layout)); } catch(_) {}
     }
 
+    // ═══ HOME CONFIG ═══
+    let _homeCfg = {
+        clockX: 0, clockY: 0,
+        searchX: 0, searchY: 0,
+        showClock: true,
+        showSearch: true,
+        iconSize: 'normal',   // small | normal | large
+        gridGap: 'normal'     // tight | normal | wide
+    };
+    (function _loadHomeCfg() {
+        try {
+            const raw = localStorage.getItem(LS_HOME_CFG);
+            if (!raw) return;
+            const p = JSON.parse(raw);
+            if (p && typeof p === 'object') Object.assign(_homeCfg, p);
+        } catch(_) {}
+    })();
+    function _saveHomeCfg() {
+        try { localStorage.setItem(LS_HOME_CFG, JSON.stringify(_homeCfg)); } catch(_) {}
+    }
+    function _applyHomeCfg() {
+        const home = _frameEl?.querySelector('.ph-home');
+        if (!home) return;
+        home.dataset.iconSize = _homeCfg.iconSize;
+        home.dataset.gridGap  = _homeCfg.gridGap;
+    }
+
     let _dragSrc = null;
     let _suppressClick = false;
+    let _dragPageTimer = null;
 
     let _host = null, _shadow = null, _root = null;
     let _frameEl = null;
@@ -427,13 +454,10 @@ ctx.notes = ctx.notes || {};
             transition: background .3s ease;
         }
 
-        /* ═══ QUANDO APP ABERTO: fundo cobre o wallpaper e vaza pra status/home bar ═══ */
         .ph-screen.app-active {
             background: var(--active-app-bg-solid, ${DEFAULT_APP_BG_SOLID});
         }
-        .ph-screen.app-active .ph-wallpaper {
-            opacity: 0;
-        }
+        .ph-screen.app-active .ph-wallpaper { opacity: 0; }
         .ph-screen.app-active .ph-status {
             background: var(--active-app-bg-solid, ${DEFAULT_APP_BG_SOLID});
             border-bottom: 1px solid rgba(255,255,255,.03);
@@ -442,7 +466,6 @@ ctx.notes = ctx.notes || {};
             background: var(--active-app-bg-solid, ${DEFAULT_APP_BG_SOLID});
         }
 
-        /* ═══ WALLPAPER ═══ */
         .ph-wallpaper {
             position: absolute; inset: 0; z-index: 0;
             background-image: var(--phone-wallpaper, none);
@@ -598,7 +621,7 @@ ctx.notes = ctx.notes || {};
         }
         .ph-home-clock { padding: 4px 6px 8px; flex-shrink: 0; }
         .ph-home-time {
-            font-size: 40px; font-weight: 800; letter-spacing: -.03em; color: #f6f7fb; line-height: 1;
+            font-size: 56px; font-weight: 800; letter-spacing: -.04em; color: #f6f7fb; line-height: 1;
             font-variant-numeric: tabular-nums;
             text-shadow: 0 2px 14px rgba(0,0,0,.5);
         }
@@ -755,6 +778,18 @@ ctx.notes = ctx.notes || {};
         .ph-dock .ph-home-app-icon { width: 38px; height: 38px; border-radius: 12px; }
         .ph-dock .ph-home-app-icon svg { width: 20px; height: 20px; }
         .ph-dock .ph-home-app-name { display: none; }
+
+        .ph-dock-slot {
+            border-radius: 12px;
+            border: 1px dashed rgba(255,255,255,0);
+            background: transparent;
+            transition: border-color .16s, background .16s;
+            min-height: 56px;
+        }
+        .ph-dock-slot.drag-over {
+            border-color: rgba(110,231,183,.6);
+            background: rgba(52,211,153,.1);
+        }
 
         /* ═══ APP BAR ═══ */
         .ph-app-bar {
@@ -925,12 +960,71 @@ ctx.notes = ctx.notes || {};
         .ph-toast.fav { color: #fde68a; border-color: rgba(251,191,36,.6); }
         .ph-toast.out { opacity: 0; transform: translateX(-50%) translateY(-8px); }
 
+        /* ═══ HOME: RELÓGIO E BUSCA MOVÍVEIS ═══ */
+        .ph-home-clock {
+            position: relative;
+            cursor: grab;
+            touch-action: none;
+            user-select: none;
+            transition: transform .18s cubic-bezier(.22,1,.36,1);
+        }
+        .ph-home-clock.dragging { cursor: grabbing; transition: none; }
+
+        .ph-home-search {
+            cursor: grab;
+            touch-action: none;
+            transition: transform .18s cubic-bezier(.22,1,.36,1);
+        }
+        .ph-home-search.dragging { cursor: grabbing; transition: none; }
+        .ph-home-search input { cursor: text; }
+
+        /* ═══ HOME: TAMANHO E ESPAÇAMENTO ═══ */
+        .ph-home[data-icon-size="small"] .ph-home-app-icon { width: 36px; height: 36px; border-radius: 11px; }
+        .ph-home[data-icon-size="small"] .ph-home-app-icon svg { width: 18px; height: 18px; }
+        .ph-home[data-icon-size="large"] .ph-home-app-icon { width: 48px; height: 48px; border-radius: 14px; }
+        .ph-home[data-icon-size="large"] .ph-home-app-icon svg { width: 26px; height: 26px; }
+        .ph-home[data-grid-gap="tight"] .ph-home-grid { gap: 4px 2px; }
+        .ph-home[data-grid-gap="wide"]  .ph-home-grid { gap: 12px 8px; }
+
+        /* ═══ HOME: MENU DE CONTEXTO ═══ */
+        .ph-ctx-menu {
+            position: fixed;
+            z-index: 60;
+            min-width: 210px;
+            padding: 6px;
+            border-radius: 12px;
+            background: linear-gradient(180deg, rgba(16,36,28,.98), rgba(8,20,14,.99));
+            border: 1px solid rgba(52,211,153,.32);
+            box-shadow: 0 16px 42px rgba(0,0,0,.7), 0 0 0 1px rgba(0,0,0,.5);
+            color: #e9ecf5;
+            pointer-events: auto;
+            animation: phFadeIn .16s ease;
+        }
+        .ph-ctx-item {
+            display: flex; align-items: center; gap: 10px;
+            padding: 8px 12px; border-radius: 8px;
+            font-size: 11px; font-weight: 700;
+            cursor: pointer; border: none;
+            background: transparent; color: inherit;
+            width: 100%; text-align: left; font-family: inherit;
+            transition: background .12s;
+        }
+        .ph-ctx-item:hover { background: rgba(52,211,153,.16); }
+        .ph-ctx-item .ctx-val { margin-left: auto; color: #6ee7b7; font-weight: 800; font-size: 10px; letter-spacing: .04em; }
+        .ph-ctx-sep { height: 1px; margin: 4px 6px; background: rgba(255,255,255,.08); }
+        .ph-ctx-label {
+            font-size: 9px; font-weight: 800; letter-spacing: .12em;
+            text-transform: uppercase; color: #8890a8;
+            padding: 8px 12px 4px;
+        }
+
         @media (prefers-reduced-motion: reduce) {
             .ph-frame, .ph-frame.min { transition-duration: .01ms; }
             .ph-frame.ringing, .ph-frame.recording { animation: none !important; }
             .ph-frame.min::after { animation: none !important; }
             .ph-view.active { animation: none !important; }
             .ph-home-pages { transition-duration: .01ms; }
+            .ph-home-clock, .ph-home-search { transition-duration: .01ms; }
         }
         `);
     }
@@ -996,6 +1090,13 @@ ctx.notes = ctx.notes || {};
             try { ctx.tone.home(); } catch(_) {}
             _goHome();
         });
+
+        _frameEl.addEventListener('contextmenu', (e) => {
+            if (_view !== 'home') return;
+            if (e.target.closest('input, textarea')) return;
+            e.preventDefault();
+            _openHomeCtx(e.clientX, e.clientY);
+        });
     }
 
     function _tickClock() {
@@ -1039,7 +1140,7 @@ ctx.notes = ctx.notes || {};
         if (name !== 'app' && name !== 'call') {
             if (_contentEl.parentElement) _contentEl.parentElement.removeChild(_contentEl);
         }
-        // Fundo do app cobre status/home bar só quando app/call está aberto
+        if (name !== 'home') _closeHomeCtx();
         if (_screenEl) {
             _screenEl.classList.toggle('app-active', name === 'app' || name === 'call');
         }
@@ -1205,25 +1306,43 @@ ctx.notes = ctx.notes || {};
             `<span${i === _currentPage ? ' class="active"' : ''} data-dot="${i}"></span>`
         ).join('');
 
-        const dockHtml = dockApps.map((a, i) => _homeAppHtml(a, -1, i, true)).join('');
+        // dock: apps existentes + slots vazios (alvos de drop)
+        const dockHtml = [];
+        for (let i = 0; i < MAX_DOCK_APPS; i++) {
+            const a = dockApps[i];
+            if (a) dockHtml.push(_homeAppHtml(a, -1, i, true));
+            else   dockHtml.push(`<div class="ph-dock-slot" data-dock-slot="${i}"></div>`);
+        }
+
+        const clockStyle  = (_homeCfg.clockX  || _homeCfg.clockY)
+            ? ` style="transform:translate(${_homeCfg.clockX}px,${_homeCfg.clockY}px)"` : '';
+        const searchStyle = (_homeCfg.searchX || _homeCfg.searchY)
+            ? ` style="transform:translate(${_homeCfg.searchX}px,${_homeCfg.searchY}px)"` : '';
+
+        const clockHtml = _homeCfg.showClock
+            ? `<div class="ph-home-clock"${clockStyle}>
+                 <div class="ph-home-time" id="phHomeTime">${hh}:${mm}</div>
+                 <div class="ph-home-date">${esc(dateStr)}</div>
+               </div>`
+            : '';
+        const searchHtml = _homeCfg.showSearch
+            ? `<label class="ph-home-search"${searchStyle}>
+                 <input type="text" id="phHomeSearch" placeholder="Buscar" spellcheck="false" autocomplete="off" />
+                 ${ctx.I.search}
+               </label>`
+            : '';
 
         view.innerHTML = `
-            <div class="ph-home">
-                <div class="ph-home-clock">
-                    <div class="ph-home-time" id="phHomeTime">${hh}:${mm}</div>
-                    <div class="ph-home-date">${esc(dateStr)}</div>
-                </div>
-                <label class="ph-home-search">
-                    <input type="text" id="phHomeSearch" placeholder="Buscar" spellcheck="false" autocomplete="off" />
-                    ${ctx.I.search}
-                </label>
+            <div class="ph-home" data-icon-size="${_homeCfg.iconSize}" data-grid-gap="${_homeCfg.gridGap}">
+                ${clockHtml}
+                ${searchHtml}
                 <div class="ph-home-pages-wrap" id="phPagesWrap">
                     <div class="ph-home-pages" id="phPages" style="transform:translateX(${-_currentPage * 100}%)">
                         ${pagesHtml}
                     </div>
                 </div>
                 <div class="ph-home-dots" id="phDots">${dotsHtml}</div>
-                <div class="ph-dock" id="phDock">${dockHtml}</div>
+                <div class="ph-dock" id="phDock">${dockHtml.join('')}</div>
             </div>
         `;
 
@@ -1231,6 +1350,7 @@ ctx.notes = ctx.notes || {};
         _wireDrag(view);
         _wireSwipe(view);
         _wireDots(view);
+        _wireHomeMovables(view);
 
         const search = view.querySelector('#phHomeSearch');
         if (search) search.addEventListener('input', () => _filterApps(search.value));
@@ -1272,8 +1392,8 @@ ctx.notes = ctx.notes || {};
             id: 'calls',
             name: 'Chamadas',
             icon: ctx.I.phone,
-            accent: '#062420',
-            bg: 'linear-gradient(135deg, #34d399, #22d3ee)',
+            accent: '#eafff4',
+            bg: 'linear-gradient(135deg, #86efac 0%, #22c55e 100%)',
             appBg: 'linear-gradient(180deg, #143a2c 0%, #0a1a14 100%)',
             appBgSolid: '#0f2820',
             builtin: 'calls',
@@ -1301,12 +1421,11 @@ ctx.notes = ctx.notes || {};
         return list;
     }
 
-    // Sincroniza layout com registry — remove IDs órfãos e adiciona novos
+    // Sincroniza layout com registry — remove órfãos, semeia novos (dock:true vai pro dock)
     function _syncLayout() {
         const all = [..._builtinFallbacks(), ...ctx.apps.all()];
         const validIds = new Set(all.map(a => a.id));
 
-        // remove IDs inválidos
         let dirty = false;
         for (const page of _layout.pages) {
             for (let i = 0; i < page.length; i++) {
@@ -1317,14 +1436,18 @@ ctx.notes = ctx.notes || {};
         _layout.dock = _layout.dock.filter(id => validIds.has(id));
         if (_layout.dock.length !== dockBefore) dirty = true;
 
-        // adiciona IDs novos
         const present = new Set([
             ..._layout.pages.flat().filter(Boolean),
             ..._layout.dock
         ]);
         for (const a of all) {
             if (present.has(a.id)) continue;
-            // tenta encaixar em algum slot vazio
+            if (a.dock && _layout.dock.length < MAX_DOCK_APPS) {
+                _layout.dock.push(a.id);
+                present.add(a.id);
+                dirty = true;
+                continue;
+            }
             let placed = false;
             for (const page of _layout.pages) {
                 const idx = page.indexOf(null);
@@ -1352,17 +1475,45 @@ ctx.notes = ctx.notes || {};
         });
     }
 
-    // ═══ DRAG & DROP — grid de slots + dock + multi-page ═══
+    // ═══ DRAG & DROP — grid + dock + multi-page ═══
     function _clearDropHints() {
         _frameEl?.querySelectorAll('.drop-before, .drop-after, .drag-over')
             .forEach(el => el.classList.remove('drop-before', 'drop-after', 'drag-over'));
+    }
+
+    function _handleDragEdge(e) {
+        if (!_dragSrc) { _cancelDragPageTimer(); return; }
+        const wrap = _frameEl?.querySelector('#phPagesWrap');
+        if (!wrap) return;
+        const r = wrap.getBoundingClientRect();
+        if (e.clientY < r.top || e.clientY > r.bottom) { _cancelDragPageTimer(); return; }
+        const x = e.clientX - r.left;
+        const EDGE = 42;
+        let dir = 0;
+        if (x < EDGE && _currentPage > 0) dir = -1;
+        else if (x > r.width - EDGE && _currentPage < _layout.pages.length - 1) dir = 1;
+        if (dir === 0) { _cancelDragPageTimer(); return; }
+        if (_dragPageTimer) return;
+        _dragPageTimer = setTimeout(() => {
+            _dragPageTimer = null;
+            _currentPage += dir;
+            const pages = _frameEl?.querySelector('#phPages');
+            if (pages) {
+                pages.style.transition = 'transform .28s cubic-bezier(.22,1,.36,1)';
+                pages.style.transform  = `translateX(${-_currentPage * 100}%)`;
+            }
+            _renderDotsState();
+        }, 420);
+    }
+    function _cancelDragPageTimer() {
+        if (_dragPageTimer) { clearTimeout(_dragPageTimer); _dragPageTimer = null; }
     }
 
     // Position: { kind: 'page', page, slot } | { kind: 'dock', index }
     function _wireDrag(container) {
         if (!container) return;
 
-        // slots vazios são drop targets
+        // slots vazios da grade
         container.querySelectorAll('.ph-home-slot').forEach(slotEl => {
             slotEl.addEventListener('dragover', (e) => {
                 if (!_dragSrc) return;
@@ -1379,6 +1530,25 @@ ctx.notes = ctx.notes || {};
                 const page = parseInt(slotEl.dataset.page, 10);
                 const slot = parseInt(slotEl.dataset.slot, 10);
                 _handleDrop(_dragSrc, { kind: 'page', page, slot });
+            });
+        });
+
+        // slots vazios do dock
+        container.querySelectorAll('.ph-dock-slot').forEach(slotEl => {
+            slotEl.addEventListener('dragover', (e) => {
+                if (!_dragSrc) return;
+                e.preventDefault();
+                e.stopPropagation();
+                slotEl.classList.add('drag-over');
+            });
+            slotEl.addEventListener('dragleave', () => slotEl.classList.remove('drag-over'));
+            slotEl.addEventListener('drop', (e) => {
+                if (!_dragSrc) return;
+                e.preventDefault();
+                e.stopPropagation();
+                slotEl.classList.remove('drag-over');
+                const idx = parseInt(slotEl.dataset.dockSlot, 10);
+                _handleDrop(_dragSrc, { kind: 'dock', index: idx });
             });
         });
 
@@ -1402,6 +1572,7 @@ ctx.notes = ctx.notes || {};
             });
             btn.addEventListener('dragend', () => {
                 _dragSrc = null;
+                _cancelDragPageTimer();
                 btn.classList.remove('dragging');
                 _clearDropHints();
                 setTimeout(() => { _suppressClick = false; }, 0);
@@ -1437,12 +1608,10 @@ ctx.notes = ctx.notes || {};
         const s = src.src;
         _dragSrc = null;
 
-        // Garante existência das páginas referenciadas
         if (s.kind === 'page' && s.page >= _layout.pages.length) return;
         if (dst.kind === 'page' && dst.page >= _layout.pages.length) return;
 
         if (s.kind === 'page' && dst.kind === 'page') {
-            // swap slots (mesma página ou cross-page)
             const a = _layout.pages[s.page][s.slot];
             const b = _layout.pages[dst.page][dst.slot];
             _layout.pages[dst.page][dst.slot] = a;
@@ -1480,7 +1649,7 @@ ctx.notes = ctx.notes || {};
         let startX = 0, startY = 0, deltaX = 0, deltaY = 0;
         let active = false, decided = false, horizontal = false;
         let startPage = _currentPage;
-        const THRESHOLD = 0.22; // 22% da largura pra mudar de página
+        const THRESHOLD = 0.22;
 
         const setTranslate = (px) => {
             const base = -_currentPage * wrap.clientWidth;
@@ -1495,7 +1664,7 @@ ctx.notes = ctx.notes || {};
 
         wrap.addEventListener('pointerdown', (e) => {
             if (e.pointerType === 'mouse' && e.button !== 0) return;
-            if (e.target.closest('.ph-home-app')) return; // deixa drag nativo funcionar
+            if (e.target.closest('.ph-home-app')) return;
             active = true; decided = false; horizontal = false;
             startX = e.clientX; startY = e.clientY;
             deltaX = 0; deltaY = 0;
@@ -1513,7 +1682,6 @@ ctx.notes = ctx.notes || {};
                 } else return;
             }
             if (!horizontal) return;
-            // se não tem página anterior/próxima, dá resistência
             const atStart = _currentPage === 0 && deltaX > 0;
             const atEnd = _currentPage === _layout.pages.length - 1 && deltaX < 0;
             const eff = (atStart || atEnd) ? deltaX * 0.32 : deltaX;
@@ -1557,7 +1725,6 @@ ctx.notes = ctx.notes || {};
         q = String(q || '').trim().toLowerCase();
         const grid = _frameEl?.querySelector('.ph-home-page[data-page="0"] .ph-home-grid');
         if (!grid) return;
-        // filtro simples: se tiver query, substitui o conteúdo da primeira página com os resultados
         if (!q) { _renderHome(); return; }
         const all = [..._builtinFallbacks(), ...ctx.apps.all()];
         const results = all.filter(a => (a.name || a.id).toLowerCase().includes(q));
@@ -1565,6 +1732,141 @@ ctx.notes = ctx.notes || {};
             ? results.map((a, i) => _homeAppHtml(a, 0, i)).join('')
             : `<div class="ph-home-empty">Nada encontrado.</div>`;
         _bindAppClicks(grid.querySelectorAll('.ph-home-app'));
+    }
+
+    // ═══ MOVÍVEIS: RELÓGIO E BUSCA ═══
+    function _wireHomeMovables(view) {
+        const items = [
+            { el: view.querySelector('.ph-home-clock'),  x: 'clockX',  y: 'clockY'  },
+            { el: view.querySelector('.ph-home-search'), x: 'searchX', y: 'searchY' }
+        ];
+        items.forEach(({ el: node, x: xKey, y: yKey }) => {
+            if (!node) return;
+            let startX = 0, startY = 0, baseX = 0, baseY = 0;
+            let dragging = false, moved = false, pid = null;
+            node.addEventListener('pointerdown', (e) => {
+                if (e.pointerType === 'mouse' && e.button !== 0) return;
+                dragging = true; moved = false; pid = e.pointerId;
+                startX = e.clientX; startY = e.clientY;
+                baseX = _homeCfg[xKey] || 0;
+                baseY = _homeCfg[yKey] || 0;
+            });
+            node.addEventListener('pointermove', (e) => {
+                if (!dragging || e.pointerId !== pid) return;
+                const dx = e.clientX - startX;
+                const dy = e.clientY - startY;
+                if (!moved) {
+                    if (Math.abs(dx) < 5 && Math.abs(dy) < 5) return;
+                    moved = true;
+                    node.classList.add('dragging');
+                    try { node.setPointerCapture(pid); } catch(_) {}
+                    if (node.classList.contains('ph-home-search')) node.querySelector('input')?.blur();
+                }
+                e.preventDefault();
+                node.style.transition = 'none';
+                node.style.transform  = `translate(${baseX + dx}px, ${baseY + dy}px)`;
+            });
+            const finish = (e) => {
+                if (!dragging) return;
+                dragging = false;
+                const wasMoved = moved;
+                moved = false;
+                node.classList.remove('dragging');
+                node.style.transition = '';
+                if (wasMoved && e.pointerId === pid) {
+                    _homeCfg[xKey] = baseX + (e.clientX - startX);
+                    _homeCfg[yKey] = baseY + (e.clientY - startY);
+                    _saveHomeCfg();
+                }
+                pid = null;
+            };
+            node.addEventListener('pointerup', finish);
+            node.addEventListener('pointercancel', finish);
+        });
+    }
+
+    // ═══ MENU DE CONTEXTO DA HOME ═══
+    function _closeHomeCtx() {
+        _root?.querySelector('.ph-ctx-menu')?.remove();
+    }
+
+    function _openHomeCtx(x, y) {
+        _closeHomeCtx();
+        const menu = document.createElement('div');
+        menu.className = 'ph-ctx-menu';
+        const szLabel  = { small: 'Pequeno', normal: 'Normal', large: 'Grande' }[_homeCfg.iconSize] || 'Normal';
+        const gapLabel = { tight: 'Compacto', normal: 'Normal', wide: 'Amplo' }[_homeCfg.gridGap] || 'Normal';
+        menu.innerHTML = `
+            <div class="ph-ctx-label">Home</div>
+            <button class="ph-ctx-item" data-act="toggle-clock">
+                <span>Mostrar relógio</span><span class="ctx-val">${_homeCfg.showClock ? 'on' : 'off'}</span>
+            </button>
+            <button class="ph-ctx-item" data-act="toggle-search">
+                <span>Mostrar busca</span><span class="ctx-val">${_homeCfg.showSearch ? 'on' : 'off'}</span>
+            </button>
+            <div class="ph-ctx-sep"></div>
+            <div class="ph-ctx-label">Aparência</div>
+            <button class="ph-ctx-item" data-act="size">
+                <span>Tamanho dos ícones</span><span class="ctx-val" data-val="size">${szLabel}</span>
+            </button>
+            <button class="ph-ctx-item" data-act="gap">
+                <span>Espaçamento da grade</span><span class="ctx-val" data-val="gap">${gapLabel}</span>
+            </button>
+            <div class="ph-ctx-sep"></div>
+            <button class="ph-ctx-item" data-act="reset-pos"><span>Repor posições</span></button>
+            <button class="ph-ctx-item" data-act="reset-layout"><span>Restaurar grade</span></button>
+        `;
+        _root.appendChild(menu);
+        requestAnimationFrame(() => {
+            const mw = menu.offsetWidth, mh = menu.offsetHeight;
+            menu.style.left = Math.max(8, Math.min(x, window.innerWidth  - mw - 8)) + 'px';
+            menu.style.top  = Math.max(8, Math.min(y, window.innerHeight - mh - 8)) + 'px';
+        });
+
+        const onDoc = (ev) => {
+            if (!menu.contains(ev.target)) {
+                _closeHomeCtx();
+                document.removeEventListener('pointerdown', onDoc, true);
+            }
+        };
+        setTimeout(() => document.addEventListener('pointerdown', onDoc, true), 0);
+
+        menu.addEventListener('click', (e) => {
+            const btn = e.target.closest('.ph-ctx-item');
+            if (!btn) return;
+            const act = btn.dataset.act;
+            if (act === 'toggle-clock') {
+                _homeCfg.showClock = !_homeCfg.showClock;
+                _saveHomeCfg(); _closeHomeCtx(); _renderHome();
+            } else if (act === 'toggle-search') {
+                _homeCfg.showSearch = !_homeCfg.showSearch;
+                _saveHomeCfg(); _closeHomeCtx(); _renderHome();
+            } else if (act === 'size') {
+                const seq = ['small', 'normal', 'large'];
+                _homeCfg.iconSize = seq[(seq.indexOf(_homeCfg.iconSize) + 1) % seq.length];
+                _saveHomeCfg();
+                menu.querySelector('[data-val="size"]').textContent =
+                    { small: 'Pequeno', normal: 'Normal', large: 'Grande' }[_homeCfg.iconSize];
+                _applyHomeCfg();
+            } else if (act === 'gap') {
+                const seq = ['tight', 'normal', 'wide'];
+                _homeCfg.gridGap = seq[(seq.indexOf(_homeCfg.gridGap) + 1) % seq.length];
+                _saveHomeCfg();
+                menu.querySelector('[data-val="gap"]').textContent =
+                    { tight: 'Compacto', normal: 'Normal', wide: 'Amplo' }[_homeCfg.gridGap];
+                _applyHomeCfg();
+            } else if (act === 'reset-pos') {
+                _homeCfg.clockX = _homeCfg.clockY = 0;
+                _homeCfg.searchX = _homeCfg.searchY = 0;
+                _saveHomeCfg(); _closeHomeCtx(); _renderHome();
+            } else if (act === 'reset-layout') {
+                try { localStorage.removeItem(LS_LAYOUT); } catch(_) {}
+                _layout = { pages: [new Array(PAGE_SIZE).fill(null)], dock: [] };
+                _layoutInitialized = false;
+                _currentPage = 0;
+                _syncLayout(); _saveLayout(); _closeHomeCtx(); _renderHome();
+            }
+        });
     }
 
     function _fmtHomeDate(d) {
@@ -1611,12 +1913,9 @@ ctx.notes = ctx.notes || {};
         if (!view) return;
         view.innerHTML = '';
 
-        // Fundo do app
         view.style.setProperty('--app-bg', app.appBg || DEFAULT_APP_BG);
-        // Fundo sólido pra cobrir cantos/status/home bar
-        _screenEl.style.setProperty('--active-app-bg-solid', app.appBgSolid || app.appBg || DEFAULT_APP_SOLID || DEFAULT_APP_BG_SOLID);
+        _screenEl.style.setProperty('--active-app-bg-solid', app.appBgSolid || app.appBg || DEFAULT_APP_BG_SOLID);
 
-        // App bar
         const bar = el('div', { class: 'ph-app-bar' });
         const showNumPill = app.builtin === 'calls';
         bar.innerHTML = `
@@ -1864,6 +2163,17 @@ ctx.notes = ctx.notes || {};
             _pinFlow = null; _pinBufFlow = ''; _pinFirstFlow = '';
         };
 
+        const _pinWrong = () => {
+            try { ctx.tone.errorPin(); } catch(_) {}
+            const wrap = modal.querySelector('.ph-lock-pin');
+            if (wrap) { wrap.classList.remove('shake'); void wrap.offsetWidth; wrap.classList.add('shake'); }
+            modal.querySelector('.ph-pin-modal-sub').textContent = 'PIN incorreto.';
+            clearBuf();
+            setTimeout(() => {
+                modal.querySelector('.ph-pin-modal-sub').textContent = sub;
+            }, 800);
+        };
+
         const handleComplete = () => {
             const pin = _pinBufFlow;
             if (_pinFlow === 'remove-current') {
@@ -1895,17 +2205,6 @@ ctx.notes = ctx.notes || {};
                 _mountSettingsApp(view);
                 return;
             }
-        };
-
-        const _pinWrong = () => {
-            try { ctx.tone.errorPin(); } catch(_) {}
-            const wrap = modal.querySelector('.ph-lock-pin');
-            if (wrap) { wrap.classList.remove('shake'); void wrap.offsetWidth; wrap.classList.add('shake'); }
-            modal.querySelector('.ph-pin-modal-sub').textContent = 'PIN incorreto.';
-            clearBuf();
-            setTimeout(() => {
-                modal.querySelector('.ph-pin-modal-sub').textContent = sub;
-            }, 800);
         };
 
         pad.querySelectorAll('.ph-key').forEach(btn => {
@@ -2017,6 +2316,9 @@ ctx.notes = ctx.notes || {};
         btn.click();
     }
     document.addEventListener('keydown', _handlePhysicalKeys, true);
+    document.addEventListener('dragover', _handleDragEdge, true);
+    document.addEventListener('dragend', _cancelDragPageTimer, true);
+    document.addEventListener('drop',    _cancelDragPageTimer, true);
 
     // ═══ MODULE LOADER ═══
     async function _loadModule(name, url) {
@@ -2058,6 +2360,10 @@ ctx.notes = ctx.notes || {};
         try { ctx.notes.cancelNote?.(); } catch(_) {}
         try { ctx.notes.stopPoll?.(); } catch(_) {}
         try { document.removeEventListener('keydown', _handlePhysicalKeys, true); } catch(_) {}
+        try { document.removeEventListener('dragover', _handleDragEdge, true); } catch(_) {}
+        try { document.removeEventListener('dragend', _cancelDragPageTimer, true); } catch(_) {}
+        try { document.removeEventListener('drop',    _cancelDragPageTimer, true); } catch(_) {}
+        _cancelDragPageTimer();
         if (_clockTimer) { clearInterval(_clockTimer); _clockTimer = null; }
         if (_phasePollTimer) { clearInterval(_phasePollTimer); _phasePollTimer = null; }
         try { if (_host) _host.remove(); } catch(e) {}
@@ -2092,7 +2398,6 @@ ctx.notes = ctx.notes || {};
 
         ctx.apps.onChange(() => {
             if (_view === 'home') _renderHome();
-            // sincroniza a pílula do número no app-bar de Chamadas se estiver aberto
             if (_view === 'app' && _activeAppId === 'calls') _updateMyNumberUI();
         });
 
@@ -2102,11 +2407,8 @@ ctx.notes = ctx.notes || {};
         } catch(_) {}
 
         if (ctx.contacts.ensureMyNumber) {
-            ctx.contacts.ensureMyNumber().then(n => {
+            ctx.contacts.ensureMyNumber().then(() => {
                 _updateMyNumberUI();
-                if (n && !_minimized && _view === 'home') {
-                    // aviso discreto só na primeira vez
-                }
             });
         }
 
