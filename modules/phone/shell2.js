@@ -21,15 +21,6 @@
         console.warn('[Phone] Firestore off.'); return;
     }
 
-    // ═══ FIRESTORE GATE — rate limit + backoff + prioridade de escrita ═══
-    // Firestore REST tem limite de burst. Sem isso, todos os módulos (phone +
-    // sangzap) disparam em paralelo e tomam 429 em cascata. Aqui centralizamos:
-    //   - no máx 3 requests em voo
-    //   - ~8 req/s (gap mínimo de 120ms entre despachos)
-    //   - escrita (POST/PATCH/DELETE/PUT) tem fila prioritária sobre leitura
-    //   - 429 → backoff exponencial (1.5s, 3s, 6s, 12s), máx 2 retries por request
-    // Como o shell já está bootado antes de todos os outros módulos carregarem,
-    // todo mundo pega a versão gateada via bridge.firestore.request.
     (function installFirestoreGate() {
         const fs = bridge.firestore;
         if (!fs || fs.__gated) return;
