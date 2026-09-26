@@ -16,6 +16,7 @@
     const FRAME_HALF_H = 285;
     const LS_MINIMIZED = 'sanghub_phone_minimized';
     const LS_PIN = 'sanghub_phone_pin';
+    const LS_LAYOUT = 'sanghub_phone_layout';
     const MODULES_BASE = 'https://raw.githubusercontent.com/zBeyond5/Liveblock/refs/heads/main/modules/phone';
     const MAX_DOCK_APPS = 4;
 
@@ -179,6 +180,23 @@
     try { _pinSet = localStorage.getItem(LS_PIN) || ''; } catch(_) {}
     let _prevView = 'home';
 
+    let _layout = { grid: [], dock: [] };
+    let _dockInitialized = false;
+    try {
+        const raw = localStorage.getItem(LS_LAYOUT);
+        if (raw) {
+            const p = JSON.parse(raw);
+            if (p && typeof p === 'object') {
+                if (Array.isArray(p.grid)) _layout.grid = p.grid;
+                if (Array.isArray(p.dock)) _layout.dock = p.dock;
+                _dockInitialized = true;
+            }
+        }
+    } catch(_) {}
+
+    let _dragSrc = null;
+    let _suppressClick = false;
+
     let _host = null, _shadow = null, _root = null;
     let _frameEl = null;
     let _screenEl = null;
@@ -255,24 +273,18 @@
             background:
                 linear-gradient(155deg, #3a3a3f 0%, #2b2b30 22%, #1c1c20 55%, #131316 100%);
             box-shadow:
-                /* drop shadow externa */
                 0 26px 60px rgba(0,0,0,.72),
                 0 8px 20px rgba(0,0,0,.55),
-                /* rim highlight superior (metal pegando luz) */
                 inset 0 1px 1px rgba(255,255,255,.22),
-                /* rim dark inferior */
                 inset 0 -1px 1px rgba(0,0,0,.85),
-                /* bevel lateral — dá volume */
                 inset 1px 0 0 rgba(255,255,255,.06),
                 inset -1px 0 0 rgba(0,0,0,.5),
-                /* contorno fino */
                 0 0 0 1px rgba(0,0,0,.85);
             user-select: none;
             isolation: isolate;
             will-change: transform;
             animation: phFadeIn .35s ease;
         }
-        /* Borda interna escura — separa o vidro da carcaça */
         .ph-frame::before {
             content: '';
             position: absolute; inset: 7px;
@@ -284,7 +296,6 @@
                 inset 0 0 0 2px rgba(255,255,255,.02);
             z-index: 2;
         }
-        /* Brilho sutil na quina superior esquerda do metal */
         .ph-frame::after {
             content: '';
             position: absolute; inset: 0;
@@ -319,7 +330,6 @@
             z-index: 4;
         }
 
-        /* Botões laterais — metal com relevo */
         .ph-side {
             position: absolute; right: -2px; width: 3px;
             border-radius: 2px;
@@ -340,7 +350,6 @@
                 -1px 0 3px rgba(0,0,0,.5);
         }
 
-        /* Notch — vidro escuro embutido */
         .ph-notch {
             position: absolute; top: 9px; left: 50%; transform: translateX(-50%);
             width: 88px; height: 22px;
@@ -385,14 +394,11 @@
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
             color: #e9ecf5;
             box-shadow:
-                /* profundidade: interior do vidro */
                 inset 0 0 30px rgba(0,0,0,.55),
                 inset 0 0 0 1px rgba(0,0,0,.95),
                 inset 0 1px 0 rgba(255,255,255,.05),
-                /* brilho do vidro na borda */
                 0 0 0 1px rgba(255,255,255,.03);
         }
-        /* Reflexo superior de vidro */
         .ph-screen::before {
             content: ''; position: absolute; inset: 0; pointer-events: none; z-index: 1;
             background:
@@ -402,7 +408,6 @@
                     transparent 32%);
             border-radius: 36px;
         }
-        /* Vinheta sutil nas bordas — profundidade */
         .ph-screen::after {
             content: ''; position: absolute; inset: 0; pointer-events: none; z-index: 4;
             border-radius: 36px;
@@ -412,9 +417,6 @@
             opacity: .85;
         }
 
-        /* ═══════════════════════════════════════════
-           STATUS BAR
-           ═══════════════════════════════════════════ */
         .ph-status {
             padding: 10px 22px 4px; display: flex; align-items: center; justify-content: space-between;
             font-size: 10px; color: #c2c8dc; flex-shrink: 0; position: relative; z-index: 6;
@@ -437,9 +439,6 @@
         }
         .ph-status-icons .dot-notif.on { display: inline-block; }
 
-        /* ═══════════════════════════════════════════
-           STAGE — profundidade com camada interna
-           ═══════════════════════════════════════════ */
         .ph-stage {
             flex: 1; min-height: 0; position: relative; z-index: 3;
             display: flex; flex-direction: column;
@@ -450,7 +449,6 @@
         }
         .ph-view.active { display: flex; animation: phStageFadeIn .32s cubic-bezier(.22,1,.36,1); }
 
-        /* ═══ LOCK SCREEN ═══ */
         .ph-lock {
             flex: 1; min-height: 0;
             display: flex; flex-direction: column;
@@ -507,7 +505,6 @@
         }
         .ph-lock-pin.shake .ph-lock-pin-dots { animation: phPinShake .5s cubic-bezier(.36,.07,.19,.97); }
 
-        /* Keypad */
         .ph-keypad { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
         .ph-key {
             padding: 12px 0 10px; border-radius: 14px;
@@ -533,7 +530,6 @@
         .ph-key.util.ok { color: #a7f3d0; }
         .ph-key.util.ok:hover { color: #fff; background: rgba(52,211,153,.16); }
 
-        /* ═══ HOME ═══ */
         .ph-home {
             flex: 1; min-height: 0;
             display: flex; flex-direction: column;
@@ -607,15 +603,29 @@
 
         .ph-home-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px 6px; }
         .ph-home-app {
+            position: relative;
             display: flex; flex-direction: column; align-items: center; gap: 5px;
             padding: 8px 2px 6px; border-radius: 12px;
             background: transparent; border: none;
             cursor: pointer; font-family: inherit;
             color: inherit; text-align: center;
-            transition: background .18s, transform .15s;
+            transition: background .18s, transform .15s, opacity .15s;
+            -webkit-tap-highlight-color: transparent;
         }
         .ph-home-app:hover { background: rgba(255,255,255,.08); }
         .ph-home-app:active { transform: scale(.94); }
+        .ph-home-app[draggable="true"] { cursor: grab; }
+        .ph-home-app.dragging { opacity: .3; cursor: grabbing; }
+        .ph-home-app.drop-before::before,
+        .ph-home-app.drop-after::after {
+            content: ''; position: absolute; top: 4px; bottom: 4px; width: 2px;
+            background: #67e8f9; border-radius: 2px;
+            box-shadow: 0 0 8px rgba(34,211,238,.8);
+            pointer-events: none;
+            z-index: 2;
+        }
+        .ph-home-app.drop-before::before { left: -2px; }
+        .ph-home-app.drop-after::after { right: -2px; }
         .ph-home-app-icon {
             width: 42px; height: 42px; border-radius: 13px;
             display: inline-flex; align-items: center; justify-content: center;
@@ -655,13 +665,13 @@
             grid-template-columns: repeat(${MAX_DOCK_APPS}, 1fr);
             gap: 4px;
             margin-bottom: 8px;
+            min-height: 56px;
         }
         .ph-dock .ph-home-app { padding: 4px 2px; }
         .ph-dock .ph-home-app-icon { width: 38px; height: 38px; border-radius: 12px; }
         .ph-dock .ph-home-app-icon svg { width: 20px; height: 20px; }
         .ph-dock .ph-home-app-name { display: none; }
 
-        /* ═══ APP ═══ */
         .ph-app { flex: 1; min-height: 0; display: flex; flex-direction: column; }
         .ph-app-bar {
             display: flex; align-items: center; gap: 8px;
@@ -716,7 +726,6 @@
 
         .ph-content { flex: 1; min-height: 0; overflow: hidden; display: flex; flex-direction: column; }
 
-        /* ═══ CONFIGURAÇÕES ═══ */
         .ph-settings { flex: 1; min-height: 0; overflow-y: auto; padding: 4px 14px 14px; }
         .ph-settings::-webkit-scrollbar { width: 4px; }
         .ph-settings::-webkit-scrollbar-thumb { background: rgba(255,255,255,.14); border-radius: 2px; }
@@ -744,7 +753,6 @@
         .ph-setting-item.danger .ph-setting-item-val { color: #fca5b1; }
         .ph-setting-item.danger:hover { border-color: rgba(251,113,133,.4); background: rgba(251,113,133,.08); }
 
-        /* PIN Modal */
         .ph-pin-modal {
             position: absolute; inset: 0; z-index: 30;
             background: linear-gradient(175deg, rgba(20,18,40,.98), rgba(10,8,26,.99));
@@ -763,10 +771,8 @@
         }
         .ph-pin-modal-cancel:hover { background: rgba(255,255,255,.06); color: #e9ecf5; }
 
-        /* ═══ CALL VIEW ═══ */
         .ph-call-view { background: linear-gradient(175deg, #1c1a35 0%, #100e26 100%); }
 
-        /* ═══ HOME BAR (clicável) ═══ */
         .ph-home-bar {
             padding: 6px 0 8px; flex-shrink: 0; display: flex; justify-content: center;
             position: relative; z-index: 6;
@@ -786,7 +792,6 @@
         .ph-home-bar:hover::before { background: rgba(255,255,255,.5); width: 112px; }
         .ph-home-bar:active::before { background: rgba(103,232,249,.8); }
 
-        /* ═══ TOAST ═══ */
         .ph-toast { position: absolute; top: 74px; left: 50%; transform: translateX(-50%);
             padding: 8px 14px; border-radius: 9px; font-size: 10.5px; font-weight: 700; letter-spacing: .02em;
             background: linear-gradient(175deg, rgba(24,22,44,.98), rgba(14,12,32,.99));
@@ -861,15 +866,11 @@
             _setMinimized(false);
         });
 
-        // ── Barra inferior → home ──
         const homeBar = _frameEl.querySelector('#phHomeBar');
         homeBar.addEventListener('click', (e) => {
             e.stopPropagation();
-            // Bloqueado durante chamada ativa (o call view precisa permanecer)
             if (_inCallView || (ctx.phase !== 'idle' && ctx.phase !== 'busy')) return;
-            // Bloqueado na lock screen (não furar o PIN)
             if (_view === 'lock') return;
-            // Já está no home? Nada a fazer
             if (_view === 'home') return;
             try { ctx.tone.home(); } catch(_) {}
             _goHome();
@@ -1090,13 +1091,24 @@
             </div>
         `;
         view.querySelector('#phHomeMe').addEventListener('click', _copyMyNumber);
-        view.querySelectorAll('.ph-home-app').forEach(b => {
-            b.addEventListener('click', () => _openApp(b.dataset.appId));
-        });
+
+        _bindAppClicks(view.querySelectorAll('.ph-home-app'));
+        _wireDrag(view.querySelector('#phHomeGrid'), false);
+        _wireDrag(view.querySelector('#phDock'), true);
+
         const search = view.querySelector('#phHomeSearch');
         if (search) {
             search.addEventListener('input', () => _filterApps(search.value));
         }
+    }
+
+    function _bindAppClicks(nodes) {
+        nodes.forEach(b => {
+            b.addEventListener('click', () => {
+                if (_suppressClick) return;
+                _openApp(b.dataset.appId);
+            });
+        });
     }
 
     function _homeAppHtml(a, isDock) {
@@ -1106,28 +1118,54 @@
         const iconStyle = bg
             ? `background:${esc(bg)};border-color:transparent;color:#fff`
             : `color:${esc(accent)}`;
-        return `<button class="ph-home-app" data-app-id="${esc(a.id)}">
+        return `<button class="ph-home-app" data-app-id="${esc(a.id)}" draggable="true">
             <span class="ph-home-app-icon" style="${iconStyle}">${icon}</span>
             <span class="ph-home-app-name">${esc(a.name || a.id)}</span>
         </button>`;
     }
 
+    function _saveLayout() {
+        try { localStorage.setItem(LS_LAYOUT, JSON.stringify(_layout)); } catch(_) {}
+    }
+    function _sortByLayout(list, order) {
+        if (!order.length) return list;
+        const idx = new Map(order.map((id, i) => [id, i]));
+        const pos = a => idx.has(a.id) ? idx.get(a.id) : Infinity;
+        return list.slice().sort((a, b) => {
+            const pa = pos(a), pb = pos(b);
+            return pa === pb ? 0 : pa - pb;
+        });
+    }
+
     function _allAppsForGrid() {
-        const list = [];
-        list.push(_builtinCallsDef());
-        list.push(_builtinSettingsDef());
-        for (const a of ctx.apps.all()) list.push(a);
-        return list;
+        const list = [_builtinCallsDef(), _builtinSettingsDef(), ...ctx.apps.all()];
+        let dirty = false;
+        for (const a of list) {
+            if (!_layout.grid.includes(a.id)) { _layout.grid.push(a.id); dirty = true; }
+        }
+        const valid = new Set(list.map(a => a.id));
+        const before = _layout.grid.length;
+        _layout.grid = _layout.grid.filter(id => valid.has(id));
+        if (_layout.grid.length !== before) dirty = true;
+        if (dirty) _saveLayout();
+        return _sortByLayout(list, _layout.grid);
     }
 
     function _dockApps() {
-        const list = [];
-        list.push(_builtinCallsDef());
-        for (const a of ctx.apps.all()) {
-            if (a.dock) list.push(a);
-            if (list.length >= MAX_DOCK_APPS) break;
+        const all = [_builtinCallsDef(), ...ctx.apps.all()];
+        const byId = new Map(all.map(a => [a.id, a]));
+        if (!_dockInitialized) {
+            _layout.dock = ['calls'];
+            for (const a of ctx.apps.all()) {
+                if (a.dock && a.id !== 'calls' && _layout.dock.length < MAX_DOCK_APPS) {
+                    _layout.dock.push(a.id);
+                }
+            }
+            _dockInitialized = true;
+            _saveLayout();
         }
-        return list.slice(0, MAX_DOCK_APPS);
+        _layout.dock = _layout.dock.filter(id => byId.has(id)).slice(0, MAX_DOCK_APPS);
+        return _layout.dock.map(id => byId.get(id)).filter(Boolean);
     }
 
     function _filterApps(q) {
@@ -1139,9 +1177,90 @@
         grid.innerHTML = filtered.length
             ? filtered.map(a => _homeAppHtml(a)).join('')
             : `<div class="ph-home-empty">Nada encontrado.</div>`;
-        grid.querySelectorAll('.ph-home-app').forEach(b => {
-            b.addEventListener('click', () => _openApp(b.dataset.appId));
+        _bindAppClicks(grid.querySelectorAll('.ph-home-app'));
+        _wireDrag(grid, false);
+    }
+
+    // ═══ DRAG & DROP ═══
+    function _clearDropHints() {
+        _frameEl?.querySelectorAll('.drop-before, .drop-after')
+            .forEach(el => el.classList.remove('drop-before', 'drop-after'));
+    }
+
+    function _wireDrag(container, inDock) {
+        if (!container) return;
+        container.querySelectorAll('.ph-home-app').forEach(btn => {
+            btn.addEventListener('dragstart', e => {
+                _dragSrc = { id: btn.dataset.appId, dock: inDock };
+                _suppressClick = true;
+                btn.classList.add('dragging');
+                try {
+                    e.dataTransfer.setData('text/plain', btn.dataset.appId);
+                    e.dataTransfer.effectAllowed = 'move';
+                } catch(_) {}
+            });
+            btn.addEventListener('dragend', () => {
+                _dragSrc = null;
+                btn.classList.remove('dragging');
+                _clearDropHints();
+                setTimeout(() => { _suppressClick = false; }, 0);
+            });
+            btn.addEventListener('dragover', e => {
+                if (!_dragSrc || _dragSrc.id === btn.dataset.appId) return;
+                e.preventDefault();
+                e.stopPropagation();
+                try { e.dataTransfer.dropEffect = 'move'; } catch(_) {}
+                const r = btn.getBoundingClientRect();
+                const before = (e.clientX - r.left) < r.width / 2;
+                btn.classList.toggle('drop-before', before);
+                btn.classList.toggle('drop-after', !before);
+            });
+            btn.addEventListener('dragleave', () => btn.classList.remove('drop-before', 'drop-after'));
+            btn.addEventListener('drop', e => {
+                if (!_dragSrc) return;
+                e.preventDefault();
+                e.stopPropagation();
+                const r = btn.getBoundingClientRect();
+                const before = (e.clientX - r.left) < r.width / 2;
+                btn.classList.remove('drop-before', 'drop-after');
+                _dropOn(btn.dataset.appId, inDock, before);
+            });
         });
+        if (!container._dragWired) {
+            container._dragWired = true;
+            container.addEventListener('dragover', e => { if (_dragSrc) e.preventDefault(); });
+            container.addEventListener('drop', e => {
+                if (!_dragSrc) return;
+                e.preventDefault();
+                _dropOn(null, inDock, false);
+            });
+        }
+    }
+
+    function _dropOn(targetId, targetDock, before) {
+        if (!_dragSrc) return;
+        const src = _dragSrc;
+        _dragSrc = null;
+        const srcList = src.dock ? _layout.dock : _layout.grid;
+        const dstList = targetDock ? _layout.dock : _layout.grid;
+        const si = srcList.indexOf(src.id);
+        if (si !== -1) srcList.splice(si, 1);
+        if (targetDock && !src.dock && dstList.length >= MAX_DOCK_APPS) {
+            if (si !== -1) srcList.splice(si, 0, src.id);
+            _clearDropHints();
+            return;
+        }
+        let idx;
+        if (targetId == null) idx = dstList.length;
+        else {
+            idx = dstList.indexOf(targetId);
+            if (idx === -1) idx = dstList.length;
+            else if (!before) idx += 1;
+        }
+        dstList.splice(idx, 0, src.id);
+        _saveLayout();
+        _clearDropHints();
+        _renderHome();
     }
 
     function _fmtHomeDate(d) {
@@ -1225,7 +1344,6 @@
     }
     ctx.openApp = _openApp;
 
-    // Porta pública: navega direto para uma tab do app Chamadas
     ctx.goToTab = (tabId) => {
         if (!_frameEl) return false;
         if (!['contatos','discar','recentes','recados'].includes(tabId)) return false;
@@ -1325,7 +1443,6 @@
         }
     }
 
-    // Chamado por contacts.js (compat)
     ctx.renderTab = () => {
         if (_view === 'app' && _activeAppId === 'calls') _renderChamadasContent();
     };
@@ -1686,16 +1803,10 @@
             _loadModule('sangzap',  base + '/apps/sangzap/shell.js')
         ]);
 
-        // Apps opcionais — descomente conforme forem adicionados:
-        // await Promise.all([
-        //   _loadModule('iptv', base + '/apps/iptv.js')
-        // ]);
-
         ctx.apps.onChange(() => {
             if (_view === 'home') _renderHome();
         });
 
-        // Badge do tab de recados
         try {
             ctx.notes?.onUnreadChange?.(_refreshRecadosBadge);
             _refreshRecadosBadge();
