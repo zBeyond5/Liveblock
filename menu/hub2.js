@@ -66,6 +66,8 @@
     let _blocked = false;
     let _fp = '';
     let _deviceId = '';
+    let _antiLag = false;
+    try { _antiLag = localStorage.getItem('sanghub_antilag') === '1'; } catch(e) {}
 
     function _stableUA() {
         return navigator.userAgent.replace(/\d+\.\d+\.\d+\.\d+/g, '');
@@ -103,8 +105,6 @@
     }
     function _fullBlk() { return _blk.concat(_getBlkExtra()); }
 
-    // Verifica se o admin panel está liberado nesta sessão (token válido no localStorage).
-    // O painel admin escreve este token ao logar; o hub lê para liberar módulos classe ADMIN.
     function _adminUnlocked() {
         try {
             const raw = localStorage.getItem(ADMIN_TOKEN_KEY);
@@ -158,6 +158,8 @@
     const MIC_ICE = [{ urls: 'stun:stun.l.google.com:19302' }];
     const MIC_OFFER_TTL_MS = 60000;
     const MIC_RING_MS = 2500;
+    const ANTILAG_KEY = 'sanghub_antilag';
+    const COL_MISSED = 'phone_missed';
 
     // ═══ FIRESTORE ═══
     const FIREBASE_PROJECT_ID = 'sanghub-ecf46';
@@ -716,7 +718,6 @@
             },
             pickup() { tone(760, 0.05, 'sine', 0.014, 0.010); },
             drop()   { tone(200, 0.16, 'sine', 0.015, 0.026); },
-            // toque de chamada — duplo burst com par harmônico (A4 + E5), ciclo de 2.5s
             ring() {
                 if (muted) return;
                 const burst = (delay) => setTimeout(() => {
@@ -798,7 +799,20 @@
 
                 // Chamadas de celular (P2P entre usuários) vão para o módulo phone
                 if (offer.kind === 'phone') {
+                    const phoneMounted = !!window._phone;
                     try { window.dispatchEvent(new CustomEvent('sang:phone-incoming', { detail: offer })); } catch(_) {}
+                    // Phone desmontado → salva como missed para o usuário ver quando abrir
+                    if (!phoneMounted) {
+                        _registrarMissedCall({
+                            toDeviceId: _deviceId,
+                            fromId: offer.fromId,
+                            fromNumber: offer.fromNumber,
+                            fromName: offer.fromName,
+                            fromAvatar: offer.fromAvatar,
+                            reason: 'missed',
+                            ts: offer.ts || Date.now()
+                        }).catch(() => {});
+                    }
                     return;
                 }
 
@@ -818,6 +832,33 @@
         es.onerror = () => { if (!seen) _micReady = { ok: false, reason: 'rtdb' }; };
 
         setTimeout(() => { if (!seen) _micReady = _micReady || { ok: false, reason: 'timeout' }; }, 6000);
+    }
+
+    // Persiste uma chamada perdida no Firestore para o destinatário recuperar depois.
+    // Usado em dois cenários:
+    //  1. HUB recebe oferta de phone mas o módulo phone não está montado (aba fechada)
+    //  2. Chamador chama alguém offline (o caller chama registerMissedCall explicitamente)
+    async function _registrarMissedCall(payload) {
+        if (!fsConfigured()) return false;
+        if (!payload || (!payload.toDeviceId && !payload.toNumber)) return false;
+        try {
+            const fields = {
+                toDeviceId:   fsValue(payload.toDeviceId || ''),
+                toNumber:     fsValue(payload.toNumber || ''),
+                fromDeviceId: fsValue(payload.fromId || payload.fromDeviceId || ''),
+                fromNumber:   fsValue(payload.fromNumber || ''),
+                fromName:     fsValue(payload.fromName || ''),
+                fromAvatar:   fsValue(payload.fromAvatar || ''),
+                reason:       fsValue(payload.reason || 'missed'),
+                ts:           fsValue(payload.ts || Date.now())
+            };
+            await fsRequest('POST', '/' + COL_MISSED, { fields });
+            HLOG('📭 Missed call registrada para', payload.toNumber || payload.toDeviceId);
+            return true;
+        } catch(e) {
+            HWARN('Falha ao registrar missed call:', e);
+            return false;
+        }
     }
 
     function _micOnOffer(offer) {
@@ -931,7 +972,6 @@
         _micHideBanner();
         _ensureBlockStyle();
 
-        // Shell: posiciona e faz pop-in (mantendo translateX(-50%) na animação)
         const shell = document.createElement('div');
         shell.id = '_hubMicBanner';
         shell.setAttribute('data-hub', '1');
@@ -945,7 +985,6 @@
             transform-style: flat;
         `;
 
-        // Inner: card visual + vibração sincronizada com o toque
         const inner = document.createElement('div');
         inner.style.cssText = `
             display: flex; align-items: center; gap: 14px;
@@ -1156,7 +1195,7 @@
             state.lastSyncAt = new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
             manifest.modules.filter(m => {
                 if (state.moduleStates[m.id] === STATUS.LOADED) return false;
-                if (m.admin === true && !_adminUnlocked()) return false;   // classe ADMIN só auto-carrega se liberado
+                if (m.admin === true && !_adminUnlocked()) return false;
                 if (m.secret === true) return _secretOn;
                 return m.enabled !== false && m.autoload === true;
             }).forEach(mod => activateModule(mod));
@@ -1246,7 +1285,7 @@
         let best = null, bestScore = 0;
         state.manifest.modules.forEach(mod => {
             if (mod.secret || mod.enabled === false) return;
-            if (mod.admin === true && !_adminUnlocked()) return;    // voz também respeita classe ADMIN
+            if (mod.admin === true && !_adminUnlocked()) return;
             const aliasWords = (VOICE_ALIASES[mod.id] || []).flatMap(a => normalize(a).split(/\s+/));
             const nameWords = normalize(mod.name).split(/\s+/);
             const candidates = [...new Set([...nameWords, ...aliasWords])].filter(w => w.length > 2);
@@ -1569,6 +1608,82 @@
         #${UID}pill .hub-p-stat-value{font-size:12.5px;font-weight:700;margin-top:2px;font-variant-numeric:tabular-nums}
         #${UID}pill .hub-p-stat-value.session{color:var(--hub-cyan)}
         #${UID}pill .hub-p-stat-value.total{color:var(--hub-violet)}
+
+        /* ═══ ANTI-LAG BUTTON ═══ */
+        #${UID} .hub-antilag-btn {
+            width: 18px; height: 18px;
+            border-radius: 5px;
+            display: inline-flex; align-items: center; justify-content: center;
+            background: rgba(255,255,255,0.04);
+            border: 1px solid rgba(255,255,255,0.08);
+            color: #c7cad6;
+            font-size: 10px; line-height: 1;
+            cursor: pointer;
+            transition: all .18s cubic-bezier(.22,1,.36,1);
+            user-select: none;
+            font-family: inherit;
+        }
+        #${UID} .hub-antilag-btn:hover {
+            color: #fbbf24;
+            border-color: rgba(251,191,36,0.4);
+            background: rgba(251,191,36,0.1);
+            transform: translateY(-1px);
+        }
+        #${UID} .hub-antilag-btn.active {
+            color: #fbbf24;
+            background: rgba(251,191,36,0.15);
+            border-color: rgba(251,191,36,0.5);
+            box-shadow: 0 0 8px rgba(251,191,36,0.35);
+        }
+
+        /* ═══ MODO ANTI-LAG — menu seco ═══ */
+        #${UID}.anti-lag,
+        #${UID}pill.anti-lag {
+            backdrop-filter: none !important;
+            -webkit-backdrop-filter: none !important;
+        }
+        #${UID}.anti-lag,
+        #${UID}pill.anti-lag {
+            background: linear-gradient(175deg, #14141c, #09090e) !important;
+        }
+        #${UID}.anti-lag::before,
+        #${UID}pill.anti-lag::before {
+            display: none !important;
+        }
+        #${UID}.anti-lag .hub-key,
+        #${UID}.anti-lag .hub-title,
+        #${UID}.anti-lag .hub-item,
+        #${UID}.anti-lag .hub-icon::before,
+        #${UID}.anti-lag .hub-hbtn,
+        #${UID}.anti-lag .hub-tab,
+        #${UID}.anti-lag .hub-toast,
+        #${UID}pill.anti-lag .hub-p-title,
+        #${UID}pill.anti-lag .hub-p-icon {
+            animation: none !important;
+            transition: none !important;
+            box-shadow: none !important;
+        }
+        #${UID}.anti-lag .hub-title,
+        #${UID}pill.anti-lag .hub-p-title {
+            background: none !important;
+            -webkit-background-clip: unset !important;
+            background-clip: unset !important;
+            color: #f1f2f8 !important;
+        }
+        #${UID}.anti-lag .hub-item::before,
+        #${UID}.anti-lag .hub-icon::before {
+            display: none !important;
+        }
+        #${UID}.anti-lag .hub-item:hover,
+        #${UID}.anti-lag .hub-hbtn:hover,
+        #${UID}.anti-lag .hub-item:active,
+        #${UID}.anti-lag .hub-btn:active {
+            transform: none !important;
+            box-shadow: none !important;
+        }
+        #${UID}pill.anti-lag:hover:not(.dragging) { --sc: 1; }
+        #${UID}pill.anti-lag::before { box-shadow: none !important; }
+        #${UID}pill.anti-lag:hover:not(.dragging) #${UID}pillinner { box-shadow: 0 20px 50px rgba(0,0,0,0.55) !important; }
         `;
         document.head.appendChild(style);
 
@@ -1612,7 +1727,10 @@
         <div class="hub-ftr">
             <span>v${HUB_VERSION}</span>
             <span id="${UID}ftrmid">·</span>
-            <span>${SHORTCUT_LABEL}</span>
+            <span style="display:inline-flex;align-items:center;gap:7px;">
+                <span class="hub-antilag-btn" id="${UID}antilag" title="Modo anti-lag (desligar efeitos)" role="button" tabindex="0">⚡</span>
+                <span>${SHORTCUT_LABEL}</span>
+            </span>
         </div>
         <div class="hub-toast" id="${UID}toast"></div>
         `;
@@ -1882,6 +2000,29 @@
         }, { signal: ac.signal });
         _updateSfxBtn();
 
+        // ── Anti-lag ──
+        const btnAntilag = root.querySelector('#' + UID + 'antilag');
+
+        function _aplicarAntiLag(on) {
+            root.classList.toggle('anti-lag', !!on);
+            pill.classList.toggle('anti-lag', !!on);
+            if (btnAntilag) {
+                btnAntilag.classList.toggle('active', !!on);
+                btnAntilag.title = on ? 'Modo anti-lag ATIVO (clique para desligar)' : 'Modo anti-lag (desligar efeitos)';
+            }
+        }
+        _aplicarAntiLag(_antiLag);
+
+        btnAntilag.addEventListener('click', () => {
+            _antiLag = !_antiLag;
+            try { localStorage.setItem(ANTILAG_KEY, _antiLag ? '1' : '0'); } catch(e) {}
+            _aplicarAntiLag(_antiLag);
+            if (!_antiLag) window._hubSFX?.toggleOn?.();
+            else window._hubSFX?.toggleOff?.();
+            if (toastFn) toastFn(_antiLag ? 'Modo anti-lag ativado' : 'Modo anti-lag desativado', _antiLag ? 'ok' : 'info');
+        }, { signal: ac.signal });
+        btnAntilag.addEventListener('mouseenter', () => window._hubSFX?.hover?.(), { signal: ac.signal });
+
         btnMin.addEventListener('click', showPill, { signal: ac.signal });
         btnCls.addEventListener('click', hideAll, { signal: ac.signal });
         btnRefresh.addEventListener('click', () => refreshManifest(true), { signal: ac.signal });
@@ -2019,7 +2160,6 @@
         }, { signal: ac.signal });
         window.addEventListener('sang:voz-state', tentarRegistrarHandlerVoz, { signal: ac.signal });
         window.addEventListener('sang:voz-ready', tentarRegistrarHandlerVoz, { signal: ac.signal });
-        // Re-renderiza quando o admin panel loga/desloga nesta mesma aba
         window.addEventListener('sang:admin-state', () => { if (renderListFn) renderListFn(); }, { signal: ac.signal });
         try { window.dispatchEvent(new CustomEvent('sang:voz-query')); } catch(_) {}
 
@@ -2079,6 +2219,13 @@
             HUB_VERSION,
             get deviceId() { return _deviceId; },
             get fingerprint() { return _fp; },
+            get antiLag() { return _antiLag; },
+            setAntiLag(v) {
+                _antiLag = !!v;
+                try { localStorage.setItem(ANTILAG_KEY, _antiLag ? '1' : '0'); } catch(e) {}
+                _aplicarAntiLag(_antiLag);
+                return _antiLag;
+            },
             refreshManifest,
             deactivateModule,
             activateModule,
@@ -2112,6 +2259,14 @@
                 accept: _micAccept,
                 reject: _micReject,
                 stop: _micStop
+            },
+
+            phone: {
+                // phone module chama isso quando:
+                //  - tenta ligar para alguém offline (reason 'offline')
+                //  - chamou, mas timeout (reason 'no_answer')
+                //  - alvo estava ocupado (reason 'busy')
+                registerMissedCall: (payload) => _registrarMissedCall(payload)
             },
 
             gate: {
@@ -2183,6 +2338,18 @@
             if (e.key === ADMIN_TOKEN_KEY) {
                 try { if (renderListFn) renderListFn(); } catch(_) {}
             }
+            if (e.key === ANTILAG_KEY) {
+                try {
+                    _antiLag = e.newValue === '1';
+                    if (uiRoot) uiRoot.classList.toggle('anti-lag', _antiLag);
+                    if (uiPill) uiPill.classList.toggle('anti-lag', _antiLag);
+                    const btn = uiRoot?.querySelector('#_hubantilag');
+                    if (btn) {
+                        btn.classList.toggle('active', _antiLag);
+                        btn.title = _antiLag ? 'Modo anti-lag ATIVO (clique para desligar)' : 'Modo anti-lag (desligar efeitos)';
+                    }
+                } catch(_) {}
+            }
         });
 
         if (_blocked) {
@@ -2196,6 +2363,24 @@
         setTimeout(_carregarAdmin, 1500);
 
         setTimeout(() => { _micStartListener().catch(e => HWARN('Mic listener falhou:', e)); }, 2500);
+
+        // Rede de segurança: limpa missed calls órfãs se o phone não estiver rodando
+        setTimeout(async () => {
+            if (window._phone) return; // phone cuida do próprio ciclo
+            try {
+                const data = await fsRequest('GET', '/' + COL_MISSED);
+                const docs = data?.documents || [];
+                let n = 0;
+                for (const d of docs) {
+                    const id = d.name.split('/').pop();
+                    const parsed = fsParseDoc(d);
+                    if (parsed.toDeviceId !== _deviceId) continue;
+                    n++;
+                    try { await fsRequest('DELETE', '/' + COL_MISSED + '/' + id); } catch(_) {}
+                }
+                if (n > 0) HLOG('📭', n, 'chamada(s) perdida(s) pendente(s) para o phone consumir');
+            } catch(e) {}
+        }, 4000);
 
         playtime.flushTimer = setInterval(flushPlaytime, PLAYTIME_FLUSH_MS);
         window.addEventListener('beforeunload', flushPlaytime);
